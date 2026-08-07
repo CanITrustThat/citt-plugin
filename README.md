@@ -2,17 +2,23 @@
 
 A Claude Code plugin that connects Claude Code to [canitrustthat.com](https://canitrustthat.com), a security and privacy trust analysis service for Android and iOS apps. Ask Claude in plain language; it runs the `citt` CLI for you.
 
-## Install
+## Quick start
 
-**Terminal:**
+Run these in Claude Code, in order:
+
+```
+/plugin marketplace add CanITrustThat/citt-plugin   # 1. register the marketplace
+/plugin install citt@citt                           # 2. install the plugin
+/reload-plugins                                     # 3. load it without restarting
+/citt:auth                                          # 4. sign in (opens a browser link)
+/citt:submit com.spotify.music                      # 5. run your first analysis
+```
+
+Step 4 is required before `submit`, `scan`, `result`, `report`, `mine`, and `claim`. It prints a link, you sign in and click Authorize once, and the token is stored on your machine. The commands `search`, `status`, and `results` work without signing in, so you can skip straight to step 5 with those.
+
+Prefer the terminal? Steps 1 and 2 are one line, then auth from inside Claude Code:
 ```
 claude plugin marketplace add CanITrustThat/citt-plugin && claude plugin install citt@citt
-```
-
-**Claude Code:**
-```
-/plugin marketplace add CanITrustThat/citt-plugin
-/plugin install citt@citt
 ```
 
 ## Commands
