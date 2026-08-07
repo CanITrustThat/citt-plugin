@@ -1,0 +1,13 @@
+{
+  "name": "citt",
+  "owner": {
+    "name": "canITrustThat"
+  },
+  "plugins": [
+    {
+      "name": "citt",
+      "source": "./",
+      "description": "Drive CITT from Claude Code: submit apps for security and privacy trust analysis, run fast custom-prompt scans that answer one focused question, pull scorecards and your private reports, search the public index, and claim apps you own."
+    }
+  ]
+}

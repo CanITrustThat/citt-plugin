@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/citt-auth-check.sh\" || echo 'CITT plugin: no account connected yet. Run /citt:auth to sign in (needed before submit, scan, result, report, mine, and claim). The public commands search, status, and results work without an account.'"
+          }
+        ]
+      }
+    ]
+  }
+}

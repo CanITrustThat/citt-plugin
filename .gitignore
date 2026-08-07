@@ -1,0 +1,9 @@
+# Observability / runtime strays (written into CWD by local hooks during tests)
+.omc/
+logs/
+# Local token store (helper scripts own this; never commit)
+.citt/
+citt-token*
+# OS / editor
+.DS_Store
+*.swp

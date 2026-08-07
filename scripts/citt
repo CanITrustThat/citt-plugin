@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# =============================================================================
+# citt — CITT plugin entrypoint (CITT-333)
+# =============================================================================
+# Single subcommand-routed entrypoint for the CITT Claude plugin.
+# Usage: citt <subcommand> [args]
+#
+# Implemented subcommands:
+#   auth     — RFC-8628 device-flow login (delegates to citt-auth.sh logic)
+#   whoami   — GET /api/me; verify stored token and show user/plan info
+#   logout   — remove stored token (keyring + 0600 file)
+#
+# Data subcommands (each in its own lib/cmd-<name>.sh exposing citt_cmd_<name>):
+#   submit, scan, result, status, results, report, mine, search, claim
+#
+# SECRET ISOLATION (inherits all invariants from citt-auth.sh):
+#   - The token NEVER appears on argv, in stdout, or in bash -x xtrace.
+#   - All token handling flows through 0600 temp files via the shared lib.
+#   - Host hardcoded to https://canitrustthat.com; CITT_API_OVERRIDE honored
+#     ONLY when CITT_TEST_MODE=1.
+# =============================================================================
+
+# Layout-independent self-location so the dispatcher works from any cwd.
+_CITT_SELF_DIR="$(cd "$(dirname "$0")" && pwd)"
+_CITT_LIB="${_CITT_SELF_DIR}/lib/citt-common.sh"
+_CITT_AUTH_SCRIPT="${_CITT_SELF_DIR}/citt-auth.sh"
+
+# Source the shared library.
+# shellcheck source=lib/citt-common.sh
+. "${_CITT_LIB}"
+
+# ---------------------------------------------------------------------------
+# Usage / help
+# ---------------------------------------------------------------------------
+_usage() {
+  cat >&1 <<'USAGE'
+Usage: citt <subcommand> [args]
+
+Subcommands:
+  auth      Authenticate with CITT via device flow (RFC-8628)
+  whoami    Show the authenticated user and plan information
+  logout    Remove stored authentication token
+
+  submit    Submit one or more apps (package IDs, store URLs, or a CSV) for a full analysis
+  scan      Run a fast custom-prompt scan: you write the question, get a targeted answer
+  result    Fetch the result of a custom-prompt scan by its scan_id
+  status    Check scan status and score for an app
+  results   Fetch the public scorecard summary for an app
+  report    Fetch the full detailed report for an app you own
+  mine      List apps you've submitted, with their latest scores
+  search    Search public apps by name or package ID
+  claim     Claim ownership of an app via store-email verification
+
+Run 'citt auth' first to authenticate (submit, scan, result, report, mine, and claim need it).
+
+Custom scans (scan/result) are much faster than a full scan and are the preferred way to
+answer a specific question about an app ("does it leak location?", "which analytics SDKs?").
+Run a full 'submit' only when you want a complete scorecard and letter grade.
+USAGE
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: auth
+# Delegates entirely to citt-auth.sh, which is the shipped device-flow client
+# with all secret-isolation properties. This keeps the logic in one place.
+# ---------------------------------------------------------------------------
+_cmd_auth() {
+  exec bash "${_CITT_AUTH_SCRIPT}" "$@"
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: whoami
+# GET /api/me via the authenticated curl helper. Emits the user JSON to stdout.
+# On no token or 401 -> re-auth hint + non-zero exit.
+# ---------------------------------------------------------------------------
+_cmd_whoami() {
+  _prepare_auth   # exits non-zero with re-auth hint if no token
+
+  local code body
+  code="$(_curl_auth_get "/api/me")"
+
+  case "$code" in
+    200)
+      body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
+      emit_json "$body"
+      ;;
+    401)
+      _reauth_hint   # exits non-zero
+      ;;
+    "")
+      emit_err "citt whoami: could not reach the CITT API"
+      exit 1
+      ;;
+    *)
+      emit_err "citt whoami: unexpected HTTP $code from /api/me"
+      exit 1
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Subcommand: logout
+# Removes the stored token from both the keyring and the 0600 file.
+# ---------------------------------------------------------------------------
+_cmd_logout() {
+  local removed=0
+
+  # Remove from keyring (best-effort).
+  if _keyring_has_token; then
+    _keyring_delete
+    removed=1
+  fi
+
+  # Remove the 0600 file.
+  if [ -f "${_CITT_TOKEN_FILE}" ]; then
+    rm -f "${_CITT_TOKEN_FILE}" 2>/dev/null || true
+    removed=1
+  fi
+
+  if [ "$removed" -eq 1 ]; then
+    emit_err "logged out — token removed."
+  else
+    emit_err "logged out (no token was stored)."
+  fi
+  exit 0
+}
+
+# ---------------------------------------------------------------------------
+# Stub for not-yet-implemented subcommands (later tickets replace these).
+# ---------------------------------------------------------------------------
+_cmd_stub() {
+  local sub="$1"
+  printf 'citt %s: not yet implemented in this build.\n' "$sub" >&2
+  exit 10
+}
+
+# ---------------------------------------------------------------------------
+# Dispatcher
+# ---------------------------------------------------------------------------
+SUBCOMMAND="${1:-}"
+shift 2>/dev/null || true
+
+case "$SUBCOMMAND" in
+  --help|-h)
+    _usage
+    exit 0
+    ;;
+  "")
+    _usage >&2
+    exit 1
+    ;;
+  auth)
+    _cmd_auth "$@"
+    ;;
+  whoami)
+    _cmd_whoami "$@"
+    ;;
+  logout)
+    _cmd_logout "$@"
+    ;;
+  submit|scan|result|status|results|report|mine|search|claim)
+    # Each subcommand lives in its own lib/cmd-<name>.sh (added by later tickets),
+    # exposing citt_cmd_<name>. Fall back to the stub until that file exists.
+    _cmd_file="${_CITT_SELF_DIR}/lib/cmd-${SUBCOMMAND}.sh"
+    if [ -f "$_cmd_file" ]; then
+      # shellcheck source=/dev/null
+      . "$_cmd_file"
+      "citt_cmd_${SUBCOMMAND}" "$@"
+    else
+      _cmd_stub "$SUBCOMMAND"
+    fi
+    ;;
+  *)
+    printf 'citt: unrecognized subcommand: %s\n' "$SUBCOMMAND" >&2
+    _usage >&2
+    exit 1
+    ;;
+esac
