@@ -1,69 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# =============================================================================
-# citt-auth.sh — CITT device-flow authentication client  (CITT-267)
-# =============================================================================
-# RFC-8628 long-link device-flow client. Runs inside Claude Code's Bash tool as
-# part of the published CITT plugin, so the access token must NEVER enter model
-# context (stdout / argv / xtrace).
-#
-# Behavior (PLAN §2, CITT-265 spike):
-#   1. CITT_TOKEN env set  -> already authenticated (override); print
-#      "authenticated", exit 0. The value is NEVER echoed.
-#   2. Valid token already in TOKEN_FILE -> print "authenticated", exit 0. No
-#      network call. (Opaque token; local presence == authenticated. The submit
-#      script re-invokes us on a server 401/expiry.)
-#   3. Else POST /api/device/code, parse device_code + verification_uri_complete
-#      + interval + expires_in. Print ONLY the link. Background-poll
-#      /api/device/token honoring authorization_pending / slow_down, bounded to
-#      ~10 min / expires_in. On access_denied(tier) print the scrubbed upgrade
-#      nudge + exit non-zero. On success STORE the token (keyring-first, else a
-#      0600 file) and print ONLY "authenticated". On timeout print a re-run hint
-#      to STDERR + exit non-zero (Claude re-invokes; no interactive TTY).
-#
-# SECRET ISOLATION (hard invariants — red-team tested in CITT-270):
-#   - This device-flow client is UNAUTHENTICATED (no Authorization header on any
-#     call), so the token is never on the request side at all. The minted
-#     access_token arrives ONLY in the /api/device/token 200 body; we extract the
-#     single `access_token` scalar with jq straight into a 0600 temp file and
-#     move/keyring it into place. It is NEVER echoed, NEVER placed on argv, and —
-#     proven by running the whole script under `bash -x` in the harness — never
-#     appears on an xtrace line. (There is no `set -x` in this script.)
-#   - The pending device_code is passed to curl via a 0600 --data @file, not on
-#     argv, so it never shows in `ps`.
-#   - Host is HARDCODED (egress allow-list). A test-only seam (CITT_API_OVERRIDE,
-#     honored ONLY when CITT_TEST_MODE=1) lets the harness point at a mock; the
-#     production path stays hardcoded.
-#   - curl error bodies are captured to a var and only the parsed `error`/`message`
-#     scalar is surfaced — a non-2xx can never reflect raw headers/body to stdout.
-# =============================================================================
+# citt-auth.sh — RFC-8628 device-flow client. Runs in Claude Code's Bash tool, so
+# the access token must never enter model context (stdout/argv/xtrace).
+# The client is unauthenticated; the minted token arrives only in the 200 body and
+# is extracted file->file into a 0600 temp, then stored (keyring-first, else file).
+# Host is hardcoded; CITT_API_OVERRIDE is honored only under CITT_TEST_MODE=1.
 
-# API base (hardcoded egress allow-list — do NOT make this configurable).
+# API base (hardcoded egress allow-list). Test-only override under CITT_TEST_MODE=1.
 CITT_API="https://canitrustthat.com"
-
-# TEST-ONLY seam: point the client at a mock server. This is NOT a general
-# config knob — it is honored ONLY when CITT_TEST_MODE=1 (set by the harness).
-# The production path above stays hardcoded.
 if [ "${CITT_TEST_MODE:-}" = "1" ] && [ -n "${CITT_API_OVERRIDE:-}" ]; then
   CITT_API="${CITT_API_OVERRIDE}"
 fi
 
-# Local token file the helper scripts own. Written at chmod 0600 and read back
-# by the scripts in-process; NEVER echoed or passed as argv.
+# 0600 token file the helper scripts own.
 TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"
 
-# macOS keyring coordinates (Linux uses secret-tool with matching attributes).
+# Keyring coordinates (macOS security / Linux secret-tool).
 KEYRING_SERVICE="canitrustthat-citt"
 KEYRING_ACCOUNT="device_token"
 
-POLL_CEILING_SECONDS=600   # ~10 min hard bound regardless of expires_in
+POLL_CEILING_SECONDS=600   # 10 min hard bound regardless of expires_in
 
-# ---------------------------------------------------------------------------
-# JSON scalar extraction. Prefer jq; fall back to a tight grep/sed that pulls
-# ONLY the one requested scalar (string or number) — never dumps the body.
-# Usage: _json_get <field> <body>
-# ---------------------------------------------------------------------------
+# JSON scalar extraction. jq preferred, grep/sed fallback. Usage: _json_get <field> <body>
 _json_get() {
   local field="$1" body="$2"
   if command -v jq >/dev/null 2>&1; then
@@ -87,16 +46,8 @@ _json_get() {
     | sed -E "s/.*:[[:space:]]*([0-9]+)/\1/"
 }
 
-# ---------------------------------------------------------------------------
-# Keyring helpers. Return non-zero if no keyring backend is available so callers
-# fall back to the 0600 file. The token value is fed to `security`/`secret-tool`
-# via STDIN, never on argv: `security add-generic-password ... -w` (with -w as the
-# trailing, value-less option) reads the secret from stdin, and `secret-tool store`
-# reads from stdin. So the token never appears in `ps`.
-# ---------------------------------------------------------------------------
+# Keyring backend present? Non-zero -> callers use the 0600 file.
 _keyring_available() {
-  # TEST-ONLY: force the 0600 file fallback so the harness can assert file mode
-  # without touching the real OS keychain. Honored ONLY under CITT_TEST_MODE=1.
   if [ "${CITT_TEST_MODE:-}" = "1" ] && [ "${CITT_FORCE_FILE_TOKEN:-}" = "1" ]; then
     return 1
   fi
@@ -109,49 +60,74 @@ _keyring_available() {
   return 1
 }
 
-# Store token read from a 0600 file at $1 into the OS keyring. The token is fed
-# via STDIN (never on argv), so it never appears in `ps` or under xtrace.
+# Store the token (0600 file at $1) into the keyring via stdin, never argv.
 _keyring_store_from_file() {
   local src="$1"
   if [ "$(uname -s)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
-    # -U updates if present. -w given LAST with no value makes `security` read the
-    # password from stdin — the token is piped in from the 0600 file, never argv.
+    # `security add-generic-password -w` (value-less) is an interactive prompt that
+    # reads TWICE (enter + retype); feed once and it stores EMPTY. Feed the token twice.
+    local feed rc
+    feed="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_feed.XXXXXX")"
+    ( umask 077
+      { tr -d '\n' <"$src"; printf '\n'; tr -d '\n' <"$src"; printf '\n'; } >"$feed"
+    )
     security add-generic-password -U \
       -s "$KEYRING_SERVICE" -a "$KEYRING_ACCOUNT" \
-      -w <"$src" >/dev/null 2>&1
-    return $?
+      -w <"$feed" >/dev/null 2>&1
+    rc=$?
+    rm -f "$feed" 2>/dev/null || true
+    return $rc
   fi
   if command -v secret-tool >/dev/null 2>&1; then
-    secret-tool store --label="CITT device token" \
-      service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" <"$src" >/dev/null 2>&1
+    # secret-tool store reads cleanly from stdin (single read), so one line is right.
+    tr -d '\n' <"$src" | secret-tool store --label="CITT device token" \
+      service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" >/dev/null 2>&1
     return $?
   fi
   return 1
 }
 
-# True (0) if a token is present in the keyring.
+# Confirm the stored value byte-matches $1, so a silently-broken keyring falls
+# through to the file instead of persisting garbage. Compared via 0600 temps.
+_keyring_roundtrip_ok() {  # $1 = src file holding the expected token
+  local src="$1" got exp rc=1
+  got="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_rt_got.XXXXXX")"
+  exp="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_rt_exp.XXXXXX")"
+  ( umask 077; tr -d '\n' <"$src" >"$exp" )
+  if [ "$(uname -s)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
+    security find-generic-password -s "$KEYRING_SERVICE" -a "$KEYRING_ACCOUNT" -w 2>/dev/null \
+      | tr -d '\n' >"$got"
+  elif command -v secret-tool >/dev/null 2>&1; then
+    secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null \
+      | tr -d '\n' >"$got"
+  fi
+  if [ -s "$got" ] && cmp -s "$exp" "$got"; then rc=0; fi
+  rm -f "$got" "$exp" 2>/dev/null || true
+  return $rc
+}
+
+# True (0) only if a NON-EMPTY token is present (an empty item must not count as
+# authenticated: it would block re-auth and shadow the file). Size-tested via a 0600 temp.
 _keyring_has_token() {
-  # TEST-ONLY: honor the forced-file mode so the harness's file-only fixtures are
-  # authoritative and don't collide with a real keychain entry.
   if [ "${CITT_TEST_MODE:-}" = "1" ] && [ "${CITT_FORCE_FILE_TOKEN:-}" = "1" ]; then
     return 1
   fi
+  local t present=1
+  t="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_has.XXXXXX")"
   if [ "$(uname -s)" = "Darwin" ] && command -v security >/dev/null 2>&1; then
-    security find-generic-password -s "$KEYRING_SERVICE" -a "$KEYRING_ACCOUNT" \
-      >/dev/null 2>&1
-    return $?
+    security find-generic-password -s "$KEYRING_SERVICE" -a "$KEYRING_ACCOUNT" -w 2>/dev/null \
+      | tr -d '\n' >"$t"
+    [ -s "$t" ] && present=0
+  elif command -v secret-tool >/dev/null 2>&1; then
+    secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" 2>/dev/null \
+      | tr -d '\n' >"$t"
+    [ -s "$t" ] && present=0
   fi
-  if command -v secret-tool >/dev/null 2>&1; then
-    secret-tool lookup service "$KEYRING_SERVICE" account "$KEYRING_ACCOUNT" \
-      >/dev/null 2>&1
-    return $?
-  fi
-  return 1
+  rm -f "$t" 2>/dev/null || true
+  return $present
 }
 
-# ---------------------------------------------------------------------------
-# Do we already have a usable token? (No network — local presence only.)
-# ---------------------------------------------------------------------------
+# Usable token present locally? (No network.)
 _have_token() {
   if _keyring_has_token; then
     return 0
@@ -162,179 +138,183 @@ _have_token() {
   return 1
 }
 
-# ---------------------------------------------------------------------------
-# Persist the freshly-minted token. Input: path to a 0600 temp file that already
-# holds ONLY the raw token string. Keyring-first, else atomically move into the
-# 0600 TOKEN_FILE. The token is never echoed on the way through.
-# ---------------------------------------------------------------------------
+# Persist the token ($1 = 0600 temp holding the raw token).
 _store_token_file() {
   local src="$1"
-  if _keyring_available && _keyring_store_from_file "$src"; then
+  # Keyring only if the write round-trips; otherwise fall through to the 0600 file.
+  if _keyring_available && _keyring_store_from_file "$src" && _keyring_roundtrip_ok "$src"; then
     return 0
   fi
-  # File fallback: 0600 from birth (umask) and re-asserted with chmod.
+  # File fallback (also the universal path where no keyring exists).
   mkdir -p "$(dirname "$TOKEN_FILE")"
   chmod 700 "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
-  ( umask 077; cat "$src" >"$TOKEN_FILE" )
+  ( umask 077; tr -d '\n' <"$src" >"$TOKEN_FILE" )
   chmod 600 "$TOKEN_FILE"
 }
 
-# ===========================================================================
-# 1. CITT_TOKEN override — treat as authenticated, never echo the value.
-# Use ${CITT_TOKEN+x} (set-test, not value-expansion) so bash -x traces
-# only the literal "x", never the token value.  (CITT-347 Finding 1)
-# ===========================================================================
+# Pending-flow state (0600): device_code, interval, deadline_epoch. Written by
+# --start, consumed by --wait. The flow is split into two foreground calls because
+# a detached poller does not survive Claude Code's Bash tool.
+FLOW_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_flow"
+
+# --start: get a device_code + link, persist pending state, print the link, return fast.
+_do_start() {
+  local device_json device_code verify_uri interval expires_in budget deadline now
+  device_json="$(
+    curl -sS -X POST "${CITT_API}/api/device/code" \
+      -H 'Content-Type: application/json' \
+      -d '{"client":"claude-plugin"}' 2>/dev/null
+  )" || { echo "citt-auth.sh: could not reach the CITT device endpoint." >&2; return 1; }
+
+  device_code="$(_json_get device_code "$device_json")"
+  verify_uri="$(_json_get verification_uri_complete "$device_json")"
+  interval="$(_json_get interval "$device_json")"
+  expires_in="$(_json_get expires_in "$device_json")"
+
+  if [ -z "$device_code" ] || [ -z "$verify_uri" ]; then
+    echo "citt-auth.sh: unexpected response from the device endpoint." >&2
+    return 1
+  fi
+  case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
+  case "$expires_in" in ''|*[!0-9]*) expires_in=900 ;; esac
+
+  budget="$expires_in"
+  [ "$budget" -gt "$POLL_CEILING_SECONDS" ] && budget="$POLL_CEILING_SECONDS"
+  now="$(date +%s)"
+  deadline="$((now + budget))"
+
+  mkdir -p "$(dirname "$FLOW_FILE")"
+  chmod 700 "$(dirname "$FLOW_FILE")" 2>/dev/null || true
+  ( umask 077; printf '%s\n%s\n%s\n' "$device_code" "$interval" "$deadline" >"$FLOW_FILE" )
+  chmod 600 "$FLOW_FILE" 2>/dev/null || true
+
+  printf '%s\n' "$verify_uri"
+  return 0
+}
+
+# --wait: resume the pending flow and block-poll until authorized or the deadline passes.
+_do_wait() {
+  if [ ! -s "$FLOW_FILE" ]; then
+    echo "no pending sign-in — run: citt auth" >&2
+    return 1
+  fi
+
+  local dc_file body_file resp_file token_tmp
+  dc_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_dc.XXXXXX")"
+  body_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_body.XXXXXX")"
+  resp_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_resp.XXXXXX")"
+  token_tmp="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_tok.XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -f '$dc_file' '$body_file' '$resp_file' '$token_tmp' 2>/dev/null || true" RETURN
+
+  # Read device_code (line 1) + interval (line 2) + deadline (line 3). device_code
+  # goes straight into a 0600 file (never a traced variable).
+  ( umask 077; sed -n '1p' "$FLOW_FILE" | tr -d '\n' >"$dc_file" )
+  local interval deadline
+  interval="$(sed -n '2p' "$FLOW_FILE" | tr -d '\n')"
+  deadline="$(sed -n '3p' "$FLOW_FILE" | tr -d '\n')"
+  case "$interval" in ''|*[!0-9]*) interval=5 ;; esac
+  case "$deadline" in ''|*[!0-9]*) deadline="$(( $(date +%s) + 600 ))" ;; esac
+
+  # Build the poll body (device_code off argv), jq or safe printf+cat fallback.
+  if command -v jq >/dev/null 2>&1; then
+    jq -nc --rawfile dc "$dc_file" \
+      '{grant_type:"device_code", device_code:($dc|rtrimstr("\n"))}' >"$body_file"
+  else
+    { printf '{"grant_type":"device_code","device_code":"'
+      cat "$dc_file"
+      printf '"}'; } >"$body_file"
+  fi
+
+  local now http_code body err msg
+  while :; do
+    now="$(date +%s)"
+    if [ "$now" -ge "$deadline" ]; then
+      echo "still waiting for authorization — open the link, then run: citt auth --wait" >&2
+      return 2
+    fi
+
+    http_code="$(
+      curl -sS -o "$resp_file" -w '%{http_code}' \
+        -X POST "${CITT_API}/api/device/token" \
+        -H 'Content-Type: application/json' \
+        --data "@${body_file}" 2>/dev/null || true
+    )"
+
+    if [ "$http_code" = "200" ]; then
+      # Extract ONLY the access_token scalar file->file; NEVER into a shell var.
+      if command -v jq >/dev/null 2>&1; then
+        jq -er '.access_token' <"$resp_file" >"$token_tmp" 2>/dev/null || true
+      else
+        grep -o '"access_token"[[:space:]]*:[[:space:]]*"[^"]*"' <"$resp_file" \
+          | head -n1 \
+          | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' \
+          | tr -d '\n' >"$token_tmp"
+      fi
+      # tr -d '\n' guards against an all-whitespace body sneaking past `-s`.
+      ( umask 077; tr -d '\n' <"$token_tmp" >"${token_tmp}.n"; mv -f "${token_tmp}.n" "$token_tmp" )
+      if [ ! -s "$token_tmp" ]; then
+        echo "citt-auth.sh: authorization succeeded but no token was returned." >&2
+        return 1
+      fi
+      _store_token_file "$token_tmp"
+      rm -f "$FLOW_FILE" 2>/dev/null || true
+      echo "authenticated"
+      return 0
+    fi
+
+    body="$(cat "$resp_file" 2>/dev/null || true)"
+    err="$(_json_get error "$body")"
+    case "$err" in
+      authorization_pending) : ;;
+      slow_down) interval="$((interval + 5))" ;;   # RFC 8628 §3.5 back-off
+      access_denied)
+        msg="$(_json_get message "$body")"
+        if [ -n "$msg" ]; then printf '%s\n' "$msg" >&2
+        else echo "access denied for this plan — see canitrustthat.com/pricing" >&2; fi
+        rm -f "$FLOW_FILE" 2>/dev/null || true
+        return 3
+        ;;
+      expired_token)
+        echo "the link expired — run: citt auth to restart." >&2
+        rm -f "$FLOW_FILE" 2>/dev/null || true
+        return 4
+        ;;
+      *) : ;;   # unknown: treat like pending within the deadline
+    esac
+    sleep "$interval"
+  done
+}
+
+# Dispatch: `citt auth` = start+wait (terminal), --start = link then return,
+# --wait = block until authorized. Override + short-circuit apply to all.
+MODE="${1:-}"
+
+# CITT_TOKEN override — authenticated, never echo the value.
 if [ -n "${CITT_TOKEN+x}" ]; then
   echo "authenticated"
   exit 0
 fi
 
-# ===========================================================================
-# 2. Already-authenticated short-circuit — no network call.
-# ===========================================================================
-if _have_token; then
+# Already-authenticated short-circuit (skip for --wait so it just polls the pending flow).
+if [ "$MODE" != "--wait" ] && _have_token; then
   echo "authenticated"
   exit 0
 fi
 
-# ===========================================================================
-# 3. Start the device flow: request a device_code + verification link.
-# ===========================================================================
-DEVICE_JSON="$(
-  curl -sS -X POST "${CITT_API}/api/device/code" \
-    -H 'Content-Type: application/json' \
-    -d '{"client":"claude-plugin"}' 2>/dev/null
-)" || {
-  echo "citt-auth.sh: could not reach the CITT device endpoint." >&2
-  exit 1
-}
-
-DEVICE_CODE="$(_json_get device_code "$DEVICE_JSON")"
-VERIFY_URI="$(_json_get verification_uri_complete "$DEVICE_JSON")"
-INTERVAL="$(_json_get interval "$DEVICE_JSON")"
-EXPIRES_IN="$(_json_get expires_in "$DEVICE_JSON")"
-
-if [ -z "$DEVICE_CODE" ] || [ -z "$VERIFY_URI" ]; then
-  echo "citt-auth.sh: unexpected response from the device endpoint." >&2
-  exit 1
-fi
-
-# Sane numeric defaults if the server omitted them.
-case "$INTERVAL" in ''|*[!0-9]*) INTERVAL=5 ;; esac
-case "$EXPIRES_IN" in ''|*[!0-9]*) EXPIRES_IN=900 ;; esac
-
-# Store the pending-flow device_code transiently in a 0600 temp (off argv/stdout
-# beyond the link). It is not the final secret but still kept out of argv.
-DC_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_dc.XXXXXX")"
-# Body files for curl (token-token request payload + curl config) also 0600.
-BODY_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_body.XXXXXX")"
-RESP_FILE="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_resp.XXXXXX")"
-TOKEN_TMP="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_tok.XXXXXX")"
-cleanup() { rm -f "$DC_FILE" "$BODY_FILE" "$RESP_FILE" "$TOKEN_TMP" 2>/dev/null || true; }
-trap cleanup EXIT
-
-printf '%s' "$DEVICE_CODE" >"$DC_FILE"
-
-# The device_code is a pending identifier, not the final secret, but still keep
-# it off argv: build the poll request body in a 0600 file via jq (or a safe
-# here-doc-free printf that quotes it) rather than on the command line.
-_write_poll_body() {
-  if command -v jq >/dev/null 2>&1; then
-    jq -nc --rawfile dc "$DC_FILE" \
-      '{grant_type:"device_code", device_code:($dc|rtrimstr("\n"))}' >"$BODY_FILE"
-  else
-    # No-jq fallback: assemble JSON via printf (static parts) + cat (device_code
-    # bytes from 0600 file) — no command-substitution of the value, so bash -x
-    # never traces it on a printf arg. (CITT-347 Finding 3)
-    { printf '{"grant_type":"device_code","device_code":"'
-      cat "$DC_FILE"
-      printf '"}'; } >"$BODY_FILE"
-  fi
-}
-_write_poll_body
-
-# 4. Print ONLY the verification link (the single thing the user opens).
-printf '%s\n' "$VERIFY_URI"
-
-# ===========================================================================
-# 5. Background-poll /api/device/token.
-# ===========================================================================
-# Bound polling by the smaller of expires_in and the 10-min ceiling.
-DEADLINE_BUDGET="$EXPIRES_IN"
-if [ "$DEADLINE_BUDGET" -gt "$POLL_CEILING_SECONDS" ]; then
-  DEADLINE_BUDGET="$POLL_CEILING_SECONDS"
-fi
-START="$(date +%s)"
-
-while :; do
-  NOW="$(date +%s)"
-  if [ "$((NOW - START))" -ge "$DEADLINE_BUDGET" ]; then
-    echo "still waiting for authorization — open the link, then run this again." >&2
-    exit 2
-  fi
-
-  # POST the poll. Capture body to a file; read HTTP code separately. --data
-  # comes from the 0600 body file so the device_code is not on argv.
-  HTTP_CODE="$(
-    curl -sS -o "$RESP_FILE" -w '%{http_code}' \
-      -X POST "${CITT_API}/api/device/token" \
-      -H 'Content-Type: application/json' \
-      --data "@${BODY_FILE}" 2>/dev/null || true
-  )"
-
-  if [ "$HTTP_CODE" = "200" ]; then
-    # Success. Extract ONLY the access_token scalar by reading STRAIGHT from the
-    # 0600 response file into the 0600 temp — file->file. The token is NEVER read
-    # into a shell variable (no $BODY here), so it can never be echoed or appear
-    # on a `bash -x` xtrace line. (QA-270 Finding A / CITT-272.)
-    if command -v jq >/dev/null 2>&1; then
-      jq -er '.access_token' <"$RESP_FILE" >"$TOKEN_TMP" 2>/dev/null || true
-    else
-      grep -o '"access_token"[[:space:]]*:[[:space:]]*"[^"]*"' <"$RESP_FILE" \
-        | head -n1 \
-        | sed -E 's/.*:[[:space:]]*"([^"]*)"/\1/' \
-        | tr -d '\n' >"$TOKEN_TMP"
-    fi
-    if [ ! -s "$TOKEN_TMP" ]; then
-      echo "citt-auth.sh: authorization succeeded but no token was returned." >&2
-      exit 1
-    fi
-    _store_token_file "$TOKEN_TMP"
-    echo "authenticated"
-    exit 0
-  fi
-
-  # Non-200: error bodies never contain the token, so it is safe to read the body
-  # into a var here (and ONLY here). Parse ONLY the `error` scalar; never surface
-  # raw headers/body.
-  BODY="$(cat "$RESP_FILE" 2>/dev/null || true)"
-  ERR="$(_json_get error "$BODY")"
-  case "$ERR" in
-    authorization_pending)
-      : # keep polling
-      ;;
-    slow_down)
-      INTERVAL="$((INTERVAL + 5))"   # RFC 8628 §3.5 back-off
-      ;;
-    access_denied)
-      # Wrong tier (or hard deny). Surface the scrubbed upgrade nudge only.
-      MSG="$(_json_get message "$BODY")"
-      if [ -n "$MSG" ]; then
-        printf '%s\n' "$MSG" >&2
-      else
-        echo "access denied for this plan — see canitrustthat.com/pricing" >&2
-      fi
-      exit 3
-      ;;
-    expired_token)
-      echo "the link expired — run this again to restart authorization." >&2
-      exit 4
-      ;;
-    *)
-      # Unknown/unmapped state: generic message only, no body leakage.
-      : # treat like pending and keep within the deadline
-      ;;
-  esac
-
-  sleep "$INTERVAL"
-done
+case "$MODE" in
+  --start)
+    _do_start; exit $?
+    ;;
+  --wait)
+    _do_wait; exit $?
+    ;;
+  ''|--)
+    _do_start || exit $?
+    _do_wait;  exit $?
+    ;;
+  *)
+    echo "citt auth: unknown option '$MODE' (use --start or --wait)" >&2
+    exit 64
+    ;;
+esac

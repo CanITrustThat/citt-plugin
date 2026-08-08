@@ -1,63 +1,16 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-mine.sh — `citt mine` subcommand (CITT-337)
-# =============================================================================
-# List the authenticated user's submitted apps with their latest scan summary
-# and a scan_id pointer usable by `citt report`.
+# lib/cmd-mine.sh — `citt mine` subcommand. Lists the authenticated user's
+# submitted apps with their latest scan summary and a scan_id for `citt report`.
 #
-# OWNERSHIP MODEL NOTE (important — read before modifying):
-#   The backend exposes TWO ownership concepts:
+# Ownership: the only client-queryable signal is submission
+# (GET /api/apps?my_scans=true), so `citt mine` shows apps the user submitted
+# scans for — a proxy for ownership. Email-domain ownership and verified claims
+# are server-side only (no GET /api/me/apps endpoint exists yet).
 #
-#   1. Email-domain match (database.py:3002 does_user_own_app) — if the user's
-#      login email domain matches the app's developer contact email domain.
-#      This is checked SERVER-SIDE in can_user_view_app but is NOT directly
-#      queryable from a client — there is no "apps I own by email" endpoint.
-#
-#   2. Verified claim (database.py:7950 user_has_verified_claim, table
-#      app_claims status='verified') — OTP-proved ownership via store contact
-#      email. list_apps_claimed_by_user() exists in the DB layer but there is
-#      NO corresponding GET /api/me/apps or GET /api/me/claimed-apps endpoint.
-#      A dedicated endpoint (e.g. GET /api/me/apps) would be needed to expose
-#      this cleanly — this gap is noted in the CITT-337 final report.
-#
-#   3. Submission (scans.submitted_by_user_id) — the user submitted a scan.
-#      This IS queryable via GET /api/apps?my_scans=true (api.py:2667).
-#      For developer users, my_scans=true returns apps where the user (or
-#      their team) submitted at least one scan.
-#
-#   `citt mine` uses approach (3) as the best honest proxy available today.
-#   It calls GET /api/apps?my_scans=true&scan_type=full&limit=100 (paginated)
-#   and emits a JSON array with the fields Claude needs to act on each app.
-#
-# BACKEND GAP (for the orchestrator):
-#   A dedicated GET /api/me/apps endpoint that joins app_claims (verified) +
-#   email-domain matching + submission history would give the complete picture.
-#   Until that exists, `citt mine` shows ONLY user-submitted apps (not email-
-#   domain-owned or verified-claimed apps where someone else submitted the scan).
-#
-# OUTPUT CONTRACT:
-#   stdout: JSON array (one object per app), sorted newest-scan-first:
-#     [
-#       {
-#         "package_id":  "com.example.app",
-#         "app_name":    "My App" | null,
-#         "scan_id":     "<uuid>" | null,
-#         "status":      "completed" | "analyzing" | "queued" | "failed",
-#         "overall_score": 82 | null,
-#         "security_score": 85 | null,
-#         "privacy_score": 79 | null,
-#         "recommendation": "trustworthy" | null,
-#         "completed_at": "2026-07-01T12:00:00Z" | null,
-#         "platform":    "android" | "ios"
-#       },
-#       ...
-#     ]
-#   stderr: human summary (count, proxy notice, re-auth hint on 401).
-#
-# SECRET ISOLATION (inherits all invariants from citt-common.sh):
-#   - The token NEVER appears on argv, in stdout, or in bash -x xtrace.
-#   - All token handling flows through 0600 temp files via the shared lib.
-# =============================================================================
+# stdout: JSON array (one object per app), newest-scan-first, with fields
+# package_id, app_name, scan_id, status, overall_score, security_score,
+# privacy_score, recommendation, completed_at, platform.
+# stderr: human summary. Secret isolation inherited from citt-common.sh.
 
 # Guard against double-sourcing.
 [ "${_CITT_CMD_MINE_LOADED:-}" = "1" ] && return 0
@@ -100,7 +53,6 @@ citt_cmd_mine() {
     local page_total page_apps_json page_count
     page_total="$(_json_get "total" "$body")"
 
-    # Use python3 to extract the apps array (jq fallback handled in loop).
     if command -v jq >/dev/null 2>&1; then
       page_apps_json="$(printf '%s' "$body" | jq -c '.apps // []' 2>/dev/null || printf '[]')"
       page_count="$(printf '%s' "$page_apps_json" | jq 'length' 2>/dev/null || printf '0')"
@@ -154,10 +106,7 @@ EOF
   done
 
   # Transform the raw API response into the canonical citt mine output shape.
-  # Each entry gets: package_id, app_name, scan_id (= scans.id from the list),
-  # status, overall_score, security_score, privacy_score, recommendation,
-  # completed_at, platform. scan_id is the id field from the top-level scan row
-  # returned by the list endpoint.
+  # scan_id is the list row's top-level id field.
   local output_json
   if command -v jq >/dev/null 2>&1; then
     output_json="$(printf '%s' "$all_apps_json" | jq -c '

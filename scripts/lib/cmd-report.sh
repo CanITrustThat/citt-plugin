@@ -1,52 +1,26 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-report.sh — citt report subcommand (CITT-336)
-# =============================================================================
+# lib/cmd-report.sh — citt report subcommand.
 # Usage: citt report <package_id> [--scan <scan_id>] [--platform android|ios]
 #
-# Serves the OWNER/RESEARCHER "detailed" (full) report for an app's latest
-# completed FULL scan — or a specific scan when --scan is given.
+# Serves the OWNER/RESEARCHER detailed (full) report for an app's latest
+# completed FULL scan (markdown), or a specific scan via --scan.
 #
-# PRIMARY endpoint (verified src/api.py:3293 `get_report`):
-#   GET /reports/{package_id}.md?report_type=detailed[&scan_id=<id>][&platform=…]
-#   - Auth via get_current_user (the skill token works).
-#   - report_type=detailed → require_user; owner/admin gated for private scans;
-#     returns the DETAILED report as MARKDOWN (media_type text/markdown), NOT JSON.
-#   - Without scan_id it auto-resolves the latest completed FULL scan (custom
-#     scans never shadow it).
-#   - Non-owner → 403 (JSON detail "Not authorized…"). Locked → 403 JSON
-#     {"detail":…,"unlock_required":true}. 404 if no completed scan / not found.
+# PRIMARY: GET /reports/{pkg}.md?report_type=detailed[&scan_id][&platform].
+# Returns markdown, not JSON. 403 = not authorized (or locked, see the
+# unlock_required flag); 404 = no completed scan. The endpoint is PACKAGE-KEYED,
+# so a bare scan_id as the main arg is rejected with a hint.
 #
-# This endpoint is PACKAGE-KEYED. When the caller passes a bare scan_id as the
-# main arg (UUID-like), we still need its package_id — which cannot be derived
-# from a scan_id alone — so the supported form is  <package_id> [--scan <id>].
-# A UUID-like main arg is rejected with a clear hint to use that form.
+# SECONDARY: for a scan_type='custom' scan the detailed endpoint 404s; when a
+# scan_id was given we fall back to GET /api/scan/{id}/result (custom JSON).
 #
-# SECONDARY (custom scans): when the target scan is scan_type='custom' the
-# detailed endpoint 404s (no scorecard). If a scan_id was supplied we then try
-# GET /api/scan/{scan_id}/result (custom-scan JSON) as a nice-to-have fallback.
-#
-# Output contract:
-#   - The detailed report (markdown) → stdout (Claude reads markdown fine).
-#   - Human summary (package / scan_id / hint) → stderr.
-#
-# SECRET ISOLATION (inherits all invariants from citt-common.sh):
-#   - The token NEVER appears on argv, stdout, xtrace, or any log path.
-#   - All token handling flows through 0600 temp files via the shared lib.
-#
-# Owner-mismatch / locked / insufficient tier / not found → clean NO-LEAK
-# message + nonzero exit. Raw error bodies that might carry sensitive
-# information are NEVER dumped; only a sanitized summary is printed.
-# =============================================================================
+# stdout: report markdown / custom JSON. stderr: human summary. Error bodies are
+# never dumped. Secret isolation inherited from citt-common.sh.
 
 # Export the response-file path so any python helper subshell can read it.
 export _CITT_RESP_FILE
 
-# ---------------------------------------------------------------------------
-# _is_scan_id: return 0 if the argument looks like a UUID / scan-id.
-# Matches the UUID-4 pattern (8-4-4-4-12 hex) or a bare 32+ char hex token.
-# A package_id always contains a dot, so it never matches.
-# ---------------------------------------------------------------------------
+# _is_scan_id: return 0 if the arg looks like a UUID / scan-id (UUID-4 or a bare
+# 32+ char hex token). A package_id always contains a dot, so it never matches.
 _is_scan_id() {
   local arg="$1"
   if printf '%s' "$arg" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
@@ -58,11 +32,8 @@ _is_scan_id() {
   return 1
 }
 
-# ---------------------------------------------------------------------------
 # _urlenc_qs_val: minimal URL-encoding for a query-string value (scan_id /
-# platform). These are [0-9a-zA-Z._-] in practice, but encode defensively so a
-# crafted value can never break out of the query string.
-# ---------------------------------------------------------------------------
+# platform), so a crafted value can never break out of the query string.
 _urlenc_qs_val() {
   local s="$1" out="" c i
   for (( i=0; i<${#s}; i++ )); do
@@ -75,11 +46,8 @@ _urlenc_qs_val() {
   printf '%s' "$out"
 }
 
-# ---------------------------------------------------------------------------
-# _fetch_custom_result: SECONDARY fallback. Fetch GET /api/scan/{id}/result
-# (custom-scan JSON) and, if 200, emit the JSON to stdout + a summary to
-# stderr. Returns 0 on success (report served), non-zero otherwise.
-# ---------------------------------------------------------------------------
+# _fetch_custom_result: SECONDARY fallback. Fetch GET /api/scan/{id}/result;
+# on 200 emit the JSON + summary and return 0, else return non-zero.
 _fetch_custom_result() {
   local scan_id="$1" code body
   code="$(_curl_auth_get "/api/scan/${scan_id}/result")"
@@ -92,9 +60,7 @@ _fetch_custom_result() {
   return 1
 }
 
-# ---------------------------------------------------------------------------
 # citt_cmd_report: main entry point (called by the citt dispatcher).
-# ---------------------------------------------------------------------------
 citt_cmd_report() {
   local pkg="" scan_id="" platform=""
 
@@ -154,8 +120,7 @@ H
     exit 1
   fi
 
-  # The detailed report endpoint is PACKAGE-KEYED. A bare scan_id as the main
-  # arg cannot be used directly — guide the caller to the package + --scan form.
+  # PACKAGE-KEYED endpoint: reject a bare scan_id as the main arg with a hint.
   if [ -z "$scan_id" ] && _is_scan_id "$pkg"; then
     printf 'citt report: that looks like a scan_id. The detailed report is keyed by package.\n' >&2
     printf '  Use:  citt report <package_id> --scan %s\n' "$pkg" >&2
@@ -194,8 +159,8 @@ H
       _reauth_hint   # exits non-zero
       ;;
     403)
-      # Distinguish the "locked / unlock_required" case from a plain
-      # ownership/authorization denial — WITHOUT dumping the raw body.
+      # Distinguish locked (unlock_required) from a plain auth denial, without
+      # dumping the raw body.
       if printf '%s' "$body" | grep -q '"unlock_required"[[:space:]]*:[[:space:]]*true'; then
         emit_err "citt report: this report is locked for '${pkg}'. Unlock it in the CITT app, or use an owner/admin token."
       else
@@ -204,9 +169,8 @@ H
       exit 1
       ;;
     404)
-      # No detailed report for a FULL scan. If a scan_id was supplied it MIGHT
-      # be a custom scan (which carries no scorecard / detailed report) — try
-      # the custom-result JSON as a nice-to-have fallback before erroring.
+      # No detailed report. If a scan_id was given it might be a custom scan —
+      # try the custom-result JSON fallback before erroring.
       if [ -n "$scan_id" ]; then
         if _fetch_custom_result "$scan_id"; then
           exit 0

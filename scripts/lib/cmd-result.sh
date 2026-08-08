@@ -1,33 +1,14 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-result.sh — citt result subcommand (CITT-C2)
-# =============================================================================
+# lib/cmd-result.sh — citt result subcommand.
 # Usage: citt result <scan_id>
 #
-# Fetches a CUSTOM-scan result for a given scan_id.
+# Fetches a CUSTOM-scan result via GET /api/scan/{scan_id}/result:
+#   200 → JSON {scan_id, package_id, prompt, status, result} → stdout.
+#   404 → not ready yet (still processing / no such scan) → "try again" hint.
+#   403 → not authorized.  401 → re-auth hint.
 #
-# Endpoint (mirrors the SECONDARY custom-result fetch in cmd-report.sh's
-# _fetch_custom_result — src/api.py custom-scan result, api.py:6703):
-#   GET /api/scan/{scan_id}/result
-#   - Auth via get_current_user (the skill token works).
-#   - 200 → JSON {scan_id, package_id, prompt, status:"completed", result:<…>}.
-#   - 404 → the result is not ready yet (custom scan still processing / no such
-#     scan). We surface this as a friendly "not ready — try again" hint.
-#   - 403 → the caller is not authorized to view this scan.
-#   - 401 → token expired/invalid → re-auth hint.
-#
-# Output contract:
-#   - The result JSON → stdout (emit_json; the Claude tool output channel).
-#   - Human summary → stderr.
-#
-# SECRET ISOLATION (inherits all invariants from citt-common.sh):
-#   - The token NEVER appears on argv, stdout, or `bash -x` xtrace.
-#   - All token handling flows through 0600 temp files via the shared lib.
-#
-# Not-ready / not-authorized / not-found / unreachable → clean NO-LEAK message
-# + nonzero exit. Raw error bodies that might carry sensitive information are
-# NEVER dumped; only a sanitized summary is printed.
-# =============================================================================
+# stderr: human summary. Error bodies are never dumped. Secret isolation
+# inherited from citt-common.sh.
 
 # Guard against double-sourcing.
 [ "${_CITT_CMD_RESULT_LOADED:-}" = "1" ] && return 0
@@ -36,12 +17,9 @@ _CITT_CMD_RESULT_LOADED=1
 # Export the response-file path so any helper subshell can read it.
 export _CITT_RESP_FILE
 
-# ---------------------------------------------------------------------------
-# _result_urlenc: minimal URL-encoding for the scan_id path segment. In
-# practice a scan_id is UUID/hex ([0-9a-zA-Z._-]), but encode defensively so a
-# crafted value can never break out of the path. Mirrors cmd-report.sh's
-# _urlenc_qs_val (kept local so this module does not depend on it).
-# ---------------------------------------------------------------------------
+# _result_urlenc: minimal URL-encoding for the scan_id path segment, so a
+# crafted value can never break out of the path. Kept local (mirrors
+# cmd-report.sh's _urlenc_qs_val) to avoid a cross-module dependency.
 _result_urlenc() {
   local s="$1" out="" c i
   for (( i=0; i<${#s}; i++ )); do
@@ -54,10 +32,7 @@ _result_urlenc() {
   printf '%s' "$out"
 }
 
-# ---------------------------------------------------------------------------
-# citt_cmd_result: main entry point (called by the citt dispatcher — glue is a
-# separate ticket; today it is exercised via a direct-source runner).
-# ---------------------------------------------------------------------------
+# citt_cmd_result: main entry point (called by the citt dispatcher).
 citt_cmd_result() {
   local scan_id=""
 

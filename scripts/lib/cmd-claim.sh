@@ -1,48 +1,19 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-claim.sh — `citt claim` subcommand (CITT-339)
-# =============================================================================
-# App ownership claim via store-email OTP verification. Sourced by the `citt`
-# dispatcher which has already sourced lib/citt-common.sh.
+# lib/cmd-claim.sh — `citt claim` subcommand. Sourced by the `citt` dispatcher
+# (which has already sourced lib/citt-common.sh).
 #
-# Usage (routed by the dispatcher):
 #   citt claim <pkg>           — initiate OTP claim + prompt for code on stdin
 #   citt claim --status <pkg>  — read-only claim status
 #
-# Flow for `citt claim <pkg>`:
-#   1. _prepare_auth (exits on missing/expired token)
-#   2. POST /api/apps/{pkg}/claim  → server emails an OTP to the store-listed
-#      contact; print ONE clear notice to stderr that the email has been sent.
-#   3. Read the OTP code from stdin (interactive or piped).
-#   4. POST /api/apps/{pkg}/claim/verify  body: {"code": "<otp>"}
-#      (verify field name from ClaimVerifyRequest in api.py — it is "code")
-#   5. On 200 emit {"status":"verified"} JSON to stdout + summary to stderr.
-#      On error emit a clean NO-LEAK message to stderr + exit non-zero.
-#
-# Flow for `citt claim --status <pkg>`:
-#   1. _prepare_auth
-#   2. GET /api/apps/{pkg}/claim-status
-#   3. Emit ClaimStatusResponse JSON to stdout; summary to stderr.
-#
-# SECRET ISOLATION (hard invariants — mirrors citt-common.sh):
-#   - The auth token NEVER in stdout / argv / bash -x xtrace / logs.
-#   - All token handling goes through citt-common.sh's 0600 curl --config file.
-#   - The OTP code is a user-entered value (not the auth token), but we still
-#     avoid writing it to argv; it is read from stdin into a 0600 temp file and
-#     POSTed via --data @file (never on curl argv or printf/echo of the code).
-#   - Host is HARDCODED in citt-common.sh. CITT_API_OVERRIDE honored ONLY when
-#     CITT_TEST_MODE=1 (the seam is already active via the common lib).
-#   - Error bodies are parsed for a single scalar; raw responses are NEVER echoed.
-# =============================================================================
+# SECRET ISOLATION (mirrors citt-common.sh): the OTP is read from stdin into a
+# 0600 temp file and POSTed via --data @file — never on argv or via echo.
 
 # Guard against double-sourcing.
 [ "${_CITT_CMD_CLAIM_LOADED:-}" = "1" ] && return 0
 _CITT_CMD_CLAIM_LOADED=1
 
-# ---------------------------------------------------------------------------
-# _claim_err: print a clean human error to stderr and exit non-zero.
-# Never dumps raw API response bodies. $1 = message, $2 = optional HTTP code.
-# ---------------------------------------------------------------------------
+# _claim_err: clean human error to stderr + exit. Never dumps raw response
+# bodies. $1 = message, $2 = optional HTTP code.
 _claim_err() {
   local msg="$1" code="${2:-}"
   if [ -n "$code" ] && [ "$code" != "" ]; then
@@ -53,22 +24,15 @@ _claim_err() {
   exit 1
 }
 
-# ---------------------------------------------------------------------------
-# _claim_parse_detail: safely extract the "detail" scalar from the 0600 resp
-# file for clean error messages. Never echoes the full raw body.
-# ---------------------------------------------------------------------------
+# _claim_parse_detail: extract the "detail" scalar from the resp file for clean
+# error messages. Never echoes the full raw body.
 _claim_parse_detail() {
   local body; body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
   _json_get "detail" "$body"
 }
 
-# ---------------------------------------------------------------------------
 # citt_cmd_claim — main entry point called by the dispatcher.
-# ---------------------------------------------------------------------------
 citt_cmd_claim() {
-  # ---------------------------------------------------------------------------
-  # Argument parsing
-  # ---------------------------------------------------------------------------
   local pkg="" do_status=0
 
   # Quick flag check without getopts (avoids portability issues).
@@ -112,14 +76,10 @@ USAGE
     exit 1
   fi
 
-  # ---------------------------------------------------------------------------
   # Auth: load token + build curl config. Exits with re-auth hint if missing.
-  # ---------------------------------------------------------------------------
   _prepare_auth
 
-  # ---------------------------------------------------------------------------
   # Subcommand: --status
-  # ---------------------------------------------------------------------------
   if [ "$do_status" = "1" ]; then
     local code body
     code="$(_curl_auth_get "/api/apps/${pkg}/claim-status")"
@@ -156,26 +116,21 @@ USAGE
     return 0
   fi
 
-  # ---------------------------------------------------------------------------
-  # Subcommand: initiate claim
-  # ---------------------------------------------------------------------------
+  # Subcommand: initiate claim.
 
-  # Step 1: POST /api/apps/{pkg}/claim to trigger the OTP email.
+  # Step 1: POST /api/apps/{pkg}/claim to trigger the OTP email. The endpoint
+  # needs no body; _CITT_BODY_FILE is the shared empty 0600 temp.
   local init_code
   init_code="$(_curl_auth_post "/api/apps/${pkg}/claim" "${_CITT_BODY_FILE}")"
-  # Note: the claim endpoint requires no request body (POST with empty body is OK).
-  # We pass _CITT_BODY_FILE which is an empty 0600 temp (it was created by citt-common.sh).
-  # The server ignores the body; we just need to trigger the POST.
 
   case "$init_code" in
     200)
-      # Parse the masked email and expiry from the response.
       local init_body masked expires_min
       init_body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
       masked="$(_json_get "masked_email" "$init_body")"
       expires_min="$(_json_get "expires_in_minutes" "$init_body")"
 
-      # ONE clear notice to stderr that the OTP email has been sent.
+      # One clear notice to stderr that the OTP email has been sent.
       if [ -n "$masked" ]; then
         emit_err "Verification email sent to ${masked} — check your inbox for the OTP code."
       else
@@ -212,21 +167,16 @@ USAGE
       ;;
   esac
 
-  # Step 2: Read the OTP code from stdin into a 0600 temp file.
-  # We do NOT use `read -p` (prints to stdout, which is the model's output channel).
-  # Instead, print the prompt to stderr and read from stdin.
+  # Step 2: Read the OTP from stdin into a 0600 temp file. Prompt goes to stderr
+  # (not `read -p`, which writes to stdout — the model's output channel).
   emit_err "Enter the verification code from the email:"
 
-  # Create a fresh 0600 temp for the OTP so it never appears on argv.
   local otp_file
   otp_file="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_otp.XXXXXX")"
 
-  # Read one line from stdin DIRECTLY into the 0600 temp file — no intermediary
-  # shell variable is ever set, so bash -x never traces the OTP value. (CITT-347 F2)
-  # `head -n1` reads exactly one line and writes it to the file without tracing
-  # the content.  Then `sed` strips leading/trailing whitespace in-place.
+  # Read one line straight into the 0600 file via head -n1 — no shell variable,
+  # so bash -x never traces the OTP. Then strip whitespace in-place.
   ( umask 077; head -n1 >"$otp_file" ) <&0 || true
-  # Strip leading/trailing whitespace in the file (in-place, no variable).
   sed -i '' 's/^[[:space:]]*//;s/[[:space:]]*$//' "$otp_file" 2>/dev/null \
     || sed -i 's/^[[:space:]]*//;s/[[:space:]]*$//' "$otp_file" 2>/dev/null \
     || true
@@ -237,23 +187,19 @@ USAGE
   fi
 
   # Step 3: Build the verify body file. The OTP flows from 0600 file → 0600 body
-  # file via `jq --rawfile` (reads from file, never on argv) or the no-jq
-  # fallback which assembles the JSON via printf+cat (OTP bytes come from cat,
-  # not from a shell variable or argv). (CITT-347 F2)
+  # file via jq --rawfile (or a printf+cat no-jq fallback), never through a shell
+  # variable or argv.
   local verify_body
   verify_body="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_vbody.XXXXXX")"
-  # Register cleanup for both OTP temp and verify body temp using captured paths
-  # in the trap string (not function references that would trigger unbound-var errors).
+  # Capture paths into the trap string (not function refs, which would trip
+  # unbound-var errors) to clean up both temps.
   local _otp_f="$otp_file" _vbody_f="$verify_body"
   trap "rm -f '${_otp_f}' '${_vbody_f}' 2>/dev/null || true; _citt_common_cleanup" EXIT
 
   ( umask 077
     if command -v jq >/dev/null 2>&1; then
-      # --rawfile reads the OTP from the 0600 file directly — never on argv.
       jq -nc --rawfile c "$otp_file" '{"code":($c|rtrimstr("\n"))}' >"$verify_body"
     else
-      # No-jq fallback: assemble JSON via printf (static parts) + cat (OTP bytes
-      # from file) — the OTP never touches a shell variable or printf's arg list.
       { printf '{"code":"'; cat "$otp_file"; printf '"}'; } >"$verify_body"
     fi
   )

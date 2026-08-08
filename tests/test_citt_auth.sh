@@ -358,6 +358,20 @@ test_keyring_roundtrip() {
     pass "keyring: no fallback file written (token went to keyring)"
   fi
 
+  # The token stored in the keyring must byte-match the minted token. This is the
+  # regression guard for the interactive-retype bug where `security -w` stored an
+  # empty value and every later authenticated request failed.
+  local got
+  case "$backend" in
+    security)    got="$(security find-generic-password -s "$KR_SERVICE" -a "$KR_ACCOUNT" -w 2>/dev/null | tr -d '\n')" ;;
+    secret-tool) got="$(secret-tool lookup service "$KR_SERVICE" account "$KR_ACCOUNT" 2>/dev/null | tr -d '\n')" ;;
+  esac
+  if [ "$got" = "$MOCK_TOKEN" ]; then
+    pass "keyring: stored value byte-matches the minted token"
+  else
+    fail "keyring: stored value does not match minted token (got ${#got} bytes)"
+  fi
+
   # Second run must short-circuit purely on keyring presence (dead endpoint).
   local out2; out2="$(mktemp "$WORKROOT/out.XXXXXX")"
   CLAUDE_PLUGIN_DATA="$tokdir" \

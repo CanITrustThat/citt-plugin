@@ -1,45 +1,18 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-results.sh — citt results <pkg>  (CITT-335)
-# =============================================================================
-# Public subcommand: fetch the richer PUBLIC scorecard data for a package so
-# Claude can reason over it (verdict, summaries, top issues, scores, scan
-# history).  No authentication required — uses _curl_pub_get.
-# Even if a token is stored it NEVER leaks to stdout/argv/xtrace.
+# lib/cmd-results.sh — citt results <package_id>
 #
-# Usage (via dispatcher):   citt results <package_id>
-# Direct source + call:     . lib/cmd-results.sh; citt_cmd_results com.example.app
+# Public subcommand: fetch the richer PUBLIC scorecard data (verdict, summaries,
+# top issues, scores, scan history) so Claude can reason over it. No auth — uses
+# _curl_pub_get; a stored token never leaks to stdout/argv/xtrace.
 #
-# Two API calls (both public, no token):
-#   GET /api/status/{pkg}         — primary: StatusResponse (api.py:637,1970)
-#   GET /api/apps/{pkg}/scans     — secondary: ScanListResponse (api.py:6641)
-#                                   (public scans only for unauthenticated callers)
+# Two public API calls:
+#   GET /api/status/{pkg}       — primary: StatusResponse
+#   GET /api/apps/{pkg}/scans   — secondary: ScanListResponse (public scans only)
 #
-# Emits compact JSON to stdout for Claude containing ONLY real fields from
-# StatusResponse (verified at api.py:637) and ScanListResponse (api.py:5842):
-#   package_id, app_name, status, overall_score, letter_grade,
-#   security_score, privacy_score, recommendation, what_it_means_for_you,
-#   quick_verdict {best_for, avoid_if}, top_security_issues, top_privacy_issues,
-#   findings_by_category [{category, critical, high, medium, low}],
-#   total_findings_count, completed_at, platform, store_url,
-#   stamps [{stamp_id, state, ...}], red_flags [{...}],
-#   scans [{scan_id, scan_number, status, overall_score, version, completed_at}]
-#
-# Gating note (api.py:2082-2110): raw per-severity counts + raw findings[] are
-# OWNER-ONLY for completed scans.  Public callers get total_findings_count and
-# findings_by_category.  This command surfaces exactly what the API returns
-# without requesting auth, so it faithfully represents what an anonymous reader
-# can see.
-#
-# Clean states:
-#   completed  — full result JSON with verdict + issues
-#   pending    — partial JSON with status + progress (no verdict yet)
-#   not-found  — exits non-zero with {"error":"not_found",...}
-#
-# Dispatcher contract (scripts/citt):
-#   Sources lib/citt-common.sh first, then sources this file and calls
-#   citt_cmd_results "$@".
-# =============================================================================
+# Emits compact JSON to stdout containing only public fields. Raw per-severity
+# counts + findings[] are owner-only, so public callers get total_findings_count
+# and findings_by_category — this surfaces exactly what an anonymous reader sees.
+# not-found → exits non-zero with {"error":"not_found",...}.
 
 citt_cmd_results() {
   local pkg="${1:-}"
@@ -56,9 +29,7 @@ citt_cmd_results() {
     enc="$pkg"
   fi
 
-  # -------------------------------------------------------------------------
   # 1. Primary call: GET /api/status/{pkg}
-  # -------------------------------------------------------------------------
   local code
   code="$(_curl_pub_get "/api/status/${enc}")"
 
@@ -88,15 +59,12 @@ citt_cmd_results() {
       ;;
   esac
 
-  # Capture the primary body before making the second call (which overwrites
-  # _CITT_RESP_FILE).
+  # Capture the primary body before the second call overwrites _CITT_RESP_FILE.
   local primary_body
   primary_body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
 
-  # -------------------------------------------------------------------------
-  # 2. Secondary call: GET /api/apps/{pkg}/scans  (scan history)
-  #    Non-fatal — if this fails we emit an empty list.
-  # -------------------------------------------------------------------------
+  # 2. Secondary call: GET /api/apps/{pkg}/scans (scan history). Non-fatal —
+  #    on failure we emit an empty list.
   local scans_body=""
   local scans_code
   scans_code="$(_curl_pub_get "/api/apps/${enc}/scans")"
@@ -104,9 +72,7 @@ citt_cmd_results() {
     scans_body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
   fi
 
-  # -------------------------------------------------------------------------
   # 3. Assemble the result JSON.
-  # -------------------------------------------------------------------------
   if command -v jq >/dev/null 2>&1; then
     # jq path — full structured output.
     # letter_grade: A=90+, B=80-89, C=70-79, D=55-69, F=<55 (null when no score).

@@ -1,39 +1,12 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-scan.sh — `citt scan` subcommand (CITT-C1)
-# =============================================================================
+# lib/cmd-scan.sh — `citt scan` subcommand.
 # Usage: citt scan "<prompt>" <app> [--platform android|ios]
-#
-# Runs a CUSTOM-PROMPT scan: the caller supplies a free-form analysis question
-# (<prompt>, the FIRST positional) about an app (<app>, the SECOND positional —
-# a package_id like com.foo.bar or a store URL). We POST a custom scan request
-# to /api/submit and print the returned scan_id.
-#
-# Request body (JSON, built with jq into a 0600 temp file):
-#   {"package_id":"<app>","platform":"<p>","scan_type":"custom",
-#    "prompt":"<prompt>","is_private":true}
-# The "platform" key is omitted entirely when --platform is not supplied (the
-# backend then applies its own default).
-#
-# On 200 OR 202: parse `scan_id` from the response, print it to stdout, and
-# print a follow-up hint to stderr:  → citt result <scan_id>
-#
-# SECRET / SENSITIVE-DATA ISOLATION (inherits all invariants from
-# citt-common.sh — QA red-teams this):
-#   - The auth token NEVER appears on argv, stdout, or in a bash -x xtrace. It
-#     is handled ONLY by the shared helpers (_prepare_auth / _curl_auth_post),
-#     which load it into a 0600 curl-config file.
-#   - The PROMPT NEVER appears on a curl argv: it goes into the JSON body FILE
-#     (a 0600 temp file, cleaned up on EXIT), posted via `--data @<file>` by the
-#     shared _curl_auth_post — never as an inline -d string or in a URL.
-#   - Raw error bodies are NEVER dumped — only sanitized messages.
-# =============================================================================
+# POSTs a custom-prompt scan to /api/submit and prints the returned scan_id.
+# Secret isolation: token and prompt never hit argv/stdout/xtrace — token via
+# shared 0600 curl-config helpers, prompt via a 0600 JSON body file.
 
-# ---------------------------------------------------------------------------
-# _scan_looks_like_app: return 0 if the arg is an unambiguous package_id
-# (contains a dot) or a store URL (http/https). v1 requires an id/URL — a bare
-# app name is rejected (no fuzzy name resolution).
-# ---------------------------------------------------------------------------
+# _scan_looks_like_app: return 0 if the arg is a package_id (has a dot) or a
+# store URL. A bare app name is rejected (no fuzzy name resolution).
 _scan_looks_like_app() {
   case "$1" in
     http://*|https://*) return 0 ;;
@@ -44,17 +17,12 @@ _scan_looks_like_app() {
   esac
 }
 
-# ---------------------------------------------------------------------------
-# citt_cmd_scan: main entry point (called by the citt dispatcher, or directly).
-# $@ = everything after "scan" on the citt command line.
-# ---------------------------------------------------------------------------
+# citt_cmd_scan: entry point. $@ = args after "scan".
 citt_cmd_scan() {
   local prompt="" app="" platform="" positional_count=0
 
-  # -------- argument parsing -------------------------------------------------
-  # First positional = prompt, second positional = app. --platform may appear
-  # anywhere. Options with an attached value (--platform=x) or a following value
-  # (--platform x) are both supported.
+  # First positional = prompt, second = app. --platform anywhere, as
+  # --platform x or --platform=x.
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --platform)
@@ -110,8 +78,7 @@ H
     shift 2>/dev/null || break
   done
 
-  # -------- CLIENT-SIDE guards (before any network call) ---------------------
-  # Prompt: required, non-empty, ≤ 5000 chars.
+  # Client-side guards. Prompt: required, non-empty, <= 5000 chars.
   if [ -z "$prompt" ]; then
     printf 'citt scan: a prompt is required — pass your analysis question as the first argument.\n' >&2
     printf '  Usage: citt scan "<prompt>" <package_id|store_url> [--platform android|ios]\n' >&2
@@ -122,7 +89,7 @@ H
     exit 1
   fi
 
-  # App: required, must look like a package_id or store URL (no fuzzy names).
+  # App: required, must look like a package_id or store URL.
   if [ -z "$app" ]; then
     printf 'citt scan: an app is required — pass a package_id (com.foo.bar) or a store URL.\n' >&2
     exit 1
@@ -133,15 +100,12 @@ H
     exit 1
   fi
 
-  # -------- auth (exits with re-auth hint if no token) -----------------------
+  # Auth (exits with re-auth hint if no token).
   _prepare_auth
 
-  # -------- build the JSON body into a 0600 temp file ------------------------
-  # The prompt lives in a FILE, never on a curl argv. Reuse the shared lib's
-  # body file (created 0600 at source time, inside _CITT_TMPDIR). Do NOT install
-  # a second EXIT trap: bash keeps only one, so overriding it here would orphan
-  # the lib's tmpdir — which holds the Bearer-token curl config — on disk. The
-  # lib's own _citt_common_cleanup EXIT trap removes this file with the tmpdir.
+  # Build the JSON body into the shared lib's 0600 body file (prompt never on
+  # argv). Do NOT install a second EXIT trap — bash keeps only one, so it would
+  # orphan the lib's tmpdir (which holds the Bearer-token curl config) on disk.
   local bodyf="${_CITT_BODY_FILE}"
 
   if command -v jq >/dev/null 2>&1; then
@@ -160,8 +124,7 @@ H
         >"$bodyf"
     fi
   else
-    # No jq: build JSON with a python fallback (still into the 0600 file; the
-    # prompt is passed via env, never on argv).
+    # No jq: python fallback (prompt passed via env, never on argv).
     if [ -n "$platform" ]; then
       SCAN_PKG="$app" SCAN_PLATFORM="$platform" SCAN_PROMPT="$prompt" python3 -c '
 import json, os
@@ -188,7 +151,7 @@ print(json.dumps(obj))
     fi
   fi
 
-  # -------- POST the custom scan ---------------------------------------------
+  # POST the custom scan.
   local code body scan_id
   code="$(_curl_auth_post "/api/submit" "$bodyf")"
   body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
@@ -200,9 +163,8 @@ print(json.dumps(obj))
         emit_err "citt scan: the scan was accepted but no scan_id was returned."
         exit 1
       fi
-      # scan_id → stdout (the machine-readable channel).
+      # scan_id -> stdout; follow-up hint -> stderr.
       printf '%s\n' "$scan_id"
-      # Follow-up hint → stderr.
       printf '\xe2\x86\x92 citt result %s\n' "$scan_id" >&2
       exit 0
       ;;

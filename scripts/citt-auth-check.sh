@@ -1,13 +1,8 @@
 #!/usr/bin/env bash
-# =============================================================================
 # citt-auth-check.sh — fast local auth probe for the SessionStart nudge.
-# =============================================================================
-# Exits 0 if a CITT token is stored (keyring OR 0600 file), 1 otherwise.
-# No network, no stdout, no token bytes read into a variable. Keeps the token
-# store coordinates in sync with lib/citt-common.sh (_CITT_KR_SERVICE /
-# _CITT_KR_ACCOUNT / _CITT_TOKEN_FILE). Used only to decide whether to tell the
-# user to run /citt:auth; it never touches the token contents.
-# =============================================================================
+# Exits 0 if a CITT token is stored (keyring or 0600 file), 1 otherwise.
+# No network, no stdout, never reads token bytes. Store coordinates must stay in
+# sync with lib/citt-common.sh (_CITT_KR_SERVICE/_CITT_KR_ACCOUNT/_CITT_TOKEN_FILE).
 set -euo pipefail
 
 TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"

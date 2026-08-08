@@ -1,27 +1,9 @@
 #!/usr/bin/env bash
-# =============================================================================
-# lib/cmd-status.sh — citt status <pkg>  (CITT-335)
-# =============================================================================
-# Public subcommand: fetch concise scan status for a package.
-# No authentication required — uses _curl_pub_get from citt-common.sh.
-# Even if a token is stored it NEVER leaks to stdout/argv/xtrace.
-#
-# Usage (via dispatcher):   citt status <package_id>
-# Direct source + call:     . lib/cmd-status.sh; citt_cmd_status com.example.app
-#
-# Emits compact JSON to stdout (the Claude tool output channel) with:
-#   package_id, status, overall_score, letter_grade, completed_at, platform,
-#   severity counts (total/critical/high/medium/low/info), progress_message
-#
-# Clean states:
-#   completed   — full result JSON with score + grade + severity counts
-#   pending     — status + progress message; score fields null
-#   not-found   — exits non-zero with {"error":"not_found",...} on stdout
-#
-# Dispatcher contract (scripts/citt):
-#   Sources lib/citt-common.sh first, then sources this file and calls
-#   citt_cmd_status "$@".
-# =============================================================================
+# lib/cmd-status.sh — citt status <package_id>. Public subcommand, no auth
+# (uses _curl_pub_get; any stored token never leaks to stdout/argv/xtrace).
+# Emits compact status JSON to stdout (package_id, status, overall_score,
+# letter_grade, completed_at, platform, severity counts, progress_message);
+# not-found exits non-zero with {"error":"not_found",...}.
 
 citt_cmd_status() {
   local pkg="${1:-}"
@@ -30,8 +12,7 @@ citt_cmd_status() {
     exit 2
   fi
 
-  # URL-encode the package id (package ids are [A-Za-z0-9._-] so this is safe
-  # even without python3, but be defensive).
+  # URL-encode the package id (defensive; ids are [A-Za-z0-9._-]).
   local enc
   if command -v python3 >/dev/null 2>&1; then
     enc="$(python3 -c 'import sys,urllib.parse; sys.stdout.write(urllib.parse.quote(sys.argv[1], safe=""))' "$pkg" 2>/dev/null)" || enc="$pkg"
@@ -39,7 +20,7 @@ citt_cmd_status() {
     enc="$pkg"
   fi
 
-  # Public GET — no token sent; _curl_pub_get writes body to _CITT_RESP_FILE.
+  # Public GET; _curl_pub_get writes body to _CITT_RESP_FILE.
   local code
   code="$(_curl_pub_get "/api/status/${enc}")"
 
@@ -69,14 +50,11 @@ citt_cmd_status() {
       ;;
   esac
 
-  # -------------------------------------------------------------------------
-  # Parse the StatusResponse JSON. All fields are real (verified at api.py:637).
-  # -------------------------------------------------------------------------
+  # Parse the StatusResponse JSON.
   local body
   body="$(cat "${_CITT_RESP_FILE}" 2>/dev/null || true)"
 
   if command -v jq >/dev/null 2>&1; then
-    # jq path: build compact status summary.
     # letter_grade: A=90+, B=80-89, C=70-79, D=55-69, F=<55 (null when no score).
     local out
     out="$(printf '%s' "$body" | jq -c '
@@ -113,7 +91,7 @@ citt_cmd_status() {
     fi
     emit_json "$out"
   else
-    # Fallback: extract scalars with _json_get (from citt-common.sh).
+    # Fallback: extract scalars with _json_get.
     local status overall_score completed_at platform progress_message
     local total_findings critical_findings high_findings medium_findings low_findings info_findings
     local recommendation current_stage queue_position letter_grade
@@ -133,7 +111,7 @@ citt_cmd_status() {
     current_stage="$(_json_get current_stage "$body")"
     queue_position="$(_json_get queue_position "$body")"
 
-    # Compute letter grade from numeric score.
+    # Letter grade from numeric score.
     letter_grade="null"
     if [ -n "$overall_score" ] && [ "$overall_score" -eq "$overall_score" ] 2>/dev/null; then
       if   [ "$overall_score" -ge 90 ]; then letter_grade='"A"'
@@ -144,7 +122,7 @@ citt_cmd_status() {
       fi
     fi
 
-    # Helper to emit a JSON scalar (number or quoted string or null).
+    # Emit a JSON scalar (number, quoted string, or null).
     _jval() {  # $1 = raw value
       local v="$1"
       if [ -z "$v" ]; then
