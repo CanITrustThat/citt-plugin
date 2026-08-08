@@ -23,6 +23,7 @@ Subcommands:
   logout    Remove stored authentication token
 
   submit    Submit one or more apps (package IDs, store URLs, or a CSV) for a full analysis
+  rescan    Force a fresh full scan of an existing app (never reuses a cached scan)
   scan      Run a fast custom-prompt scan: you write the question, get a targeted answer
   result    Fetch the result of a custom-prompt scan by its scan_id
   status    Check scan status and score for an app
@@ -32,7 +33,7 @@ Subcommands:
   search    Search public apps by name or package ID
   claim     Claim ownership of an app via store-email verification
 
-Run 'citt auth' first to authenticate (submit, scan, result, report, mine, and claim need it).
+Run 'citt auth' first to authenticate (submit, rescan, scan, result, report, mine, and claim need it).
 
 Custom scans (scan/result) are much faster than a full scan and are the preferred way to
 answer a specific question about an app ("does it leak location?", "which analytics SDKs?").
@@ -122,7 +123,7 @@ case "$SUBCOMMAND" in
   logout)
     _cmd_logout "$@"
     ;;
-  submit|scan|result|status|results|report|mine|search|claim)
+  submit|rescan|scan|result|status|results|report|mine|search|claim)
     # Sourced from lib/cmd-<name>.sh; stub if that file is missing.
     _cmd_file="${_CITT_SELF_DIR}/lib/cmd-${SUBCOMMAND}.sh"
     if [ -f "$_cmd_file" ]; then

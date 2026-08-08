@@ -21,18 +21,38 @@ _is_readable_file() {
   [ -f "$1" ] && [ -r "$1" ]
 }
 
+# _submit_usage — usage to the given fd (1 for --help, 2 for errors).
+_submit_usage() {
+  local fd="${1:-2}"
+  {
+    printf 'usage: citt submit <package_id|store_url> [<package_id|store_url> ...]\n'
+    printf '       citt submit <path/to/apps.csv>\n'
+    printf '\nExamples:\n'
+    printf '  citt submit com.example.app\n'
+    printf '  citt submit com.a com.b\n'
+    printf '  citt submit https://play.google.com/store/apps/details?id=com.example.app\n'
+    printf '  citt submit apps.csv\n'
+    printf '\nAlready has a completed scan? submit reuses anything scanned in the last\n'
+    printf '90 days. To force a fresh run use: citt rescan <pkg>\n'
+  } >&"$fd"
+}
+
 # citt_cmd_submit — entry point. $@ = args after "submit".
 citt_cmd_submit() {
   if [ "$#" -eq 0 ]; then
-    printf 'usage: citt submit <package_id|store_url> [<package_id|store_url> ...]\n' >&2
-    printf '       citt submit <path/to/apps.csv>\n' >&2
-    printf '\nExamples:\n' >&2
-    printf '  citt submit com.example.app\n' >&2
-    printf '  citt submit com.a com.b\n' >&2
-    printf '  citt submit https://play.google.com/store/apps/details?id=com.example.app\n' >&2
-    printf '  citt submit apps.csv\n' >&2
+    _submit_usage 2
     exit 2
   fi
+
+  # --help anywhere prints usage; a stray -flag errors instead of being submitted
+  # as a bogus package id (guards `citt submit --help` from becoming a submission).
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --help|-h) _submit_usage 1; return 0 ;;
+      -*) emit_err "citt submit: unknown flag: $a"; _submit_usage 2; exit 2 ;;
+    esac
+  done
 
   # Single-argument CSV file path: delegate directly.
   if [ "$#" -eq 1 ] && _is_readable_file "$1"; then

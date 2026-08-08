@@ -30,15 +30,44 @@ the verification URL and code it prints, and wait for them to authorize in the b
 continuing. To sign out, run `citt logout`.
 
 The same actions are also slash commands in Claude Code, one per subcommand: `/citt:auth`,
-`/citt:logout`, `/citt:whoami`, `/citt:scan`, `/citt:submit`, `/citt:result`, `/citt:status`,
-`/citt:results`, `/citt:search`, `/citt:report`, `/citt:mine`, `/citt:claim`. They are thin
-wrappers over the `citt` subcommands documented below — the full behavior of each lives here.
+`/citt:logout`, `/citt:whoami`, `/citt:scan`, `/citt:submit`, `/citt:rescan`, `/citt:result`,
+`/citt:status`, `/citt:results`, `/citt:search`, `/citt:report`, `/citt:mine`, `/citt:claim`.
+They are thin wrappers over the `citt` subcommands documented below — the full behavior of each
+lives here.
 
 ---
 
-## Choosing a scan type: prefer custom for a specific question
+## How to use this CLI (read this first)
 
-Two ways to analyze an app:
+This document is the complete, authoritative reference for every capability. To act, pick the
+right subcommand below and run it — one command, then relay its output.
+
+- Do NOT read the scripts in `scripts/` to figure out what is possible. Everything is here.
+- Do NOT run a subcommand with `--help` to discover behavior, and do NOT probe with throwaway
+  calls. The argument shapes are documented per subcommand below.
+- Each subcommand prints machine-readable JSON (or a summary) to stdout and a human line to
+  stderr, and uses a distinct exit code / HTTP status per outcome — act on those, documented
+  under each command.
+
+### Capability map — pick by intent
+
+| The user wants… | Use | Needs auth |
+|-----------------|-----|-----------|
+| A specific question answered about an app | `citt scan "<question>" <app>` then `citt result <id>` | yes |
+| The full scorecard + letter grade for an app not yet scanned | `citt submit <app>` | yes |
+| FRESH results for an app that already has a recent scan | `citt rescan <app>` | yes |
+| The public scorecard of any already-scanned app | `citt results <pkg>` | no |
+| A quick status/score check | `citt status <pkg>` | no |
+| The full detailed report for an app they own (or any app as researcher) | `citt report <pkg>` | yes |
+| Find an app's package id | `citt search "<name>"` | no |
+| List their own submitted apps | `citt mine` | yes |
+| Prove ownership of an app | `citt claim <pkg>` | yes |
+
+---
+
+## Choosing how to analyze an app
+
+Three ways to analyze, by intent:
 
 - **`citt scan "<prompt>" <app>`** — a fast custom-prompt scan. You write one focused
   question and get a targeted answer. It skips the full 7-stage pipeline, so it returns in
@@ -48,12 +77,18 @@ Two ways to analyze an app:
   answer with `citt result <scan_id>`.
 - **`citt submit <app>`** — a full trust analysis that produces the complete public scorecard,
   scores, and letter grade. Slower (the full pipeline). Use it only when the user actually
-  wants the whole scorecard/grade, not a single answer.
+  wants the whole scorecard/grade, not a single answer. Submit REUSES any scan completed in
+  the last 90 days instead of re-running it.
+- **`citt rescan <app>`** — force a brand-new full scan of an app that already exists. Because
+  `submit` reuses recent scans, rescan is the ONLY way to get fresh results for an app that
+  was already scanned. It always creates a new scan. Who may rescan is enforced server-side
+  (admin: any app; developer: apps they own; Research/custom plan: any app, metered), so just
+  run it and relay the result.
 
-Rule of thumb: if the user asked a question, write a `citt scan` prompt. If they asked for
-"the scorecard", "the grade", or "a full analysis", use `citt submit`. A first-ever scan of an
-app still has to download and decompile it before either can run (iOS decompilation can take a
-few hours); custom is fast primarily on apps already in the corpus.
+Rule of thumb: a question → `citt scan`; "the scorecard/grade/full analysis" of a new app →
+`citt submit`; "re-run it", "refresh", "it's outdated", "scan again" → `citt rescan`. A
+first-ever scan of an app still has to download and decompile it before either can run (iOS
+decompilation can take a few hours); custom is fast primarily on apps already in the corpus.
 
 ---
 
@@ -173,7 +208,80 @@ when some submissions time out (partial summary).
 
 How Claude should use this: relay the ranked summary to the user verbatim. Note which apps
 were skipped as deduplicates. For a deeper look at any app, follow with `citt results
-<package_id>` or `citt report <package_id>`.
+<package_id>` or `citt report <package_id>`. If the user wanted FRESH results for an app that
+was skipped as a recent duplicate, use `citt rescan` instead.
+
+---
+
+### `citt rescan`
+
+Purpose: Force a brand-new full scan of an app that already exists in CITT. Because `submit`
+reuses any scan completed in the last 90 days, rescan is the ONLY way to get fresh results for
+an already-scanned app. It always creates a new scan and runs the full pipeline.
+
+```bash
+citt rescan <package_id> [--platform android|ios] [--private]
+citt rescan --check <package_id> [--platform android|ios]
+```
+
+Examples:
+
+```bash
+citt rescan com.example.app                 # refresh the public scorecard
+citt rescan com.example.app --platform ios  # iOS app
+citt rescan com.example.app --private       # private scan instead of a public refresh
+citt rescan --check com.example.app         # read-only: am I allowed + quota left
+```
+
+HTTP: `POST /api/rescan` (authenticated). `--check` uses `GET
+/api/apps/{package_id}/rescan-eligibility` (read-only, never starts a scan).
+
+Who may rescan is enforced server-side — do NOT pre-judge or refuse on the user's behalf; run
+the command and relay what comes back:
+
+- Admin — any app, unlimited.
+- Developer — apps they own (or can view), against a monthly rescan quota (free 1, developer 4,
+  paid plans unlimited).
+- Research / custom plan — any app, including ones they don't own, metered against their
+  scan-others quota.
+
+Flags: `--platform ios` for iOS apps (default `android`); `--private` creates a private scan
+rather than refreshing the public scorecard (default is a public refresh, `is_private=false`);
+`--check` only probes eligibility.
+
+Response on success (stdout JSON):
+
+```json
+{
+  "scan_id": "<uuid>",
+  "package_id": "com.example.app",
+  "scan_number": 3,
+  "status": "queued",
+  "status_url": "/api/scan-status/<uuid>",
+  "submitted_at": "2026-08-07T12:00:00Z"
+}
+```
+
+`--check` returns `{can_rescan, reason, is_owner, plan_id, rescans_used, rescans_limit,
+upgrade_target}`; `reason` is one of `ok`, `ok_researcher`, `not_authenticated`, `not_owner`,
+`quota_exceeded`, `app_not_found`. A `--check` that reports `can_rescan:false` still exits 0
+(it is a probe, not a failure).
+
+Outcomes and exit behavior:
+
+- 200 — new scan queued. Tell the user it is running and poll `citt status <package_id>` for
+  progress. This is a full scan, so it takes a while (a new binary can be hours; a re-run of an
+  in-corpus app is faster).
+- 401 — token missing/expired: run `citt auth`.
+- 403 — the user's plan cannot rescan this app. Relay the message verbatim (it explains the
+  developer-vs-research distinction); do not retry.
+- 429 — monthly rescan (or scan-others) quota reached. Relay the upgrade hint.
+- 400 — bad request (e.g. invalid package id or platform).
+
+How Claude should use this: when the user says "rescan", "re-run", "refresh", "scan it again",
+or "these results are old", run `citt rescan <package_id>` and relay the queued confirmation,
+then offer to poll `citt status`. Do not fall back to `citt submit` for a re-run — submit would
+just return the stale reused scan.
 
 ---
 

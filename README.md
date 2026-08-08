@@ -14,7 +14,7 @@ Run these in Claude Code, in order:
 /citt:submit com.spotify.music                      # 5. run your first analysis
 ```
 
-Step 4 is required before `submit`, `scan`, `result`, `report`, `mine`, and `claim`. It prints a link, you sign in and click Authorize once, and the token is stored on your machine. The commands `search`, `status`, and `results` work without signing in, so you can skip straight to step 5 with those.
+Step 4 is required before `submit`, `rescan`, `scan`, `result`, `report`, `mine`, and `claim`. It prints a link, you sign in and click Authorize once, and the token is stored on your machine. The commands `search`, `status`, and `results` work without signing in, so you can skip straight to step 5 with those.
 
 Prefer the terminal? Steps 1 and 2 are one line, then auth from inside Claude Code:
 ```
@@ -24,7 +24,8 @@ claude plugin marketplace add CanITrustThat/citt-plugin && claude plugin install
 ## Commands
 
 - `auth`: sign in via browser device flow, same idea as `gh auth login`
-- `submit`: full trust analysis of one app or many. Takes package IDs, store URLs, or a CSV file. Returns the public scorecard with a letter grade
+- `submit`: full trust analysis of one app or many. Takes package IDs, store URLs, or a CSV file. Returns the public scorecard with a letter grade. Reuses any scan from the last 90 days
+- `rescan`: force a fresh full scan of an app that already exists. Use this, not `submit`, when results are stale (submit reuses recent scans). Owner or admin; Researcher plans can rescan any app
 - `scan`: custom prompt scan against one app. Ask a focused question and Claude writes the prompt. Private, with no public scorecard
 - `result`: fetch a custom scan's answer by scan id
 - `status`: scan status and score for any app
@@ -53,7 +54,7 @@ In Claude Code, run `/citt:auth`. Claude prints a link; sign in and click Author
 
 ## Requirements
 
-- `submit`, `scan`, `result`, `report`, `mine`, and `claim` need a Developer or Researcher account ([canitrustthat.com](https://canitrustthat.com)).
+- `submit`, `rescan`, `scan`, `result`, `report`, `mine`, and `claim` need a Developer or Researcher account ([canitrustthat.com](https://canitrustthat.com)).
 - A custom `scan` against an app you don't own needs the Researcher plan. Developer covers your own apps and brand new targets.
 - `search`, `status`, and `results` read the public index and need no account.
 
