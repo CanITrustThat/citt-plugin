@@ -109,7 +109,8 @@ Flow:
    endpoint enforces this gate.
 3. The script polls until the user completes the step, then stores the token in the keyring
    (macOS Keychain or libsecret) or, when no keyring is available, in a 0600 file at
-   `$CLAUDE_PLUGIN_DATA/device_token` (defaulting to `$HOME/.config/citt/device_token`).
+   `$HOME/.config/citt/device_token` (override the directory with `CITT_STATE_DIR`). This
+   path is fixed and does not depend on how citt is invoked.
 
 On success the command exits 0 with no stdout. On timeout it prints a retry hint to stderr.
 

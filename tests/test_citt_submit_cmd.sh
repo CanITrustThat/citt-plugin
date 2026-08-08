@@ -118,7 +118,7 @@ test_single_package() {
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "single: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit com.single.app >"$out" 2>"$err"
   rc=$?
@@ -145,7 +145,7 @@ test_multiple_packages() {
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "multi: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit com.alpha.app com.beta.app >"$out" 2>"$err"
   rc=$?
@@ -184,7 +184,7 @@ CSV
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "csv: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit "$csv" >"$out" 2>"$err"
   rc=$?
@@ -213,7 +213,7 @@ test_play_store_url() {
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "play: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit "https://play.google.com/store/apps/details?id=com.play.app" \
     >"$out" 2>"$err"
@@ -245,7 +245,7 @@ test_app_store_url() {
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "ios: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit "https://apps.apple.com/us/app/some-app/id123456789" \
     >"$out" 2>"$err"
@@ -266,7 +266,7 @@ test_no_args_usage() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" submit >"$out" 2>"$err"
   rc=$?
@@ -288,7 +288,7 @@ test_no_token() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" submit com.any.app >"$out" 2>"$err"
   rc=$?
@@ -332,7 +332,7 @@ EOF
 
   # Force external xtrace and capture both stderr (xtrace) and stdout separately.
   CITT_TEST_ARGS_FILE="$args" \
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   bash -x "$CITT" submit com.sentinel.app >"$out" 2>"$trace"
@@ -390,7 +390,7 @@ test_401_reauth() {
   start_mock '{"com.any.app":{"pre":"missing"}}' '{}' '' "$MOCK_TOKEN" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "401: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit com.any.app >"$out" 2>"$err"
   rc=$?
@@ -426,7 +426,7 @@ CSV
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "csv-multi: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" submit "$csv" >"$out" 2>"$err"
   rc=$?

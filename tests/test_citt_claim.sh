@@ -111,7 +111,7 @@ test_happy_path() {
 
   # The correct OTP is piped via stdin
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.good.app >"$out" 2>"$err"
   rc=$?
@@ -148,7 +148,7 @@ test_status_unclaimed() {
   start_mock '{"com.good.app":{"eligible":true,"already_claimed":false}}' "$OTP_CODE" "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "status-unclaimed: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" claim --status com.good.app >"$out" 2>"$err"
   rc=$?
@@ -182,7 +182,7 @@ test_status_claimed() {
   start_mock '{"com.claimed.app":{"eligible":true,"already_claimed":true}}' "$OTP_CODE" "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "status-claimed: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" claim --status com.claimed.app >"$out" 2>"$err"
   rc=$?
@@ -212,7 +212,7 @@ test_wrong_otp() {
 
   # Supply a WRONG OTP code
   printf '%s\n' "9999" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.good.app >"$out" 2>"$err"
   rc=$?
@@ -249,7 +249,7 @@ test_app_not_found() {
   if [ -z "$MOCK_BASE" ]; then fail "not-found: mock did not start"; return; fi
 
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.notfound.app >"$out" 2>"$err"
   rc=$?
@@ -278,7 +278,7 @@ test_no_email() {
   if [ -z "$MOCK_BASE" ]; then fail "no-email: mock did not start"; return; fi
 
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.noemail.app >"$out" 2>"$err"
   rc=$?
@@ -307,7 +307,7 @@ test_already_claimed() {
   if [ -z "$MOCK_BASE" ]; then fail "already-claimed: mock did not start"; return; fi
 
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.owned.app >"$out" 2>"$err"
   rc=$?
@@ -331,7 +331,7 @@ test_no_token() {
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
   # Deliberately do NOT seed a token.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" claim com.any.app >"$out" 2>"$err"
   rc=$?
@@ -364,7 +364,7 @@ test_401_response() {
   if [ -z "$MOCK_BASE" ]; then fail "401: mock did not start"; return; fi
 
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.any.app >"$out" 2>"$err"
   rc=$?
@@ -433,7 +433,7 @@ EOF
   # Force external xtrace (bash -x) — trace goes to stderr captured to file.
   printf '%s\n' "$OTP_CODE" | \
     CITT_TEST_ARGS_FILE="$args" \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$iso_base" \
     PATH="$bindir:$PATH" \
     bash -x "$CITT" claim com.iso.app >"$out" 2>"$trace"
@@ -489,7 +489,7 @@ test_email_notice_on_stderr() {
   if [ -z "$MOCK_BASE" ]; then fail "email-notice: mock did not start"; return; fi
 
   printf '%s\n' "$OTP_CODE" | \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     bash "$CITT" claim com.notice.app >"$out" 2>"$err"
   rc=$?
@@ -612,7 +612,7 @@ EOF
   # Pipe the sentinel OTP via stdin; run under forced external bash -x.
   printf '%s\n' "$SENTINEL_OTP" | \
     CITT_TEST_ARGS_FILE="$args" \
-    CLAUDE_PLUGIN_DATA="$tokdir" \
+    CITT_STATE_DIR="$tokdir" \
     CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$iso_base" \
     PATH="$bindir:$PATH" \
     bash -x "$CITT" claim com.otp.test >"$out" 2>"$trace"

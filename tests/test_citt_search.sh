@@ -275,7 +275,7 @@ test_no_token_leak() {
   local out rc
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
     "$CITT" search "signal" >"$out" 2>/dev/null
   rc=$?

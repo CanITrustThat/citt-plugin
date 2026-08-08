@@ -102,7 +102,7 @@ test_pkg_detailed_report() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "pkg-detailed: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.owner.app >"$out" 2>"$err"
   rc=$?
@@ -145,7 +145,7 @@ test_scan_flag() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "scan-flag: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.owner.app --scan scan_owner123 >"$out" 2>"$err"
   rc=$?
@@ -178,7 +178,7 @@ test_platform_flag() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "platform-flag: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.platform.app --platform android >"$out" 2>"$err"
   rc=$?
@@ -205,7 +205,7 @@ test_noleak_nonowner() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "noleak: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.other.app >"$out" 2>"$err"
   rc=$?
@@ -246,7 +246,7 @@ test_locked_report() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "locked: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.locked.app >"$out" 2>"$err"
   rc=$?
@@ -275,7 +275,7 @@ test_notfound() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "notfound: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.missing.app >"$out" 2>"$err"
   rc=$?
@@ -300,7 +300,7 @@ test_custom_fallback() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "custom-fallback: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   "$CITT" report com.custom.app --scan scan_custom999 >"$out" 2>"$err"
   rc=$?
@@ -331,7 +331,7 @@ test_bare_scanid_rejected() {
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
   # A UUID-format arg (no dot) → treated as scan_id → rejected before any network.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   "$CITT" report 00000000-0000-0000-0000-000000000000 >"$out" 2>"$err"
   rc=$?
@@ -355,7 +355,7 @@ test_missing_token() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   "$CITT" report com.any.app >"$out" 2>"$err"
   rc=$?
@@ -393,7 +393,7 @@ exec /usr/bin/curl "\$@"
 EOF
   chmod +x "$bindir/curl"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \
@@ -425,7 +425,7 @@ test_token_not_in_forced_xtrace() {
   start_mock "" "$logf" "$SENTINEL_TOKEN"
   if [ -z "$MOCK_BASE" ]; then fail "xtrace: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash -x "$CITT" report com.owner.app >"$out" 2>"$trace"
   rc=$?
@@ -455,7 +455,7 @@ test_no_arg() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   "$CITT" report >"$out" 2>"$err"
   rc=$?

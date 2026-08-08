@@ -99,7 +99,7 @@ test_happy_path() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "happy: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" mine >"$out" 2>"$err"
   local rc=$?
@@ -170,7 +170,7 @@ test_empty_state() {
   start_mock '[]'
   if [ -z "$MOCK_BASE" ]; then fail "empty: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" mine >"$out" 2>"$err"
   local rc=$?
@@ -208,7 +208,7 @@ test_401_reauth() {
   start_mock
   if [ -z "$MOCK_BASE" ]; then fail "401: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" mine >"$out" 2>"$err"
   local rc=$?
@@ -238,7 +238,7 @@ test_no_token() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" mine >"$out" 2>"$err"
   local rc=$?
@@ -292,7 +292,7 @@ CURLEOF
   chmod +x "$bindir/curl"
 
   _CITT_ARGLOG="$args" \
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \
@@ -346,7 +346,7 @@ test_forced_xtrace_isolation() {
   done
   if [ -z "$MOCK_BASE" ]; then fail "forced-xtrace: mock did not start"; stop_mock; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash -x "$CITT" mine >"$out" 2>"$trace"
   stop_mock
@@ -373,7 +373,7 @@ test_json_structure() {
   start_mock
   if [ -z "$MOCK_BASE" ]; then fail "structure: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" mine >"$out" 2>"$err"
   local rc=$?

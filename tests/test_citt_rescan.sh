@@ -76,7 +76,7 @@ write_token() {  # $1=tokdir  $2=token
 # run_rescan <tokdir> <out> <err> <args...>
 run_rescan() {
   local tokdir="$1" out="$2" err="$3"; shift 3
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" rescan "$@" >"$out" 2>"$err"
 }
@@ -252,7 +252,7 @@ test_help_no_network() {
   local out err
   out="$(mktemp "$WORKROOT/out.XXXXXX")"; err="$(mktemp "$WORKROOT/err.XXXXXX")"
   # No mock, unreachable override — --help must not touch the network.
-  CLAUDE_PLUGIN_DATA="$WORKROOT/nohome" \
+  CITT_STATE_DIR="$WORKROOT/nohome" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" rescan --help >"$out" 2>"$err"
   local rc=$?
@@ -289,7 +289,7 @@ CURLEOF
   chmod +x "$bindir/curl"
 
   _CITT_ARGLOG="$args" \
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \

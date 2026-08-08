@@ -1,7 +1,7 @@
 {
   "name": "citt",
   "description": "Drive CITT from Claude Code: submit apps for security and privacy trust analysis, run fast custom-prompt scans that answer one focused question, pull scorecards and your private reports, search the public index, and claim apps you own.",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "author": {
     "name": "canITrustThat"
   }

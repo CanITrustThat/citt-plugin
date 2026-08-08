@@ -92,7 +92,7 @@ EOF
 
   # Run the script under `set -x` with the xtrace redirected to a file, so we can
   # prove the token never appears on a traced line either.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \
@@ -156,7 +156,7 @@ test_token_not_in_forced_xtrace() {
 
   # Force xtrace EXTERNALLY (`bash -x`, no `set -x` in the script) with the trace
   # captured to a file via stderr — exactly the red-team invocation from the finding.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash -x "$AUTH" >"$out" 2>"$trace"
   rc=$?
@@ -200,7 +200,7 @@ test_poll_transitions() {
   start_mock "authorization_pending,slow_down,authorization_pending,success" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "transitions: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$AUTH" >"$out" 2>/dev/null
   rc=$?
@@ -234,7 +234,7 @@ test_access_denied_tier() {
   start_mock "authorization_pending,access_denied" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "denied: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$AUTH" >"$out" 2>"$err"
   rc=$?
@@ -264,7 +264,7 @@ test_already_authenticated_no_network() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
 
   # Dead endpoint: if a network call is made it would error; short-circuit avoids it.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$AUTH" >"$out" 2>/dev/null
   rc=$?
@@ -285,7 +285,7 @@ test_citt_token_override() {
   envdir="$(new_env_dir)"; tokdir="$envdir/.config/citt"
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TOKEN="citt_envoverride_secretenvvalue" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$AUTH" >"$out" 2>/dev/null
@@ -340,7 +340,7 @@ test_keyring_roundtrip() {
   if [ -z "$MOCK_BASE" ]; then fail "keyring: mock did not start"; _kr_cleanup "$backend"; return; fi
 
   # Note: NO CITT_FORCE_FILE_TOKEN here -> the real keyring path runs.
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$AUTH" >"$out" 2>/dev/null
   rc=$?
@@ -374,7 +374,7 @@ test_keyring_roundtrip() {
 
   # Second run must short-circuit purely on keyring presence (dead endpoint).
   local out2; out2="$(mktemp "$WORKROOT/out.XXXXXX")"
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$AUTH" >"$out2" 2>/dev/null
   if [ "$?" -eq 0 ] && grep -qx "authenticated" "$out2"; then
@@ -431,6 +431,113 @@ test_citt_token_env_not_in_xtrace() {
   fi
 }
 
+# ---------------------------------------------------------------------------
+# Test 8 (0.4.4): the token path must NOT depend on CLAUDE_PLUGIN_DATA. Claude Code
+# sets that var only for /citt:* slash commands, so keying the path off it made a
+# token saved by /citt:auth invisible to a bare-script call. A token at CITT_STATE_DIR
+# must short-circuit "authenticated" whether CLAUDE_PLUGIN_DATA is unset OR points
+# somewhere else entirely.
+# ---------------------------------------------------------------------------
+test_path_independent_of_plugin_data() {
+  local envdir tokdir out rc
+  envdir="$(new_env_dir)"; tokdir="$envdir/.config/citt"
+  mkdir -p "$tokdir"
+  ( umask 077; printf '%s' "$MOCK_TOKEN" >"$tokdir/device_token" )
+  chmod 600 "$tokdir/device_token"
+  out="$(mktemp "$WORKROOT/out.XXXXXX")"
+
+  # CLAUDE_PLUGIN_DATA explicitly UNSET, dead endpoint: must short-circuit on the file.
+  env -u CLAUDE_PLUGIN_DATA \
+  CITT_STATE_DIR="$tokdir" \
+  CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
+  bash "$AUTH" >"$out" 2>/dev/null
+  rc=$?
+  if [ "$rc" -eq 0 ] && grep -qx "authenticated" "$out"; then
+    pass "path-indep: token found with CLAUDE_PLUGIN_DATA unset"
+  else
+    fail "path-indep: not authenticated with CLAUDE_PLUGIN_DATA unset (exit $rc)"
+  fi
+
+  # CLAUDE_PLUGIN_DATA pointing at a DIFFERENT empty dir must not change the answer.
+  local other; other="$(mktemp -d "$WORKROOT/other.XXXXXX")"
+  local out2; out2="$(mktemp "$WORKROOT/out.XXXXXX")"
+  CLAUDE_PLUGIN_DATA="$other" \
+  CITT_STATE_DIR="$tokdir" \
+  CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
+  bash "$AUTH" >"$out2" 2>/dev/null
+  if [ "$?" -eq 0 ] && grep -qx "authenticated" "$out2"; then
+    pass "path-indep: CLAUDE_PLUGIN_DATA pointing elsewhere is ignored for the live path"
+  else
+    fail "path-indep: CLAUDE_PLUGIN_DATA elsewhere broke resolution"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 9 (0.4.4): a token left by an OLDER build under CLAUDE_PLUGIN_DATA is migrated
+# into the pinned CITT_STATE_DIR on the next run, so upgrades don't look logged-out.
+# ---------------------------------------------------------------------------
+test_legacy_token_migration() {
+  local envdir tokdir legacy out rc
+  envdir="$(new_env_dir)"; tokdir="$envdir/.config/citt"
+  legacy="$(mktemp -d "$WORKROOT/legacy.XXXXXX")"
+  mkdir -p "$tokdir"                                  # pinned dir exists but EMPTY
+  ( umask 077; printf '%s' "$MOCK_TOKEN" >"$legacy/device_token" )
+  chmod 600 "$legacy/device_token"
+  out="$(mktemp "$WORKROOT/out.XXXXXX")"
+
+  CLAUDE_PLUGIN_DATA="$legacy" \
+  CITT_STATE_DIR="$tokdir" \
+  CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
+  bash "$AUTH" >"$out" 2>/dev/null
+  rc=$?
+
+  if [ "$rc" -eq 0 ] && grep -qx "authenticated" "$out"; then
+    pass "migration: legacy CLAUDE_PLUGIN_DATA token adopted -> authenticated"
+  else
+    fail "migration: legacy token not adopted (exit $rc)"
+  fi
+  if [ -s "$tokdir/device_token" ] && [ "$(cat "$tokdir/device_token")" = "$MOCK_TOKEN" ]; then
+    pass "migration: token now present at the pinned path"
+  else
+    fail "migration: token not copied to the pinned path"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Test 10 (0.4.4): if the token can be persisted to neither the keyring nor the file,
+# auth must FAIL LOUDLY (non-zero, error on stderr, no "authenticated") instead of
+# reporting success and leaving the user unauthenticated on the next call.
+# ---------------------------------------------------------------------------
+test_store_fails_loudly() {
+  local envdir tokdir logf out err rc
+  envdir="$(new_env_dir)"; tokdir="$envdir/.config/citt"
+  # device_token is a DIRECTORY, so the token file write fails; with the keyring forced
+  # off the credential can be persisted nowhere. Drive --wait (which skips the already-
+  # authenticated short-circuit) with a pre-seeded flow file so the store is what fails.
+  mkdir -p "$tokdir/device_token"
+  ( umask 077; printf '%s\n%s\n%s\n' "devcode-store-fail" "1" "9999999999" >"$tokdir/device_flow" )
+  logf="$(mktemp "$WORKROOT/mocklog.XXXXXX")"
+  out="$(mktemp "$WORKROOT/out.XXXXXX")"
+  err="$(mktemp "$WORKROOT/err.XXXXXX")"
+
+  start_mock "success" "$logf"
+  if [ -z "$MOCK_BASE" ]; then fail "store-fail: mock did not start"; return; fi
+
+  CITT_STATE_DIR="$tokdir" \
+  CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
+  bash "$AUTH" --wait >"$out" 2>"$err"
+  rc=$?
+  stop_mock
+
+  if [ "$rc" -ne 0 ]; then pass "store-fail: non-zero exit ($rc)"; else fail "store-fail: exit 0 (should fail)"; fi
+  if grep -qx "authenticated" "$out"; then fail "store-fail: must NOT print authenticated"; else pass "store-fail: did not print authenticated"; fi
+  if grep -qi "could not save the credential" "$err"; then
+    pass "store-fail: loud persistence error on stderr"
+  else
+    fail "store-fail: no persistence error on stderr"
+  fi
+}
+
 echo "== citt-auth.sh device-flow harness =="
 test_success_flow_and_secret_isolation
 test_token_not_in_forced_xtrace
@@ -440,6 +547,9 @@ test_already_authenticated_no_network
 test_citt_token_override
 test_keyring_roundtrip
 test_citt_token_env_not_in_xtrace
+test_path_independent_of_plugin_data
+test_legacy_token_migration
+test_store_fails_loudly
 
 echo
 echo "Passed: $PASS   Failed: $FAIL"

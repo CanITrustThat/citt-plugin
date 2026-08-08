@@ -127,7 +127,7 @@ test_happy_path() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "happy: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "Does this app leak location to third parties?" com.ok.app >"$out" 2>"$err"
   rc=$?
@@ -171,7 +171,7 @@ test_202_accepted() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "202: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "Check crypto usage" com.accepted.app >"$out" 2>"$err"
   rc=$?
@@ -194,7 +194,7 @@ test_empty_prompt() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "empty: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "" com.ok.app >"$out" 2>"$err"
   rc=$?
@@ -224,7 +224,7 @@ test_too_long_prompt() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "toolong: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "$bigprompt" com.ok.app >"$out" 2>"$err"
   rc=$?
@@ -252,7 +252,7 @@ test_bare_name() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "bare: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "Some question" Instagram >"$out" 2>"$err"
   rc=$?
@@ -280,7 +280,7 @@ test_403_research() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "403: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "Cross-app custom question" com.cross.app >"$out" 2>"$err"
   rc=$?
@@ -307,7 +307,7 @@ test_401_reauth() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "401: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "A question" com.ok.app >"$out" 2>"$err"
   rc=$?
@@ -330,7 +330,7 @@ test_platform_ios() {
   start_mock "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "platform: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" "iOS question" com.ok.app --platform ios >"$out" 2>"$err"
   rc=$?
@@ -395,7 +395,7 @@ exec /usr/bin/curl "\$@"
 EOF
   chmod +x "$bindir/curl"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \

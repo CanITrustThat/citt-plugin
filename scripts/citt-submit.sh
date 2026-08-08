@@ -57,12 +57,23 @@ if [ "${CITT_TEST_MODE:-}" = "1" ] && [ -n "${CITT_API_OVERRIDE:-}" ]; then
   CITT_API="${CITT_API_OVERRIDE}"
 fi
 
-# Local token file the helper scripts own (same convention as citt-auth.sh).
-TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"
+# Local token file the helper scripts own (same convention as citt-auth.sh). State dir
+# is PINNED to a stable path (CITT_STATE_DIR override, else $HOME/.config/citt); it must
+# match every other helper regardless of invocation. CLAUDE_PLUGIN_DATA is migration-only.
+CITT_STATE_DIR_RESOLVED="${CITT_STATE_DIR:-$HOME/.config/citt}"
+TOKEN_FILE="${CITT_STATE_DIR_RESOLVED}/device_token"
 
 # macOS keyring coordinates (Linux uses secret-tool with matching attributes).
 KEYRING_SERVICE="canitrustthat-citt"
 KEYRING_ACCOUNT="device_token"
+
+# One-time migration of a token left by an older build under CLAUDE_PLUGIN_DATA.
+if [ ! -s "$TOKEN_FILE" ] && [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -s "${CLAUDE_PLUGIN_DATA}/device_token" ]; then
+  mkdir -p "$CITT_STATE_DIR_RESOLVED" 2>/dev/null || true
+  chmod 700 "$CITT_STATE_DIR_RESOLVED" 2>/dev/null || true
+  ( umask 077; tr -d '\n' <"${CLAUDE_PLUGIN_DATA}/device_token" >"$TOKEN_FILE" ) 2>/dev/null || true
+  chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+fi
 
 # Polling budget knobs (overridable by the harness for speed).
 POLL_BASE_SLEEP="${CITT_POLL_BASE_SLEEP:-4}"     # first backoff, seconds

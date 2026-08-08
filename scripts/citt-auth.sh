@@ -13,8 +13,25 @@ if [ "${CITT_TEST_MODE:-}" = "1" ] && [ -n "${CITT_API_OVERRIDE:-}" ]; then
   CITT_API="${CITT_API_OVERRIDE}"
 fi
 
-# 0600 token file the helper scripts own.
-TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"
+# 0600 token file the helper scripts own. State dir is PINNED to a stable path (see
+# lib/citt-common.sh for the rationale): CITT_STATE_DIR override, else $HOME/.config/citt.
+# It must match every other helper so a token written here is readable by every
+# subcommand regardless of how citt was invoked. CLAUDE_PLUGIN_DATA is migration-only.
+CITT_STATE_DIR_RESOLVED="${CITT_STATE_DIR:-$HOME/.config/citt}"
+TOKEN_FILE="${CITT_STATE_DIR_RESOLVED}/device_token"
+
+# One-time migration of a token left by an older build under CLAUDE_PLUGIN_DATA.
+_citt_migrate_legacy_token() {
+  if [ -s "$TOKEN_FILE" ]; then return 0; fi
+  local legacy="${CLAUDE_PLUGIN_DATA:-}/device_token"
+  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -s "$legacy" ]; then
+    mkdir -p "$CITT_STATE_DIR_RESOLVED" 2>/dev/null || return 0
+    chmod 700 "$CITT_STATE_DIR_RESOLVED" 2>/dev/null || true
+    ( umask 077; tr -d '\n' <"$legacy" >"$TOKEN_FILE" ) 2>/dev/null || true
+    chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+  fi
+  return 0
+}
 
 # Keyring coordinates (macOS security / Linux secret-tool).
 KEYRING_SERVICE="canitrustthat-citt"
@@ -129,6 +146,7 @@ _keyring_has_token() {
 
 # Usable token present locally? (No network.)
 _have_token() {
+  _citt_migrate_legacy_token
   if _keyring_has_token; then
     return 0
   fi
@@ -146,16 +164,27 @@ _store_token_file() {
     return 0
   fi
   # File fallback (also the universal path where no keyring exists).
-  mkdir -p "$(dirname "$TOKEN_FILE")"
+  mkdir -p "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
   chmod 700 "$(dirname "$TOKEN_FILE")" 2>/dev/null || true
-  ( umask 077; tr -d '\n' <"$src" >"$TOKEN_FILE" )
-  chmod 600 "$TOKEN_FILE"
+  ( umask 077; tr -d '\n' <"$src" >"$TOKEN_FILE" ) 2>/dev/null || true
+  chmod 600 "$TOKEN_FILE" 2>/dev/null || true
+  # Fail loudly if neither store persisted a readable, byte-correct token — better than
+  # reporting success and leaving the user "not authenticated" on the next call.
+  local exp rc=0
+  exp="$(umask 077; mktemp "${TMPDIR:-/tmp}/citt_st.XXXXXX")"
+  ( umask 077; tr -d '\n' <"$src" >"$exp" )
+  if [ ! -s "$TOKEN_FILE" ] || ! cmp -s "$TOKEN_FILE" "$exp"; then
+    rc=1
+    echo "citt-auth.sh: could not save the credential (keyring and ${TOKEN_FILE} both failed)." >&2
+  fi
+  rm -f "$exp" 2>/dev/null || true
+  return $rc
 }
 
 # Pending-flow state (0600): device_code, interval, deadline_epoch. Written by
 # --start, consumed by --wait. The flow is split into two foreground calls because
 # a detached poller does not survive Claude Code's Bash tool.
-FLOW_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_flow"
+FLOW_FILE="${CITT_STATE_DIR_RESOLVED}/device_flow"
 
 # --start: get a device_code + link, persist pending state, print the link, return fast.
 _do_start() {
@@ -257,7 +286,9 @@ _do_wait() {
         echo "citt-auth.sh: authorization succeeded but no token was returned." >&2
         return 1
       fi
-      _store_token_file "$token_tmp"
+      if ! _store_token_file "$token_tmp"; then
+        return 1   # _store_token_file already explained the failure on stderr
+      fi
       rm -f "$FLOW_FILE" 2>/dev/null || true
       echo "authenticated"
       return 0

@@ -92,7 +92,7 @@ seed_token() {  # $1=tokdir  $2=optional_token_value
 # run_result: direct-source runner. Sources the shared lib + cmd-result.sh in a
 # child bash and calls citt_cmd_result "$@". Because the dispatcher does not yet
 # route `result`, this is how we exercise the command in isolation. All env
-# (CLAUDE_PLUGIN_DATA, CITT_TEST_MODE, CITT_API_OVERRIDE, …) is inherited from
+# (CITT_STATE_DIR, CITT_TEST_MODE, CITT_API_OVERRIDE, …) is inherited from
 # the caller. Extra args after the runner path are the command's argv.
 #   run_result [--xtrace <tracefile>] -- <args...>
 RUNNER=""
@@ -123,7 +123,7 @@ test_happy_path() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "happy: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" scan_ok_abc123 >"$out" 2>"$err"
   rc=$?
@@ -159,7 +159,7 @@ test_notready() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "notready: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" scan_notready_xyz >"$out" 2>"$err"
   rc=$?
@@ -194,7 +194,7 @@ test_forbidden() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "forbidden: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" scan_forbidden_zzz >"$out" 2>"$err"
   rc=$?
@@ -229,7 +229,7 @@ test_unauth() {
   start_mock "" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "unauth: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$RUNNER" scan_unauth_qqq >"$out" 2>"$err"
   rc=$?
@@ -252,7 +252,7 @@ test_missing_arg() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$RUNNER" >"$out" 2>"$err"
   rc=$?
@@ -283,7 +283,7 @@ test_secret_non_leak() {
   start_mock "" "$logf" "$SENTINEL_TOKEN"
   if [ -z "$MOCK_BASE" ]; then fail "secret: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash -x "$RUNNER" scan_ok_secret >"$out" 2>"$trace"
   rc=$?

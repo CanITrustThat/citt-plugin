@@ -163,7 +163,7 @@ test_auth_flow() {
   start_mock "authorization_pending,success" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "auth-flow: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" auth >"$out" 2>/dev/null
   rc=$?
@@ -210,7 +210,7 @@ test_whoami_success() {
   start_mock "success" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "whoami: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" whoami >"$out" 2>/dev/null
   rc=$?
@@ -257,7 +257,7 @@ EOF
 
   # Force external xtrace (bash -x) and capture trace to file.
   CITT_TEST_ARGS_FILE="$args" \
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   bash -x "$CITT" whoami >"$out" 2>"$trace"
@@ -302,7 +302,7 @@ test_whoami_no_token() {
   out="$(mktemp "$WORKROOT/out.XXXXXX")"
   err="$(mktemp "$WORKROOT/err.XXXXXX")"
 
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$CITT" whoami >"$out" 2>"$err"
   rc=$?
@@ -338,7 +338,7 @@ test_whoami_401() {
   start_mock "success" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "whoami-401: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" whoami >"$out" 2>"$err"
   rc=$?
@@ -373,7 +373,7 @@ test_logout_then_whoami() {
   chmod 600 "$tf"
 
   # Logout
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 \
   bash "$CITT" logout >"$out" 2>"$err"
   rc=$?
@@ -394,7 +394,7 @@ test_logout_then_whoami() {
   # Now whoami must fail
   start_mock "success" "$logf"
   local out2; out2="$(mktemp "$WORKROOT/out.XXXXXX")"
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" whoami >"$out2" 2>/dev/null
   rc=$?
@@ -443,7 +443,7 @@ test_prod_host_hardcoded() {
   if [ -z "$MOCK_BASE" ]; then fail "prod-host: mock did not start"; return; fi
 
   # Intentionally NOT setting CITT_TEST_MODE=1 — override must be ignored
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$CITT" whoami >"$out" 2>"$err" || true
   rc=$?
@@ -490,7 +490,7 @@ EOF
   # Run `citt whoami` under forced external bash -x with CITT_TOKEN env set.
   CITT_TOKEN="$SENTINEL_DISP" \
   CITT_TEST_ARGS_FILE="$args" \
-  CLAUDE_PLUGIN_DATA="$tokdir/.config/citt" \
+  CITT_STATE_DIR="$tokdir/.config/citt" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   bash -x "$CITT" whoami >"$out" 2>"$trace"

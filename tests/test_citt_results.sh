@@ -608,7 +608,7 @@ CURLWRAP
 
   # citt status under -x trace
   CITT_TEST_ARGS_FILE="$args" \
-  CLAUDE_PLUGIN_DATA="$confdir" \
+  CITT_STATE_DIR="$confdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \
@@ -616,7 +616,7 @@ CURLWRAP
 
   # citt results under -x trace (reuse same args file — both must be clean)
   CITT_TEST_ARGS_FILE="$args" \
-  CLAUDE_PLUGIN_DATA="$confdir" \
+  CITT_STATE_DIR="$confdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \

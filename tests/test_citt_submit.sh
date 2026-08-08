@@ -114,7 +114,7 @@ CSV
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "dedup: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out" 2>/dev/null
   rc=$?
@@ -129,7 +129,7 @@ CSV
 
   # Idempotent re-run: submit count for the fresh app must stay 0.
   local out2; out2="$(mktemp "$WORKROOT/out.XXXXXX")"
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out2" 2>/dev/null
   fresh_subs="$(count_submits "$logf" com.fresh.app)"
@@ -159,7 +159,7 @@ CSV
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "resilience: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   CITT_PER_APP_BUDGET="2" \
   bash "$SUBMIT" "$csv" >"$out" 2>/dev/null
@@ -208,7 +208,7 @@ exec /usr/bin/curl "\$@"
 EOF
   chmod +x "$bindir/curl"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   PATH="$bindir:$PATH" \
   BASH_XTRACEFD=9 \
@@ -244,7 +244,7 @@ CSV
   start_mock '{}' "$searchj" '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "name-only: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out" 2>/dev/null
   rc=$?
@@ -283,7 +283,7 @@ CSV
   start_mock '{"com.any.app":{"pre":"missing"}}' '{}' '' "$MOCK_TOKEN" "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "401: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out" 2>"$err"
   rc=$?
@@ -308,7 +308,7 @@ test_missing_token() {
   csv="$(mktemp "$WORKROOT/apps.XXXXXX")"
   printf 'package_id,platform\ncom.any.app,android\n' >"$csv"
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="http://127.0.0.1:1" \
   bash "$SUBMIT" "$csv" >"$out" 2>"$err"
   rc=$?
@@ -336,7 +336,7 @@ test_tier_denied() {
   start_mock '{"com.gated.app":{"pre":"missing"}}' '{}' 'com.gated.app' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "tier: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out" 2>"$err"
   rc=$?
@@ -375,7 +375,7 @@ CSV
   start_mock "$statusj" '{}' '' '' "$logf"
   if [ -z "$MOCK_BASE" ]; then fail "csv: mock did not start"; return; fi
 
-  CLAUDE_PLUGIN_DATA="$tokdir" \
+  CITT_STATE_DIR="$tokdir" \
   CITT_TEST_MODE=1 CITT_FORCE_FILE_TOKEN=1 CITT_API_OVERRIDE="$MOCK_BASE" \
   bash "$SUBMIT" "$csv" >"$out" 2>/dev/null
   rc=$?

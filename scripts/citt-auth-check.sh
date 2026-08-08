@@ -5,12 +5,15 @@
 # sync with lib/citt-common.sh (_CITT_KR_SERVICE/_CITT_KR_ACCOUNT/_CITT_TOKEN_FILE).
 set -euo pipefail
 
-TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"
+# State dir PINNED to a stable path (CITT_STATE_DIR override, else $HOME/.config/citt),
+# matching lib/citt-common.sh. CLAUDE_PLUGIN_DATA is only a legacy migration source.
+TOKEN_FILE="${CITT_STATE_DIR:-$HOME/.config/citt}/device_token"
 KR_SERVICE="canitrustthat-citt"
 KR_ACCOUNT="device_token"
 
-# 0600 file fallback store.
+# 0600 file fallback store (or a token left by an older build under CLAUDE_PLUGIN_DATA).
 [ -s "$TOKEN_FILE" ] && exit 0
+[ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -s "${CLAUDE_PLUGIN_DATA}/device_token" ] && exit 0
 
 # macOS Keychain.
 if [ "$(uname -s)" = "Darwin" ] && command -v security >/dev/null 2>&1; then

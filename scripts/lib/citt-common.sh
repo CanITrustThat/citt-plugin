@@ -14,10 +14,31 @@ if [ "${CITT_TEST_MODE:-}" = "1" ] && [ -n "${CITT_API_OVERRIDE:-}" ]; then
   _CITT_API="${CITT_API_OVERRIDE}"
 fi
 
-# Token store coordinates — shared with citt-auth.sh.
-_CITT_TOKEN_FILE="${CLAUDE_PLUGIN_DATA:-$HOME/.config/citt}/device_token"
+# Token store coordinates — shared with citt-auth.sh / citt-submit.sh / citt-auth-check.sh.
+# The state dir is PINNED to a stable, invocation-independent path so it resolves
+# identically whether citt runs as a /citt:* slash command or a bare Bash call.
+# CLAUDE_PLUGIN_DATA is deliberately NOT used here: Claude Code sets it only for slash
+# commands, so keying the path off it made writes and reads disagree (a token saved by
+# /citt:auth was invisible to a raw-script call). It survives only as a migration source.
+_CITT_STATE_DIR="${CITT_STATE_DIR:-$HOME/.config/citt}"
+_CITT_TOKEN_FILE="${_CITT_STATE_DIR}/device_token"
 _CITT_KR_SERVICE="canitrustthat-citt"
 _CITT_KR_ACCOUNT="device_token"
+
+# One-time migration: adopt a token left by an older build under CLAUDE_PLUGIN_DATA so
+# upgrades don't look logged-out. Best-effort and silent; never fails the caller.
+_citt_migrate_legacy_token() {
+  if [ -s "${_CITT_TOKEN_FILE}" ]; then return 0; fi
+  local legacy="${CLAUDE_PLUGIN_DATA:-}/device_token"
+  if [ -n "${CLAUDE_PLUGIN_DATA:-}" ] && [ -s "$legacy" ]; then
+    mkdir -p "${_CITT_STATE_DIR}" 2>/dev/null || return 0
+    chmod 700 "${_CITT_STATE_DIR}" 2>/dev/null || true
+    ( umask 077; tr -d '\n' <"$legacy" >"${_CITT_TOKEN_FILE}" ) 2>/dev/null || true
+    chmod 600 "${_CITT_TOKEN_FILE}" 2>/dev/null || true
+  fi
+  return 0
+}
+_citt_migrate_legacy_token
 
 # 0600 scratch files, cleaned on EXIT. CITT_COMMON_TMPDIR lets the caller share a tmpdir.
 _CITT_TMPDIR="${CITT_COMMON_TMPDIR:-$(umask 077; mktemp -d "${TMPDIR:-/tmp}/citt_lib.XXXXXX")}"
