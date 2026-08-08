@@ -58,6 +58,7 @@ right subcommand below and run it — one command, then relay its output.
 | FRESH results for an app that already has a recent scan | `citt rescan <app>` | yes |
 | The public scorecard of any already-scanned app | `citt results <pkg>` | no |
 | A quick status/score check | `citt status <pkg>` | no |
+| Watch a running rescan's live progress | `citt status <pkg> --scan-id <scan_id>` | no |
 | The full detailed report for an app they own (or any app as researcher) | `citt report <pkg>` | yes |
 | Find an app's package id | `citt search "<name>"` | no |
 | List their own submitted apps | `citt mine` | yes |
@@ -270,9 +271,11 @@ upgrade_target}`; `reason` is one of `ok`, `ok_researcher`, `not_authenticated`,
 
 Outcomes and exit behavior:
 
-- 200 — new scan queued. Tell the user it is running and poll `citt status <package_id>` for
-  progress. This is a full scan, so it takes a while (a new binary can be hours; a re-run of an
-  in-corpus app is faster).
+- 200 — new scan queued. Tell the user it is running and poll `citt status <package_id>
+  --scan-id <scan_id>` (use the `scan_id` from this response) for progress. This is a full scan,
+  so it takes a while (a new binary can be hours; a re-run of an in-corpus app is faster).
+  IMPORTANT: poll by `--scan-id`. Plain `citt status <package_id>` returns the last COMPLETED
+  scan while a rescan runs, so it would show the OLD score, not the in-flight one.
 - 401 — token missing/expired: run `citt auth`.
 - 403 — the user's plan cannot rescan this app. Relay the message verbatim (it explains the
   developer-vs-research distinction); do not retry.
@@ -281,8 +284,8 @@ Outcomes and exit behavior:
 
 How Claude should use this: when the user says "rescan", "re-run", "refresh", "scan it again",
 or "these results are old", run `citt rescan <package_id>` and relay the queued confirmation,
-then offer to poll `citt status`. Do not fall back to `citt submit` for a re-run — submit would
-just return the stale reused scan.
+then offer to poll `citt status <package_id> --scan-id <scan_id>` (the id the rescan printed).
+Do not fall back to `citt submit` for a re-run — submit would just return the stale reused scan.
 
 ---
 
@@ -386,24 +389,40 @@ first-ever scan of an app must download and decompile it first.
 
 ### `citt status`
 
-Purpose: Fetch the concise scan status for a single app. Public — no authentication needed.
+Purpose: Fetch the concise scan status for a single app. Works anonymously for public
+scorecards; sends your token when you have one so you can also see private and in-flight scans
+you own.
 
 ```bash
-citt status <package_id>
+citt status <package_id>                       # latest scan (see the rescan caveat below)
+citt status <package_id> --scan-id <id>        # poll a SPECIFIC scan's live status
+citt status <package_id> --scan-number <n>     # poll scan #n for the package
 ```
 
-HTTP: `GET /api/status/{package_id}` (public, unauthenticated).
+HTTP: `GET /api/status/{package_id}[?scan_id=<id>|?scan_number=<n>]`. The token is sent when
+present (needed for private/in-flight scans); otherwise the request is anonymous. On a 401 from
+a stale token, the CLI retries once anonymously so public scorecards still resolve.
+
+IMPORTANT — polling a rescan: plain `citt status <pkg>` returns the last COMPLETED scan. While
+a rescan is running the server keeps showing the old completed result so the scorecard never
+goes blank, and it sets `current_scan_status` to `queued`/`analyzing` to signal a scan is in
+flight. To watch the NEW scan's progress you MUST poll it by id: `citt status <pkg> --scan-id
+<scan_id>` (the id `citt rescan` printed). With `--scan-id`/`--scan-number` the top-level
+`status` IS that scan's live status.
 
 Response shape (compact JSON on stdout):
 
 ```json
 {
+  "id": "<scan_uuid>",
   "package_id": "com.example.app",
   "status": "completed",
+  "current_scan_status": null,
   "overall_score": 82,
   "letter_grade": "B",
   "completed_at": "2026-08-01T10:00:00Z",
   "platform": "android",
+  "scan_type": "full",
   "progress_message": null,
   "total_findings_count": 14,
   "critical_findings_count": 0,
@@ -416,6 +435,10 @@ Response shape (compact JSON on stdout):
   "queue_position": null
 }
 ```
+
+`id` is the scan this row describes. `current_scan_status` is non-null on a plain (no-selector)
+call when a rescan is running in the background: it means "a fresh scan is `queued`/`analyzing`,
+poll it with `--scan-id`".
 
 The `letter_grade` field is computed client-side by the CLI (it is not returned by the API):
 
@@ -435,7 +458,9 @@ On 404, emits `{"error":"not_found","package_id":"..."}` and exits non-zero.
 
 How Claude should use this: use for a quick "is this app done?" check before investing a
 heavier `citt results` or `citt report` call. If `status` is not `completed`, tell the user
-the scan is still in progress and show `progress_message`.
+the scan is still in progress and show `progress_message`. Right after a `citt rescan`, poll
+`citt status <pkg> --scan-id <scan_id>` (not the bare form) so you report the NEW scan's
+progress and its fresh score when it finishes — comparing it against the old score if useful.
 
 ---
 

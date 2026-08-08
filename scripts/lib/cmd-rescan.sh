@@ -144,7 +144,13 @@ USAGE
       scan_id="$(_json_get scan_id "$body")"
       scan_number="$(_json_get scan_number "$body")"
       emit_err "citt rescan: ${pkg} — fresh scan #${scan_number:-?} queued (scan_id ${scan_id:-?})."
-      emit_err "Poll progress with: citt status ${pkg}"
+      # Poll the NEW scan by id — plain `citt status ${pkg}` shows the last
+      # COMPLETED scan while this rescan runs, not the in-flight one.
+      if [ -n "$scan_id" ]; then
+        emit_err "Poll this scan with: citt status ${pkg} --scan-id ${scan_id}"
+      else
+        emit_err "Poll progress with: citt status ${pkg}"
+      fi
       ;;
     401) _reauth_hint ;;
     403)
