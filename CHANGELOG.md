@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.1
+
+- `citt whoami` names the plan the research service reports (`GET /me` `plan`), so an account on a plan without a billing subscription (Custom) is no longer shown as Pay as you go.
+
 ## 2.0.0
 
 - Rewritten for the CanITrustThat research API (`/api/research/v1`): scans by a versioned rule pack with findings, evidence, facts and a compliance status per regime.

@@ -1,6 +1,6 @@
 {
   "name": "citt",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Scan Android apps with CanITrustThat and see what is inside: ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent and children's signals. Scan one app, read its findings, ask a question about its code; projects, CSV, scrutiny and exports on the Researcher plans.",
   "author": {
     "name": "CanITrustThat",

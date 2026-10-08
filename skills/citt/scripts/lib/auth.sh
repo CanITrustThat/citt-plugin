@@ -235,7 +235,9 @@ cmd_whoami() {
     "user_type: \(.user_type // "-")",
     "analysis_track: \(.analysis_track // "-")"' "$account" \
     || die 1 "unparseable response from GET /api/me"
-  printf 'plan: %s\n' "$(_plan_name "$(jq -r '.subscription.plan_id // .subscription.plan // .plan // empty' "$account")")"
+  # The service's plan (GET /me .plan) first: an account can hold a plan without a legacy subscription.
+  printf 'plan: %s\n' "$(_plan_name "$(jq -rn --slurpfile a "$account" --slurpfile m "$me" \
+    '$m[0].plan // $a[0].subscription.plan_id // $a[0].subscription.plan // $a[0].plan // empty')")"
   # D62: `research` is the only entitlement; any other value is shown as none.
   jq -r '[(.entitlements // [])[] | select(. == "research")] as $e
     | "entitlements: \(if $e == [] then "none" else ($e | join(",")) end)",
