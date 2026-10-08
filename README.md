@@ -1,70 +1,94 @@
 # citt
 
-A Claude Code plugin that connects Claude Code to [canitrustthat.com](https://canitrustthat.com), a security and privacy trust analysis service for Android and iOS apps. Ask Claude in plain language; it runs the `citt` CLI for you.
+A plugin for Claude Code and Codex that scans Android apps with [CanITrustThat](https://canitrustthat.com) and reports what each app contains: ad SDKs, analytics, attribution, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent and children's signals, and store declarations. Each scan applies a versioned rule pack and returns findings with their evidence, facts (keys and account ids as found), and a compliance status per regime. Ask in plain language; the agent runs the `citt` script for you.
 
-## Quick start
+## Install
 
-Run these in Claude Code, in order:
+### Claude Code
 
 ```
-/plugin marketplace add CanITrustThat/citt-plugin   # 1. register the marketplace
-/plugin install citt@citt                           # 2. install the plugin
-/reload-plugins                                     # 3. load it without restarting
-/citt:auth                                          # 4. sign in (opens a browser link)
-/citt:submit com.spotify.music                      # 5. run your first analysis
+/plugin marketplace add CanITrustThat/citt-plugin
+/plugin install citt@citt
+/reload-plugins
+/citt:auth
 ```
 
-Step 4 is required before `submit`, `rescan`, `scan`, `result`, `report`, `mine`, and `claim`. It prints a link, you sign in and click Authorize once, and the token is stored on your machine. The commands `search`, `status`, and `results` work without signing in, so you can skip straight to step 5 with those.
+From a terminal, the first two steps are `claude plugin marketplace add CanITrustThat/citt-plugin && claude plugin install citt@citt`.
 
-Prefer the terminal? Steps 1 and 2 are one line, then auth from inside Claude Code:
+Updating from 0.4: `claude plugin marketplace update citt`, then `claude plugin update citt@citt`. A token stored by 0.4 is used as is.
+
+### Codex
+
 ```
-claude plugin marketplace add CanITrustThat/citt-plugin && claude plugin install citt@citt
+codex plugin marketplace add CanITrustThat/citt-plugin
+codex plugin add citt@citt
 ```
+
+Then ask Codex to sign you in to citt. The script needs network access to canitrustthat.com. With Codex permission profiles, add a profile to `~/.codex/config.toml` that extends `:workspace` and allows only the CanITrustThat domains:
+
+```toml
+default_permissions = "citt"
+
+[features]
+network_proxy = true
+
+[permissions.citt]
+extends = ":workspace"
+
+[permissions.citt.network]
+enabled = true
+
+[permissions.citt.network.domains]
+"canitrustthat.com" = "allow"
+"app.canitrustthat.com" = "allow"
+```
+
+With the older sandbox settings (`sandbox_mode = "workspace-write"`), set `network_access = true` under `[sandbox_workspace_write]` instead; that opens the network to every command.
+
+## Sign in
+
+`/citt:auth` in Claude Code (or "sign me in to citt" in Codex) prints a link. Open it, sign in with the code sent to your email, and approve. Any CanITrustThat account can sign in; an account is created on first sign-in at [app.canitrustthat.com](https://app.canitrustthat.com).
+
+## What each plan includes
+
+| | Pay as you go | Researcher, Deep Researcher, Custom |
+|---|---|---|
+| Scan one Android app (`citt submit PACKAGE`) | 3 a day and 30 a month, then from the prepaid balance | the plan's monthly count |
+| Read an app's findings and facts (`citt app PACKAGE`) | yes | yes |
+| Ask a question about an app's code (`citt prompt`) | from the prepaid balance | the plan's monthly count |
+| Projects, CSV submits, findings across a project, scrutiny, exports, owners | | yes |
+| iOS apps | | yes |
+
+Rates and plans: [canitrustthat.com/pricing](https://canitrustthat.com/pricing). When a request is outside the plan or the balance is short, the command prints one line with the reason, what the account can do, and the pricing or top-up link.
 
 ## Commands
 
-- `auth`: sign in via browser device flow, same idea as `gh auth login`
-- `submit`: full trust analysis of one app or many. Takes package IDs, store URLs, or a CSV file. Returns the public scorecard with a letter grade. Reuses any scan from the last 90 days
-- `rescan`: force a fresh full scan of an app that already exists. Use this, not `submit`, when results are stale (submit reuses recent scans). Owner or admin; Researcher plans can rescan any app
-- `scan`: custom prompt scan against one app. Ask a focused question and Claude writes the prompt. Private, with no public scorecard
-- `result`: fetch a custom scan's answer by scan id
-- `status`: scan status and score for any app
-- `results`: full public scorecard data for any app
-- `report`: detailed private report for an app you own, in markdown
-- `mine`: apps you've submitted, with their latest scores
-- `search`: search the public app index by name or package id
-- `claim`: claim ownership of an app you own. A code is emailed to the store contact address to verify
-- `whoami` shows the signed-in account. `logout` removes the stored token
+In Claude Code each command is also a slash command, `/citt:<command>`. In Codex, ask for the task; the skill names the command.
 
-In Claude Code every command is also a slash command: `/citt:auth`, `/citt:scan`, `/citt:submit`, and so on. Type `/citt:` to see the full list.
+| Command | What it does |
+|---|---|
+| `auth`, `whoami`, `logout` | sign in, show the account and its plan, remove the stored token |
+| `submit` | scan one app (Pay as you go), or add apps or a CSV to a project and queue their scans |
+| `status` | scan progress; `--wait` polls until the scans settle |
+| `apps`, `app` | the apps with their key findings; one app's findings, facts and compliance status |
+| `prompt` | ask a question about one app: a package id, a store link, or an APK, XAPK, APKS, APKM or IPA file |
+| `findings`, `scrutinize` | findings across a project; a model's review of a finding against the decompiled code |
+| `projects`, `owners` | your projects; who owns a project |
+| `export-results`, `export-sources` | per-app JSON; decompiled sources |
+| `usage` | this month's counts and limits |
 
-## First scan
+`citt <command> --help` prints each command's options. `--json` prints one JSON document, also on error.
 
-The first ever scan of an app has to download and decompile it first. 
-Download takes a few minutes. 
-iOS IPA decryption can take 5-10 min. 
-iOS decompilation can take anywhere between 30min and 3-4h. Android takes ~15-30 min.
-The 9 stages agentic AI pipeline can take between 20 min and 2h. Depending on the app size. 
-Repeat custom scans or full scans for the same app will reuse already existing assets. 
-A rescan must be requested for a fresh file download
+## Exit codes
 
-## Auth
+0 success; 2 usage; 3 not signed in or not in the plan (the line says which); 4 not found; 5 conflict or not ready; 6 limit reached or balance short; 7 rejected request; 8 server error; 9 network; 12 still running (re-run the printed command). The full table is in `skills/citt/SKILL.md`.
 
-In Claude Code, run `/citt:auth`. Claude prints a link; sign in and click Authorize once. The token is stored in the system keyring or a 0600 file. If the plugin is installed but not connected, a fresh session reminds you to run it. The public commands (`search`, `status`, `results`) work without an account.
+## Token and data
 
-## Requirements
+- The token is stored in the system keyring, or in the 0600 file `~/.config/citt/device_token` where no keyring is available. It is sent only to `https://canitrustthat.com`, in a curl configuration read from a pipe, and never printed, logged or placed on a command line.
+- What the script sends: the package ids, store links and CSV rows you submit, your questions, and a build file when you pass one to `citt prompt`. Exports are written under `./citt-exports/` in the working directory.
+- Requirements: bash 3.2 or later, curl, jq, unzip, and sha256sum or shasum.
 
-- `submit`, `rescan`, `scan`, `result`, `report`, `mine`, and `claim` need a Developer or Researcher account ([canitrustthat.com](https://canitrustthat.com)).
-- A custom `scan` against an app you don't own needs the Researcher plan. Developer covers your own apps and brand new targets.
-- `search`, `status`, and `results` read the public index and need no account.
+## Support
 
-## CSV format
-
-`submit` reads a file with a `package_id` column, one app per row:
-```csv
-package_id
-com.spotify.music
-com.instagram.android
-com.whatsapp
-```
-Store URLs and a bare package id passed directly also work.
+hi@canitrustthat.com

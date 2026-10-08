@@ -1,12 +1,9 @@
 ---
-description: Connect your CITT account so submit, scan, and report work
-allowed-tools: Bash, Read
+description: Sign in to CITT with a browser link (device flow)
+argument-hint: [--start | --wait | --status]
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
-Connect the user's CITT account to this machine. Two steps, no polling gymnastics.
+With arguments, run `${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt auth $ARGUMENTS` and relay the output. Without, run `${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt auth --start` and show the printed link to the user. When they have approved it, run `${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt auth --wait`, which prints `authenticated`. If `--start` prints `authenticated`, the stored token is valid and nothing else is needed.
 
-1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/citt auth --start`. It returns in about a second and prints a single verification URL. Show that URL to the user and tell them to open it, sign in to their CITT Developer or Researcher account, and click Authorize.
-
-2. Then run `${CLAUDE_PLUGIN_ROOT}/scripts/citt auth --wait`. It blocks until they authorize (or the link expires), stores the token in the system keyring or a 0600 file, and prints `authenticated`. If it exits with "still waiting", run `--wait` again to keep waiting.
-
-If `--start` prints `authenticated` instead of a URL, they are already connected. Never ask the user to paste a token, and never read the token file. See the `citt` skill for the full auth reference.
+See the citt skill for every option and the exit codes. Never read or print the token.

@@ -1,0 +1,28 @@
+{
+  "name": "citt",
+  "version": "2.0.0",
+  "description": "Scan Android apps with CanITrustThat and see what is inside: ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent and children's signals.",
+  "author": {
+    "name": "CanITrustThat",
+    "email": "hi@canitrustthat.com",
+    "url": "https://canitrustthat.com"
+  },
+  "homepage": "https://canitrustthat.com",
+  "repository": "https://github.com/CanITrustThat/citt-plugin",
+  "keywords": ["android", "app-analysis", "privacy", "security", "sdk"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "CanITrustThat",
+    "shortDescription": "Scan Android apps and read what is inside",
+    "longDescription": "Scan an Android app by package id or Google Play link and read its findings: ad SDKs, analytics, attribution, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent and children's signals, store declarations. Ask a question about an app's decompiled code. Researcher plans add projects, CSV submits, scrutiny and exports.",
+    "developerName": "CanITrustThat",
+    "category": "Developer Tools",
+    "capabilities": ["Read", "Write"],
+    "websiteURL": "https://canitrustthat.com",
+    "defaultPrompt": [
+      "Scan com.example.app with citt and list its ad SDKs",
+      "Show the keys and secrets citt found in com.example.app",
+      "Ask citt which analytics SDKs com.example.app includes"
+    ]
+  }
+}

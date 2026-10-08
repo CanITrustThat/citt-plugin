@@ -1,13 +1,17 @@
 {
   "name": "citt",
   "owner": {
-    "name": "canITrustThat"
+    "name": "CanITrustThat",
+    "email": "hi@canitrustthat.com"
   },
   "plugins": [
     {
       "name": "citt",
       "source": "./",
-      "description": "Drive CITT from Claude Code: submit apps for security and privacy trust analysis, run fast custom-prompt scans that answer one focused question, pull scorecards and your private reports, search the public index, and claim apps you own."
+      "description": "Scan Android apps with CanITrustThat and see what is inside them, from Claude Code."
     }
-  ]
+  ],
+  "metadata": {
+    "description": "The citt plugin: scan Android apps with CanITrustThat and see what is inside them."
+  }
 }

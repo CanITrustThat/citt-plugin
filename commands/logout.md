@@ -1,8 +1,8 @@
 ---
-description: Sign out and delete the stored CITT token
-allowed-tools: Bash
+description: Remove the stored CITT token
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
-Sign the user out of CITT.
+Run `${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt logout $ARGUMENTS`. It removes the token from the keyring and the token file.
 
-Run `${CLAUDE_PLUGIN_ROOT}/scripts/citt logout`. It removes the stored token from the keyring and the 0600 file and exits 0 whether or not a token was present. Confirm to the user that they are signed out, and mention that any account command will ask them to run `/citt:auth` again.
+See the citt skill for every option and the exit codes. Never read or print the token.

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# citt: the citt plugin. Projects of Android apps scanned by the CITT research
+# service: submit, status, apps, findings, scrutiny, custom prompts, exports, owners, usage.
+# shellcheck source-path=SCRIPTDIR
+set -uo pipefail
+
+CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize prompt export-results export-sources owners usage"
+
+top_help() {
+  cat <<'EOF'
+usage: citt <command> [options]
+
+Commands:
+  auth             sign in with a browser link (device flow)
+  whoami           the signed-in account
+  logout           remove the stored token
+  submit           add apps to a project and queue scans
+  projects         your projects with app and job counts
+  status           progress of a project's scans (--wait to block)
+  apps             the apps of a project with their key findings
+  app              the per-app JSON of one app
+  findings         the findings of a project
+  scrutinize       ask for LLM scrutiny of findings
+  prompt           ask one question about a build file, a store link or a package id
+  export-results   download the per-app JSON of a project
+  export-sources   download APKs and decompiled trees
+  owners           list, add or remove project owners
+  usage            this month's usage and limits
+
+Run citt <command> --help for its options. Every command takes --json.
+EOF
+}
+
+main() {
+  local cmd="${1:-}"
+  case "$cmd" in
+    '' | -h | --help | help)
+      top_help
+      exit 0
+      ;;
+  esac
+  shift
+  case " $COMMANDS " in
+    *" $cmd "*) ;;
+    *)
+      printf 'citt: unknown command: %s (run: citt --help)\n' "$cmd" >&2
+      exit 2
+      ;;
+  esac
+  CITT_CMD="citt $cmd"
+  # shellcheck source=lib/common.sh
+  . "$CITT_LIB/common.sh"
+  require_tools
+  # shellcheck source=lib/help.sh
+  . "$CITT_LIB/help.sh"
+  case "$cmd" in
+    auth | whoami | logout)
+      # shellcheck source=lib/auth.sh
+      . "$CITT_LIB/auth.sh"
+      ;;
+    export-results | export-sources)
+      # shellcheck source=lib/cmd-export.sh
+      . "$CITT_LIB/cmd-export.sh"
+      ;;
+    submit)
+      # shellcheck source=lib/cmd-submit.sh
+      . "$CITT_LIB/cmd-submit.sh"
+      ;;
+    projects)
+      # shellcheck source=lib/cmd-projects.sh
+      . "$CITT_LIB/cmd-projects.sh"
+      ;;
+    status)
+      # shellcheck source=lib/cmd-status.sh
+      . "$CITT_LIB/cmd-status.sh"
+      ;;
+    apps)
+      # shellcheck source=lib/cmd-apps.sh
+      . "$CITT_LIB/cmd-apps.sh"
+      ;;
+    app)
+      # shellcheck source=lib/cmd-app.sh
+      . "$CITT_LIB/cmd-app.sh"
+      ;;
+    findings)
+      # shellcheck source=lib/cmd-findings.sh
+      . "$CITT_LIB/cmd-findings.sh"
+      ;;
+    scrutinize)
+      # shellcheck source=lib/cmd-scrutinize.sh
+      . "$CITT_LIB/cmd-scrutinize.sh"
+      ;;
+    prompt)
+      # shellcheck source=lib/tus.sh
+      . "$CITT_LIB/tus.sh"
+      # shellcheck source=lib/cmd-prompt.sh
+      . "$CITT_LIB/cmd-prompt.sh"
+      ;;
+    owners)
+      # shellcheck source=lib/cmd-owners.sh
+      . "$CITT_LIB/cmd-owners.sh"
+      ;;
+    usage)
+      # shellcheck source=lib/cmd-usage.sh
+      . "$CITT_LIB/cmd-usage.sh"
+      ;;
+  esac
+  # stdout passes through clean (app text can hold terminal control characters); auth prints the
+  # sign-in link while it waits, so it writes directly.
+  case "$cmd" in
+    auth) cmd_auth "$@" ;;
+    export-results) cmd_export results "$@" | clean ;;
+    export-sources) cmd_export sources "$@" | clean ;;
+    *) "cmd_$cmd" "$@" | clean ;;
+  esac
+}
+
+main "$@"

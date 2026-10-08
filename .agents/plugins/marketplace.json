@@ -1,0 +1,20 @@
+{
+  "name": "citt",
+  "interface": {
+    "displayName": "CanITrustThat"
+  },
+  "plugins": [
+    {
+      "name": "citt",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
