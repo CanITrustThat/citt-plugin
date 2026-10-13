@@ -85,7 +85,7 @@ In Claude Code each command is also a slash command, `/citt:<command>`. In Codex
 
 ## Token and data
 
-- The token is stored in the system keyring, or in the 0600 file `~/.config/citt/device_token` where no keyring is available. It is sent only to `https://canitrustthat.com`, in a curl configuration read from a pipe, and never printed, logged or placed on a command line.
+- The token is stored in the system keyring, or in the 0600 file `~/.config/citt/device_token` where no keyring is available. `citt auth --file` stores it in that file only, for a host without a desktop session whose keyring is locked (a `capture-sync` timer on a server); every command then reads the file before the keyring. It is sent only to `https://canitrustthat.com`, in a curl configuration read from a pipe, and never printed, logged or placed on a command line.
 - What the script sends: the package ids, store links and CSV rows you submit, your questions, and a build file when you pass one to `citt prompt`. Exports are written under `./citt-exports/` in the working directory.
 - Requirements: bash 3.2 or later, curl, jq, unzip, and sha256sum or shasum.
 

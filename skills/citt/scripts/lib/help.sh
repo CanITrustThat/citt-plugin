@@ -4,13 +4,16 @@
 
 help_auth() {
   cat <<'EOF'
-citt auth [--start | --wait | --status]
+citt auth [--start | --wait | --status] [--file]
 
 Checks the stored token with GET /usage; when there is none or it expired, runs the device
 flow: prints a link to open in a browser, then waits for the approval (600 s at most).
   --start   print the link and return
   --wait    wait for the approval of the link printed by --start
-  --status  report whether a token is stored, without a request
+  --status  report whether a token is stored and where it is read from, without a request
+  --file    keep the token only in the 0600 file ~/.config/citt/device_token, not in the
+            system keyring: for a host without a desktop session, whose keyring is locked
+            (a capture-sync timer). Every command then reads that file before the keyring.
 EOF
 }
 
@@ -28,7 +31,7 @@ help_logout() {
   cat <<'EOF'
 citt logout
 
-Removes the stored token (keyring item and file).
+Removes the stored token (keyring item and file) and the record of a --file sign-in.
 EOF
 }
 
@@ -165,5 +168,42 @@ help_usage() {
 citt usage [--json]
 
 This month's usage and limits for rule scans, Deep scans and questions.
+EOF
+}
+
+help_captures() {
+  cat <<'EOF'
+citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--limit N] [--cursor C] [--json]
+
+The network capture runs of your projects, newest first: state, app, phone, sessions done of
+planned, flags and the estimated end. States: queued, starting, running, stopping, done,
+done_with_gaps, stopped, failed, imported; active is the first four.
+EOF
+}
+
+help_capture_sync() {
+  cat <<'EOF'
+citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--groups LIST] [--since DATE]
+                  [--parallel N] [--limit-rate RATE] [--dry-run | --verify] [--json]
+citt capture-sync [--dir DIR] [options] --watch [--every 15m]
+citt capture-sync [--dir DIR] [options] --install-timer [--every 15m]
+citt capture-sync [--dir DIR] (--status | --uninstall-timer | --print-cron [--every 15m])
+
+Downloads the capture sessions completed since the last sync into DIR/<run key>/<session>/,
+with the run's README.md, run.json and checksums.sha256. Each file is checked against its sha256;
+an interrupted file resumes on the next sync. Runs without a model or tokens.
+  --dir           the sync folder (default $CITT_CAPTURE_DIR, else ./citt-captures)
+  --project       only these projects; --run only these runs
+  --groups        analysis,network,data,video (default all four)
+  --since         a date or UTC time for the first sync (default: every session)
+  --parallel      files downloaded at once, 1 to 4 (default 2)
+  --limit-rate    bandwidth cap passed to curl, such as 2M
+  --dry-run       list the sessions, files and bytes to download; write nothing
+  --verify        hash every local file again and download any that differ
+  --watch         sync every --every (5 min at least) until stopped
+  --install-timer run this sync every --every from a systemd user timer (Linux) or a launchd agent
+                  (macOS) with the plugin's sign-in; re-run after a plugin update
+  --status        last run, sessions downloaded, failures and the timer
+  --print-cron    print a crontab line for other systems
 EOF
 }

@@ -1,6 +1,6 @@
 ---
 name: citt
-description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, manage project owners, or check usage.
+description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, list network capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
@@ -59,10 +59,14 @@ Every command prints its result on stdout and progress and errors on stderr. `--
 ### citt auth
 
 ```
-citt auth [--start | --wait | --status]
+citt auth [--start | --wait | --status] [--file]
 ```
 
-Checks the stored token with `GET /usage` and prints `authenticated`. With no token, or one the service refuses (401, which deletes it), it runs the device flow: prints a link for the user to open, then waits up to 600 s for the approval. `--start` prints the link and returns; `--wait` waits for the approval of that link. `--status` reports whether a token is stored, without a request. A token stored by `citt` 0.4 is used as is.
+Checks the stored token with `GET /usage` and prints `authenticated`. With no token, or one the service refuses (401, which deletes it), it runs the device flow: prints a link for the user to open, then waits up to 600 s for the approval. `--start` prints the link and returns; `--wait` waits for the approval of that link. `--status` reports whether a token is stored and where it is read from (`signed in (token in the keyring)`, `signed in (token in <file>)` or `signed in (token from CITT_TOKEN)`), without a request. A token stored by `citt` 0.4 is used as is.
+
+The token is saved in the system keyring when the keyring accepts and returns it, otherwise in the 0600 file `~/.config/citt/device_token` (`$CITT_STATE_DIR/device_token` when that is set). `--file` saves it in that file only and never calls the keyring: for a host without a desktop session, such as a server running the `capture-sync` timer, where the keyring is locked. It combines with `--start` (then `--wait` saves to the file as well) and prints `token saved in <file> (mode 0600); the keyring is not used` on stderr. With a valid token already in the file, `--file` makes no new sign-in and only records the file as the one to read first.
+
+Every command reads the token in this order: `CITT_TOKEN`; the file, when the last sign-in saved the token there (`citt auth --file`, or a keyring that refused the write; recorded as `file` in `token_store` next to the token file), without calling the keyring, so a locked keyring is never asked and an older keyring item is ignored; the keyring; the file. A sign-in that saves to the keyring removes `token_store`, so the keyring is read first again.
 
 ### citt whoami
 
@@ -78,7 +82,7 @@ The signed-in account: email, user type, analysis track and plan, then the resea
 citt logout
 ```
 
-Removes the stored token from the keyring and the token file.
+Removes the stored token from the keyring and the token file, and the `token_store` record of a `--file` sign-in.
 
 ### citt submit
 
@@ -192,22 +196,70 @@ citt usage [--json]
 
 This month's used, limit and remaining count for rule scans, Deep scans and questions (a scrutiny job counts as a question), the rule scans of the last 24 hours where the plan has a daily count (Pay as you go: 3), the line that past the plan's count rule scans and questions are charged from the prepaid balance with the billing page, the line "Exports are unlimited and leave these counts unchanged.", then whether deep scans are counted as `deep_scan`: only while the loaded rule pack has a deep rule.
 
+### citt captures
+
+```
+citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--limit N] [--cursor C] [--json]
+```
+
+The network capture runs of every project you own, newest first (`GET /capture-runs`): run id, run key, state with its reason, app, phone, sessions done of planned with the failed count, flags, and the estimated end (`eta_at`, or how long a run is past its planned end). States: `queued`, `starting`, `running`, `stopping`, `done`, `done_with_gaps` (finished with a failed planned session), `stopped`, `failed`, `imported`; `--state active` is the first four. 50 runs a page; the last line gives the `--cursor` command for the next page.
+
+### citt capture-sync
+
+```
+citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--groups LIST] [--since DATE]
+                  [--parallel N] [--limit-rate RATE] [--dry-run | --verify] [--json]
+citt capture-sync [--dir DIR] [options] --watch [--every 15m]
+citt capture-sync [--dir DIR] [options] --install-timer [--every 15m]
+citt capture-sync [--dir DIR] (--status | --uninstall-timer | --print-cron [--every 15m])
+```
+
+Downloads the capture sessions completed or changed since the last sync, without a model: it asks `GET /capture-sessions?changed_after=` for sessions changed since 15 minutes before the latest change it processed, lists each new or changed session's files (`GET /capture-sessions/{id}/files`) and streams each file through the API with the plugin's sign-in (`GET /capture-sessions/{id}/file?path=`). The folder layout is the capture export reference, `citt-capture-export/1`:
+
+```
+DIR/<run key>/README.md, run.json, citations.jsonl, app.json, checksums.sha256, schema/
+DIR/<run key>/<session key>_<start UTC>/analysis/, network/, data/, video/, .citt-session.json
+DIR/.citt-sync/state.json, log.jsonl
+```
+
+`README.md` in each run folder describes every file and where the flags are (`analysis/flags.jsonl`). It is also at `https://canitrustthat.com/api/research/v1/capture-export/README.md` for a signed-in account.
+
+- `--dir` defaults to `$CITT_CAPTURE_DIR`, else `./citt-captures`. One folder belongs to one account; a sync signed in as another account exits 2.
+- `--project` and `--run` limit the sync (a run is its key or id); `--groups` takes `analysis`, `network`, `data`, `video` (default all four; video is the largest). Changing these lists every session again and downloads only what is missing.
+- `--since DATE` (`2026-10-01` or `2026-10-01T08:00:00Z`) starts the first sync there instead of at the first session.
+- `--parallel N`: files downloaded at once, 1 to 4 (default 2; the service streams 4 files at a time per account). `--limit-rate` caps the bandwidth (`500k`, `2M`).
+- `--dry-run` lists the sessions, files and bytes it would download and writes nothing. `--verify` hashes every local file again and downloads any that differ.
+- `--watch` syncs every `--every` (5 minutes at least, default 15 minutes) until stopped; for a terminal or `tmux`. Do not run it from an agent's Bash tool.
+
+Each file is downloaded to `<file>.part`, resumed with a `Range` request after an interruption, checked against the size, the `ETag` and the sha256 of the file list, and only then renamed. A file that fails the check twice is deleted and its session is recorded as failed (exit 11). A session is complete when its `.citt-session.json` marker is written; `state.json` records each complete session's `export_etag`, so a later sync skips it until the server changes it (a re-ingest or a new analysis), and then downloads only the files whose hash changed. Files the server no longer lists stay on disk and are named in the summary and in `log.jsonl`. A failed session is tried again after 15 minutes, then 1 hour, 4 hours and 24 hours. A second sync of the same folder while one runs prints `another sync is running` and exits 0. Before a session's download the free space must cover its missing bytes plus 10%; otherwise the sync stops with exit 1 and both numbers.
+
+The summary line: `3 new sessions, 1 updated, 41 files, 6.2 GB in 12 min; 0 failed`, then one stderr line per failed session with its reason and next try. `--json` prints the same as one object (`new`, `updated`, `files`, `bytes`, `seconds`, `failed`, `failures`, `high_water`, `exit`). Exit codes: 0 done or nothing new; 1 not enough free space; 2 another account's folder; 3 no token or an expired one (the state is left as it was); 6 the service refused downloads after 10 waits (429); 8 sessions left in the failed list; 9 network, with every `.part` kept for the next sync; 11 a file hash or an unsafe file path.
+
+`--status` prints the folder, the account, the last run with its summary and exit code, the sessions and runs downloaded with their size, the latest change seen, each failed session with its reason and next try, and the timer, without a request.
+
+`--install-timer` runs the same sync on its own every `--every` (default 15 minutes), with no model and no tokens spent. It copies the script to `~/.config/citt/sync/bin/` (the plugin's own folder changes with each plugin version), checks that `citt usage` signs in when started the way the timer starts it, and then installs:
+
+- Linux: a systemd user service and timer, `~/.config/systemd/user/citt-capture-sync-<hash>.service` and `.timer`, enabled with `systemctl --user enable --now`. It runs while you are logged in; `loginctl enable-linger $USER` keeps it running after logout.
+- macOS: a launchd agent, `~/Library/LaunchAgents/com.canitrustthat.citt.capture-sync.<hash>.plist`, loaded with `launchctl bootstrap gui/<uid>`.
+
+The timer reads the token where the plugin stores it, the system keyring or `~/.config/citt/device_token`; no unit file holds a token. A keyring that is locked outside a login session stops the install with the reason and names the fix: on a host without a desktop session, sign in with `citt auth --file`, which keeps the token in that file only and makes every command read it before the keyring, then install again. Re-run `--install-timer` after a plugin update to refresh the copy; `--status` shows the copy's version against the plugin's. `--uninstall-timer` removes the units. `--print-cron` prints one crontab line for other systems and leaves the crontab to you.
+
 ## Exit codes
 
 | Code | Meaning |
 |---|---|
 | 0 | Success, including a submit that adds nothing and a status whose apps include failures |
-| 1 | Unexpected: unparseable response, missing required tool, local write failure |
-| 2 | Usage: unknown flag, missing or conflicting arguments, invalid finding id or email, CSV over the size limit |
+| 1 | Unexpected: unparseable response, missing required tool, local write failure, not enough free space for a capture sync |
+| 2 | Usage: unknown flag, missing or conflicting arguments, invalid finding id or email, CSV over the size limit, a capture sync folder of another account |
 | 3 | Not authenticated, or not in this account's plan: no token, 401, device-flow denial or expiry; 403 `not_entitled`, which prints `this needs a Researcher, Deep Researcher or Custom plan (in a shared project, its first owner's plan); on Pay as you go, scan one Android app with citt submit PACKAGE and ask about it with citt prompt; plans: https://canitrustthat.com/pricing`; any other 403 (`ios_rule_scan_plan`, `custom_prompt_not_in_plan`, `account_paused`) prints the service's reason. Read the line: run `citt auth` only for a sign-in problem |
 | 4 | Not found: no such project, app, finding, export or prompt thread among yours |
 | 5 | Conflict or not ready: several projects with the name, last owner, app without a finished scan, a thread at its turn limit |
 | 6 | Usage limit reached (429: the period, the reset time and the plan that raises it), including the upload limits `upload_rate_limit` and `upload_quota`; or the prepaid balance is short (402 `insufficient_balance`: the price, the balance and the top-up link) |
 | 7 | Rejected request: 400 or 422; a rejected upload (status `rejected`, 409 `upload_rejected`, 413 `upload_too_large`) |
-| 8 | Server error after retries, or an export, job or prompt turn that ended failed |
+| 8 | Server error after retries, or an export, job or prompt turn that ended failed, or capture sessions left in the sync's failed list |
 | 9 | Network: host unreachable, TLS failure or timeout after retries |
 | 10 | Route not deployed on this server |
-| 11 | Export integrity: a zip or file hash differs from the manifest, or an unsafe entry name |
+| 11 | Export integrity: a zip or file hash differs from the manifest or the capture file list, or an unsafe entry name or file path |
 | 12 | Still running: a `--wait`, export or upload-validation poll reached its timeout; re-run the printed command |
 
 ## Workflows

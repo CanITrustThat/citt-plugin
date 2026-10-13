@@ -29,6 +29,9 @@ CITT_APP_HOST="https://app.canitrustthat.com"
 CITT_STATE="${CITT_STATE_DIR:-$HOME/.config/citt}"
 CITT_TOKEN_FILE="${CITT_STATE}/device_token"
 CITT_FLOW_FILE="${CITT_STATE}/device_flow"
+# "file" when the last sign-in saved the token in CITT_TOKEN_FILE (citt auth --file, or a keyring
+# that refused the write): that file is then read before the keyring.
+CITT_STORE_FILE="${CITT_STATE}/token_store"
 CITT_KR_SERVICE="canitrustthat-citt"
 CITT_KR_ACCOUNT="device_token"
 
@@ -121,7 +124,14 @@ file_bytes() { wc -c <"$1" | tr -d ' '; }
 
 # --- keyring and token -----------------------------------------------------
 
-_file_only() { [ "$CITT_OVERRIDDEN" = 1 ] || { [ "${CITT_TEST_MODE:-}" = "1" ] && [ "${CITT_FORCE_FILE_TOKEN:-}" = "1" ]; }; }
+# The keyring is skipped with the overridden host, in test mode on request, and under citt auth --file.
+_file_only() {
+  [ "$CITT_OVERRIDDEN" = 1 ] || [ "${CITT_AUTH_FILE:-}" = 1 ] \
+    || { [ "${CITT_TEST_MODE:-}" = "1" ] && [ "${CITT_FORCE_FILE_TOKEN:-}" = "1" ]; }
+}
+
+# file_signin: the last sign-in saved the token in the file, and the file holds one.
+file_signin() { [ "$(head -n1 "$CITT_STORE_FILE" 2>/dev/null)" = file ] && [ -s "$CITT_TOKEN_FILE" ]; }
 
 keyring_available() {
   _file_only && return 1
@@ -176,11 +186,16 @@ keyring_out() {
   fi
 }
 
-# Token into _CITT_TOK. Order: CITT_TOKEN, keyring, file.
+# Token into _CITT_TOK. Order: CITT_TOKEN; the file when the last sign-in saved it there
+# (file_signin), without calling the keyring, so a locked keyring is never asked and a stale
+# keyring item never shadows it; the keyring; the file.
 load_token() {
   # ${CITT_TOKEN+x}: a set-test, so xtrace shows only "x".
   if [ -n "${CITT_TOKEN+x}" ]; then
     _tok_read < <(tr -d '\r\n' <<<"${CITT_TOKEN}"; printf '\n') && return 0
+  fi
+  if file_signin; then
+    _tok_read < <(tr -d '\r\n' <"$CITT_TOKEN_FILE"; printf '\n') && return 0
   fi
   if keyring_available; then
     _tok_read < <(keyring_out | tr -d '\r\n'; printf '\n') && return 0
@@ -188,6 +203,16 @@ load_token() {
   if [ -s "$CITT_TOKEN_FILE" ]; then
     _tok_read < <(tr -d '\r\n' <"$CITT_TOKEN_FILE"; printf '\n') && return 0
   fi
+  return 1
+}
+
+# token_source: where load_token takes the token from (CITT_TOKEN, file or keyring), without
+# reading it into a variable; non-zero when there is none.
+token_source() {
+  if [ -n "${CITT_TOKEN+x}" ]; then printf 'CITT_TOKEN'; return 0; fi
+  if file_signin; then printf 'file'; return 0; fi
+  if keyring_has_token; then printf 'keyring'; return 0; fi
+  if [ -s "$CITT_TOKEN_FILE" ]; then printf 'file'; return 0; fi
   return 1
 }
 
@@ -218,6 +243,8 @@ HTTP_OUT=""
 HTTP_RESUME=0
 # Extra request headers, one per line.
 HTTP_HEADERS=""
+# Extra curl arguments for every request until changed, one per line (citt capture-sync --limit-rate).
+HTTP_EXTRA_ARGS=""
 # The request body is HTTP_CHUNK_LEN bytes of HTTP_CHUNK from HTTP_CHUNK_OFF, from a pipe.
 HTTP_CHUNK=""
 HTTP_CHUNK_OFF=0
@@ -273,6 +300,13 @@ http() {
       [ -z "$h" ] || args+=(-H "$h")
     done <<EOF
 $HTTP_HEADERS
+EOF
+  fi
+  if [ -n "$HTTP_EXTRA_ARGS" ]; then
+    while IFS= read -r h; do
+      [ -z "$h" ] || args+=("$h")
+    done <<EOF
+$HTTP_EXTRA_ARGS
 EOF
   fi
   if [ -n "$body" ]; then args+=(-H 'Content-Type: application/json' --data-binary "@$body"); fi

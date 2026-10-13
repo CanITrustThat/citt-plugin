@@ -6,7 +6,12 @@
 _status_text() {
   jq -r '
     def nonzero: to_entries | map(select(.value != 0 and .value != null));
-    "Project \(.name) (id \(.project_id)): \(.apps_settled) of \(.apps_total) apps settled",
+    # Capture-only apps never get a static scan, so they leave the settled total.
+    (.apps_by_status.not_requested // 0) as $capture |
+    "Project \(.name) (id \(.project_id)): \(.apps_settled) of \(.apps_total - $capture) apps settled",
+    (if $capture > 0 then
+       "Static scan not requested: \($capture) capture-only app\(if $capture == 1 then "" else "s" end); the settled count covers static-scan apps only."
+     else empty end),
     "Apps: " + (.apps_by_status | nonzero | map("\(.key) \(.value)") | join(", ")),
     "Jobs: " + ((.jobs // {}) | to_entries | map(select(.value | nonzero | length > 0)) | map(
         .key + " " + (.value | nonzero | map("\(.key) \(.value)") | join(", "))) | join("; ")),

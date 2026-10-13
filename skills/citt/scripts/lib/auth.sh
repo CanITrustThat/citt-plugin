@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 # lib/auth.sh: citt auth (legacy RFC 8628 device flow and token store), whoami, logout.
 # The minted token goes from the response file into a 0600 file, never into a variable.
+# citt auth --file (D21) sets CITT_AUTH_FILE=1: the keyring is neither read nor written and the
+# token is kept in CITT_TOKEN_FILE only, recorded in CITT_STORE_FILE so it is read first.
 # shellcheck shell=bash disable=SC2034
 
 POLL_CEILING_SECONDS=600
 
-# Persist the token held in the 0600 file $1: keyring when the write round-trips, else the file.
+# Persist the token held in the 0600 file $1: keyring when the write round-trips, else the file,
+# then recorded as a file sign-in (read before the keyring from then on).
 _store_token() {
   local src="$1" exp got
   if keyring_available && _keyring_store "$src" && _keyring_roundtrip "$src"; then
+    rm -f "$CITT_STORE_FILE" 2>/dev/null || true
     return 0
   fi
   mkdir -p "$CITT_STATE" 2>/dev/null || true
@@ -24,6 +28,17 @@ _store_token() {
     err "citt auth: could not save the credential (keyring and $CITT_TOKEN_FILE both failed)"
     return 1
   fi
+  _mark_file_signin
+}
+
+# _mark_file_signin: records that the token file holds the latest sign-in.
+_mark_file_signin() {
+  ( umask 077; printf 'file\n' >"$CITT_STORE_FILE" ) 2>/dev/null || true
+}
+
+# _file_saved_line: the stderr line of a --file sign-in.
+_file_saved_line() {
+  [ "${CITT_AUTH_FILE:-}" = 1 ] && err "$CITT_CMD: token saved in $CITT_TOKEN_FILE (mode 0600); the keyring is not used"
   return 0
 }
 
@@ -55,7 +70,7 @@ _keyring_roundtrip() {
 
 _delete_stored_token() {
   keyring_delete
-  rm -f "$CITT_TOKEN_FILE" 2>/dev/null || true
+  rm -f "$CITT_TOKEN_FILE" "$CITT_STORE_FILE" 2>/dev/null || true
 }
 
 # plugin_version: the version in the plugin's manifest (four levels above lib/), or "unknown".
@@ -95,9 +110,11 @@ _auth_start() {
   deadline=$(($(now_s) + expires))
   mkdir -p "$CITT_STATE"
   chmod 700 "$CITT_STATE" 2>/dev/null || true
-  # The device code goes file to file: line 1 code, line 2 interval, line 3 deadline.
+  # The device code goes file to file: line 1 code, line 2 interval, line 3 deadline, line 4
+  # "file" for a --file sign-in.
   ( umask 077
-    { jq -r '.device_code' "$RESP"; printf '%s\n%s\n' "$interval" "$deadline"; } >"$CITT_FLOW_FILE" )
+    { jq -r '.device_code' "$RESP"; printf '%s\n%s\n' "$interval" "$deadline"
+      [ "${CITT_AUTH_FILE:-}" = 1 ] && printf 'file\n'; } >"$CITT_FLOW_FILE" )
   printf '%s\n' "$link"
 }
 
@@ -110,6 +127,7 @@ _auth_wait() {
   sed -n '1p' "$CITT_FLOW_FILE" | tr -d '\n' | jq -Rc '{grant_type: "device_code", device_code: .}' >"$body"
   interval="$(sed -n '2p' "$CITT_FLOW_FILE")"
   deadline="$(sed -n '3p' "$CITT_FLOW_FILE")"
+  [ "$(sed -n '4p' "$CITT_FLOW_FILE")" != file ] || CITT_AUTH_FILE=1
   is_uint "$interval" || interval=5
   is_uint "$deadline" || deadline=$(($(now_s) + POLL_CEILING_SECONDS))
   while :; do
@@ -127,6 +145,7 @@ _auth_wait() {
       _store_token "$tok" || exit 1
       : >"$tok"
       rm -f "$CITT_FLOW_FILE"
+      _file_saved_line
       printf 'authenticated\n'
       exit 0
     fi
@@ -164,24 +183,40 @@ _auth_check() {
   fail_http
 }
 
+# _auth_valid: the stored token is valid; under --file the token file (not CITT_TOKEN) is recorded
+# as the sign-in to read first.
+_auth_valid() {
+  if [ "${CITT_AUTH_FILE:-}" = 1 ] && [ -z "${CITT_TOKEN+x}" ] && [ -s "$CITT_TOKEN_FILE" ]; then
+    _mark_file_signin
+    _file_saved_line
+  fi
+  printf 'authenticated\n'
+}
+
 cmd_auth() {
   local mode=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --start | --wait | --status) mode="$1" ;;
+      --file) CITT_AUTH_FILE=1 ;;
       --help | -h)
         help_auth
         exit 0
         ;;
-      *) usage_error "unknown option $1 (use --start, --wait or --status)" ;;
+      *) usage_error "unknown option $1 (use --start, --wait, --status or --file)" ;;
     esac
     shift
   done
   case "$mode" in
     --status)
-      # Local only, for the SessionStart hook: is a token stored?
-      if [ -n "${CITT_TOKEN+x}" ] || keyring_has_token || [ -s "$CITT_TOKEN_FILE" ]; then
-        printf 'signed in (token stored)\n'
+      # Local only, for the SessionStart hook: is a token stored, and where is it read from?
+      local src
+      if src="$(token_source)"; then
+        case "$src" in
+          CITT_TOKEN) printf 'signed in (token from CITT_TOKEN)\n' ;;
+          keyring) printf 'signed in (token in the keyring)\n' ;;
+          *) printf 'signed in (token in %s)\n' "$CITT_TOKEN_FILE" ;;
+        esac
         exit 0
       fi
       err "citt auth: not signed in; run: citt auth"
@@ -190,7 +225,7 @@ cmd_auth() {
     --wait) _auth_wait ;;
     --start)
       if _auth_check; then
-        printf 'authenticated\n'
+        _auth_valid
         exit 0
       fi
       _auth_start
@@ -198,7 +233,7 @@ cmd_auth() {
       ;;
     *)
       if _auth_check; then
-        printf 'authenticated\n'
+        _auth_valid
         exit 0
       fi
       _auth_start
@@ -268,7 +303,7 @@ cmd_logout() {
     rm -f "$CITT_TOKEN_FILE"
     removed=1
   fi
-  rm -f "$CITT_FLOW_FILE" 2>/dev/null || true
+  rm -f "$CITT_FLOW_FILE" "$CITT_STORE_FILE" 2>/dev/null || true
   if [ "$removed" = 1 ]; then
     err "logged out; token removed."
   else
