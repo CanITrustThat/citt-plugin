@@ -73,10 +73,6 @@ _delete_stored_token() {
   rm -f "$CITT_TOKEN_FILE" "$CITT_STORE_FILE" 2>/dev/null || true
 }
 
-# plugin_version: the version in the plugin's manifest (four levels above lib/), or "unknown".
-plugin_version() {
-  jq -r '.version // "unknown"' "$CITT_LIB/../../../../.claude-plugin/plugin.json" 2>/dev/null || printf 'unknown'
-}
 
 # _trusted_link URL: true for a sign-in link on the service host or the dashboard host; any link of
 # the overridden host in test mode.

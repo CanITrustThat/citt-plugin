@@ -1,6 +1,6 @@
 ---
 name: citt
-description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, start a network capture run of an app on a lab phone, follow it to its end and stop it, list capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
+description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, decompile an app's native binaries (.so libraries, iOS frameworks) with Binary Ninja into its sources, list and follow submissions (tasks) with their status and timeline, start a network capture run of an app on a lab phone, follow it to its end and stop it, list capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
@@ -26,7 +26,7 @@ Run `citt auth --start`, show the printed link to the user, then run `citt auth 
 
 ## Long-running commands
 
-`citt status --wait`, `citt scrutinize --wait`, `citt prompt --wait`, `citt capture-watch`, `citt capture-start --wait` and the export commands stop after `--timeout` seconds (default 540, below the 600 s limit of the Bash tool) with exit 12 and a line `re-run: <command>` on stderr. Run that command to continue; exports resume with `--export-id`, so no second export is requested; an interrupted `citt prompt` upload resumes when the same command is run again. A capture run lasts minutes to days: follow it with `citt capture-watch RUN --timeout 540` (the default) and, on exit 12, run the printed `re-run: citt capture-watch RUN` line; never loop on it without a timeout. Exit 0, 13 (`done_with_gaps`), 14 (`stopped`) and 8 with a `failed` line mean the run has ended. A `citt capture-start` that exits 9 (network), or 8 with a `server error` line, is safe to run again with the same arguments: it returns the run the first call created, and with `--wait` follows it again.
+`citt status --wait`, `citt scrutinize --wait`, `citt prompt --wait`, `citt native --wait`, `citt tasks --watch`, `citt task --watch`, `citt capture-watch`, `citt capture-start --wait` and the export commands stop after `--timeout` seconds (default 540, below the 600 s limit of the Bash tool) with exit 12 and a line `re-run: <command>` on stderr. Run that command to continue; exports resume with `--export-id`, so no second export is requested; an interrupted `citt prompt` upload resumes when the same command is run again. A capture run lasts minutes to days: follow it with `citt capture-watch RUN --timeout 540` (the default) and, on exit 12, run the printed `re-run: citt capture-watch RUN` line; never loop on it without a timeout. Exit 0, 13 (`done_with_gaps`), 14 (`stopped`) and 8 with a `failed` line mean the run has ended. A native code run takes minutes to hours: follow it with `citt native PACKAGE --project NAME --wait` and, on exit 12, run the printed `re-run:` line, which returns the same run; 0 and 13 mean its output is in the sources. A `citt capture-start` that exits 9 (network), or 8 with a `server error` line, is safe to run again with the same arguments: it returns the run the first call created, and with `--wait` follows it again.
 
 ## Codex
 
@@ -151,16 +151,18 @@ Queues LLM scrutiny of findings (ids `f_` plus 52 characters). The project is ne
 ### citt prompt
 
 ```
-citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--wait] [--timeout SEC] [--json]
-citt prompt --thread N ["QUESTION"] [--schema FILE] [--wait] [--timeout SEC] [--json]
-citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--json]
+citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
+citt prompt --thread N ["QUESTION"] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
+citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native] [--json]
 ```
 
 Asks one question about one app and prints the thread id. `TARGET` is a build file when it is an existing file with the extension `.apk`, `.xapk`, `.apks`, `.apkm` or `.ipa`; a store link when it starts with `https://` or `http://` (Google Play or App Store); otherwise a package id, whose platform is `--platform` (default `android`). A build file is uploaded with tus 1.0 in 32 MiB chunks (500 MiB at most) and the question is posted once the service has validated it. The resume state of an upload is the 0600 file `${XDG_STATE_HOME:-~/.local/state}/citt/uploads/<sha256>.json` (`upload_url`, `size`, `mtime`): re-running the same command after an interruption sends `HEAD` and resumes from the server's offset, and a state file whose upload the server no longer has (404, 410) starts a new upload. The state file is removed once the upload is validated or rejected. `--thread N "QUESTION"` asks a follow-up in thread N about the same build; `--thread N --wait` without a question waits for the thread's last turn. `--schema FILE` sends a JSON Schema (a JSON object) as `output_schema`; the answer then carries `data` matching it. `--wait` polls the thread with the backoff of `citt status --wait` until the turn is answered and prints the answer, each citation as `path:line` with its quoted line, the findings, `data`, and the label `Model answer from static code. Every cited file and quoted line was checked to exist in the decompiled build; the reasoning was not checked. Static code shows what the app contains, not what it sends.` After `--timeout` (default 540 s) it exits 12 with `re-run: citt prompt --thread N --wait`. `--json` prints the `POST /prompts` (or `/turns`) body, or with `--wait` the thread; on an error it prints one document with `error`, `message` and `http_status`. Each question is one `llm_prompt` unit, refunded when no answer is stored.
 
+`--native` sends `decompile_native: true`: when the build has native binaries without Binary Ninja output, the service starts the build's native code run (or reuses a run that is open or finished, as `citt native` does) and the question waits for it to end, then reads its output. While it waits the turn is `queued` at stage `native_decompile`; the command prints `waiting for native code` with `citt tasks --running` to follow the run. An answer written without native code output prints `The answer read no native code: the build's native binaries are not decompiled.` and the `citt native N` command (N is the project app id) that starts the run. Without `--native` nothing is decompiled.
+
 The command follows the shared exit codes: 3 for 403 `not_entitled` or `custom_prompt_not_in_plan`; 4 for an unknown thread; 5 for 409 `thread_turn_limit`; 6 for 429 `usage_limit_exceeded`, `upload_rate_limit` (20 uploads per hour) or `upload_quota`; 7 for a rejected upload (validation status `rejected`, 409 `upload_rejected` or 413 `upload_too_large`, printed with the rejection code) or a 400; 8 for a turn that ends `failed` under `--wait` (printed with its reason); 12 for the `--wait` timeout or an upload still being validated at the timeout.
 
-The project form runs the question over a project's decompiled apps. The answers become findings with source `llm_prompt`, each citing files of the app: `citt findings --source llm_prompt`.
+The project form runs the question over a project's decompiled apps. The answers become findings with source `llm_prompt`, each citing files of the app: `citt findings --source llm_prompt`. With `--native` each app whose build has native binaries without output waits for its native code run; the command prints how many apps wait.
 
 ### citt export-results
 
@@ -178,7 +180,7 @@ citt export-sources (--project NAME | --project-id N) --apps A[,B...] [--out DIR
                     [--export-id N] [--timeout SEC] [--json]
 ```
 
-Writes `<out>/sources/<platform>/<package>/` with `app.json`, `<package>.apk` and `tree/` (the decompiled sources). List the apps: sources exports can be several GB. An app without a decompiled tree is prepared first, so the first run usually exits 12 with the `--export-id` command to re-run.
+Writes `<out>/sources/<platform>/<package>/` with `app.json`, `<package>.apk`, `tree/` (the decompiled sources) and, when the build has a native code run with output (`citt native`), `native/binja_output/<binary>/` with the Binary Ninja output of each decompiled binary (`decompiled_<letter>.c`, each function as `// Function: <name> @ 0x<addr>` followed by pseudo-C, `call_graph_summary.txt`, `call_graph.json`, `decompilation_manifest.json`) and `native/binja_output/index.json` listing every binary with its status. The native tarball is checked like the tree (hash against the manifest, regular files and safe names only) and the `Wrote` line counts its binaries: `native/ with 19 decompiled binaries`. The export takes the newest run with output at the time it is written; it does not wait for a run in progress. List the apps: sources exports can be several GB. An app without a decompiled tree is prepared first, so the first run usually exits 12 with the `--export-id` command to re-run.
 
 ### citt owners
 
@@ -194,7 +196,7 @@ Lists the owners, or adds and removes them in argument order, stopping at the fi
 citt usage [--json]
 ```
 
-This month's used, limit and remaining count for rule scans, Deep scans and questions (a scrutiny job counts as a question), the rule scans of the last 24 hours where the plan has a daily count (Pay as you go: 3), the line that past the plan's count rule scans and questions are charged from the prepaid balance with the billing page, the line "Exports are unlimited and leave these counts unchanged.", then whether deep scans are counted as `deep_scan`: only while the loaded rule pack has a deep rule.
+This month's used, limit and remaining count for rule scans, Deep scans and questions (a scrutiny job counts as a question), the rule scans of the last 24 hours where the plan has a daily count (Pay as you go: 3), the line that past the plan's count rule scans and questions are charged from the prepaid balance with the billing page, the line "Exports are unlimited and leave these counts unchanged.", a Native code (binaries) row with the binaries native code runs decompiled this month (no limit; counted to the account that pays for the project, as questions are), then whether deep scans are counted as `deep_scan`: only while the loaded rule pack has a deep rule.
 
 ### citt captures
 
@@ -298,6 +300,57 @@ citt capture-stop RUN [--json]
 
 Stops a capture run (its id or run key) with `POST /capture-runs/{id}/stop`. A running run prints `stopping; the phone ends the current session and uploads it` and the `citt capture-watch` command that follows it to `stopped`. A queued run ends at once: `stopped before it started`. A run that has ended prints `had already ended:` with its final state, sends no stop request and exits 0. A run ingested from the command line is stopped on the lab host; the API answers 409 `not_launched` (exit 5).
 
+### citt native
+
+```
+citt native PACKAGE (--project NAME|ID | --project-id N) [--platform android|ios] [--wait] [--timeout SEC] [--json]
+citt native PROJECT_APP_ID [--wait] [--timeout SEC] [--json]
+```
+
+Starts the native code run of the app's stored build (`POST /project-apps/{id}/native-code`): the build's native binaries go to Binary Ninja, and the output is added to the build's sources, where questions read it and `citt export-sources` writes it under `native/`. Android builds give their `.so` libraries of one CPU type (arm64-v8a first; the copies for other CPU types are skipped as the same library), from the base APK and the split APKs; iOS builds give the main executable, the frameworks, the dylibs other than the Swift runtime, and the app extensions from the stored app bundle. `libflutter.so` (the Flutter engine) is skipped; a Flutter app's `libapp.so` is decompiled without function names. A number without `--project` is a project app id, the form an answer's `citt native N` line gives; with `--project` a number is an iOS app id. `--platform` is needed only when the package is in the project for both platforms; when it is in the project several times for one platform, the newest row is used and a line on stderr names the ids. Binaries are named by their path in the build (`lib/arm64-v8a/libfoo.so`, `Payload/App.app/Frameworks/X.framework/X`).
+
+The command prints the task id, the run, the binaries to decompile, the skipped binaries grouped by reason, and the progress line:
+
+```
+Task 812: Native code for com.lenovo.anyshare.gps (android): run 12 queued.
+To decompile: 21 binaries (arm64-v8a): libfoo.so, libbar.so, ...
+Skipped: 22
+  Same library for another CPU type. (21): lib/armeabi-v7a/libfoo.so, ...
+  Flutter engine, the same code in every Flutter app. (1): lib/arm64-v8a/libflutter.so
+Run 12: queued, 0 of 21 done; waiting behind 6 binaries of other work; no estimate yet
+```
+
+A build has one run per decompiler version: when the build already has a run that is open, `done` or done with gaps, the command returns that run (`this build already has run 12`) and queues nothing; a `failed` or `cancelled` run allows a new one. One Binary Ninja seat serves every account, and binaries of Deep scans go first, so a run can wait in the queue. Each run is counted in Usage as `native_code` with the number of binaries, with no price and no limit. A build without stored files exits 5 with the command or page that makes them: `citt submit` for an app without a build, the app page for an iOS build whose files are not prepared.
+
+`--wait` polls `GET /project-apps/{id}/native-code` every 15 seconds and prints a line at each change: done of total and failed, the binaries being decompiled, the binaries of other work ahead in the queue, the estimated end in local time (`about 2026-10-14 14:40 CDT`, or `no estimate yet` until the decompiler has timed 20 binaries), and `the decompiler is offline since <time>; the task stays queued and starts when it returns`. At the end it prints each failed binary with its reason (`Binary Ninja stopped after 2 hours: the library is too large or dense to finish.`, `Binary Ninja crashed on this binary.`) and the `citt export-sources` command that downloads the output. Exit codes: 0 `done`, 13 done with gaps (some binaries failed; the others are in the sources), 8 `failed` (with the reason and the command that runs it again), 14 `cancelled`; after `--timeout` (default 540) 12 with `re-run: citt native ... --wait`, which returns the same run. `--json` prints one document, `schema` `citt.plugin.native/1`, with `project_app_id`, `task_id`, `reused`, `polls`, `ended`, `state` (the last `GET` body, or the `POST` body without `--wait`) and with `--wait` `started` (the `POST` body).
+
+### citt tasks
+
+```
+citt tasks [--project NAME|ID | --project-id N] [--app PACKAGE [--platform P]] [--kind K[,K...]]
+           [--running | --failed] [--mine] [--watch [--timeout SEC]] [--limit N] [--cursor C] [--json]
+```
+
+Submissions, newest first, one row per submission: a scan request of N apps, an Ask of N questions, a thread turn, a kids check, a capture run or group, an export, a native code run, a Deep or Ultra-deep scan from the Scans page. With a project it lists the project's tasks (`GET /projects/{id}/tasks`), with `--app` one app's (`GET /project-apps/{id}/tasks`), and without either the tasks of every project you own (`GET /tasks`); `--running` without a project is what runs now across projects. The table:
+
+```
+TASK  KIND         WHAT                                    STATUS                                       BY                               SUBMITTED             DURATION
+812   Native code  Native code: com.lenovo.anyshare.gps    running 7/21 binaries                        hi@canitrustthat.com via plugin  2026-10-14 14:02 CDT  18m
+811   Question     Question: Does the app share location?  done with gaps 2/3 apps answered (1 failed)  hi@canitrustthat.com via web     2026-10-14 13:00 CDT  12m
+```
+
+`via` names where the submission came from: `web`, `plugin`, `api` (another API client), `legacy` or `unknown` (submitted before tasks were recorded). `done with gaps` is the API's `partial`: some parts failed. Below the table one line per task with a queue place or estimate, and one per failed task with its reason and next step. `--kind` takes `rule_scan`, `deep_scan`, `question`, `thread_turn`, `kids_check`, `capture`, `capture_group`, `export`, `native_code`, `legacy_scan`; `--running` is `queued` and `running`, `--failed` is `failed`, `--mine` your own submissions in a shared project. 25 rows a page (`--limit` up to 100); the last line gives the `--cursor` command for the next page. `--watch` prints the table, then a line per task whose status or progress changes, every 15 seconds, until no task of the list is queued or running (exit 0); a task that leaves a `--running` list is read once for its end state. After `--timeout` (default 540) it exits 12 with the re-run line. `--json` prints `schema` `citt.plugin.tasks/1`, `tasks` (the API's tasks, ISO UTC times) and `next_cursor`.
+
+### citt task
+
+```
+citt task ID [--cancel] [--watch [--timeout SEC]] [--json]
+```
+
+One task (`GET /tasks/{id}`): title, kind, status with progress and queue place or estimate, who submitted it from where and with which client (`citt-plugin 2.3.0`), the submit, start and end times in local time, the duration, the apps, the reason of a failure or of gaps with its next step (`next: Decompile native code: citt native 3961`), the result (`Result: View native libraries: https://app.canitrustthat.com/projects/16/apps/android/...`), the task page on the dashboard, the parts (each app, checklist part, session or binary with its status and reason; failed parts first, at most 500) and the timeline, every page of it. `--watch` prints new timeline events and status changes every 15 seconds until the task ends: exit 0 `done`, 13 done with gaps, 8 `failed`, 14 `cancelled`, 12 after `--timeout` (default 540) with `re-run: citt task ID --watch`. `--cancel` first asks the service to cancel the task (`POST /tasks/{id}/cancel`): a native code run, a capture, a capture group, or a question that waits for native code; work already done stays. It prints `Task N: cancelled.`, or `cancel requested` while the decompiler still has to stop; with `--watch` it then follows the task to its end (exit 14). A task that has ended or has no cancel exits 5 with the service's reason; an unknown task exits 4. Without `--watch` the command exits 0 whatever the task's status. `--json` prints `schema` `citt.plugin.task/1` and `task`, the API body with the whole timeline.
+
+Times in the output of `citt native`, `citt tasks` and `citt task` are in the machine's time zone with its abbreviation (`2026-10-14 14:02 CDT`); `--json` keeps the API's ISO UTC times.
+
 ## Exit codes
 
 | Code | Meaning |
@@ -307,16 +360,16 @@ Stops a capture run (its id or run key) with `POST /capture-runs/{id}/stop`. A r
 | 2 | Usage: unknown flag, missing or conflicting arguments, invalid finding id or email, CSV over the size limit, a capture sync folder of another account |
 | 3 | Not authenticated, or not in this account's plan: no token, 401, device-flow denial or expiry; 403 `not_entitled`, which prints `this needs a Researcher, Deep Researcher or Custom plan (in a shared project, its first owner's plan); on Pay as you go, scan one Android app with citt submit PACKAGE and ask about it with citt prompt; plans: https://canitrustthat.com/pricing`; any other 403 (`ios_rule_scan_plan`, `custom_prompt_not_in_plan`, `account_paused`) prints the service's reason. Read the line: run `citt auth` only for a sign-in problem |
 | 4 | Not found: no such project, app, finding, export or prompt thread among yours |
-| 5 | Conflict or not ready: several projects with the name, last owner, app without a finished scan, a thread at its turn limit, no free lab phone for `citt capture-start`, a reused capture start key with a different request |
+| 5 | Conflict or not ready: several projects with the name, last owner, app without a finished scan, a thread at its turn limit, no free lab phone for `citt capture-start`, a reused capture start key with a different request, an app without a stored build or prepared files for `citt native` |
 | 6 | Usage limit reached (429: the period, the reset time and the plan that raises it), including the upload limits `upload_rate_limit` and `upload_quota`; or the prepaid balance is short (402 `insufficient_balance`: the price, the balance and the top-up link) |
 | 7 | Rejected request: 400 or 422; a rejected upload (status `rejected`, 409 `upload_rejected`, 413 `upload_too_large`) |
-| 8 | Server error after retries, or an export, job or prompt turn that ended failed, or capture sessions left in the sync's failed list, or a capture run that ended `failed` |
+| 8 | Server error after retries, or an export, job or prompt turn that ended failed, or capture sessions left in the sync's failed list, or a capture run, native code run or followed task that ended `failed` |
 | 9 | Network: host unreachable, TLS failure or timeout after retries |
 | 10 | Route not deployed on this server |
 | 11 | Export integrity: a zip or file hash differs from the manifest or the capture file list, or an unsafe entry name or file path |
-| 12 | Still running: a `--wait`, export, upload-validation or `citt capture-watch` poll reached its timeout; re-run the printed command |
-| 13 | A capture run ended `done_with_gaps`: at least one planned session failed; the others can be downloaded |
-| 14 | A capture run ended `stopped` by a stop request |
+| 12 | Still running: a `--wait`, `--watch`, export, upload-validation or `citt capture-watch` poll reached its timeout; re-run the printed command |
+| 13 | A capture run ended `done_with_gaps` (at least one planned session failed; the others can be downloaded), or a native code run or followed task ended done with gaps (`partial`: some binaries or parts failed) |
+| 14 | A capture run ended `stopped` by a stop request, or a native code run or followed task ended `cancelled` |
 
 ## Workflows
 
@@ -355,3 +408,14 @@ Stops a capture run (its id or run key) with `POST /capture-runs/{id}/stop`. A r
 3. `citt capture-start com.example.app --project capture-lab --duration 3h --state CA`: prints the run id and key.
 4. `citt capture-watch <run id>`: repeat while it exits 12; 0, 13 or 14 mean the run has ended.
 5. `citt capture-sync --run <run key>`: downloads its sessions into `./citt-captures/`.
+
+### Native code of one app, then a question that reads it
+
+1. `citt native com.example.app --project sweep --wait`: repeat while it exits 12; 0 or 13 mean the output is in the build's sources.
+2. `citt prompt --project sweep --apps com.example.app "Which native functions read the device id?"`, or `citt prompt com.example.app "..." --native --wait`, which starts the run itself and answers once it ends.
+3. `citt export-sources --project sweep --apps com.example.app`: the output is in `./citt-exports/sweep/sources/android/com.example.app/native/binja_output/`.
+
+### What is running
+
+1. `citt tasks --running`: queued and running tasks across your projects.
+2. `citt task <id> --watch`: one task to its end, with its timeline; repeat while it exits 12.

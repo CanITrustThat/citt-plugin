@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # citt: the citt plugin. Projects of Android apps scanned by the CITT research
 # service: submit, status, apps, findings, scrutiny, custom prompts, exports, owners, usage,
-# network capture runs (start, watch, stop) and the capture sync of their sessions.
+# network capture runs (start, watch, stop), the capture sync of their sessions, native code runs
+# and tasks.
 # shellcheck source-path=SCRIPTDIR
 set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -35,6 +36,9 @@ Commands:
   capture-start    start a network capture run of an app on a lab phone
   capture-watch    follow a capture run to its end (--timeout, then re-run)
   capture-stop     stop a capture run
+  native           decompile an app's native binaries with Binary Ninja into its sources (--wait)
+  tasks            submissions (scans, questions, captures, exports, native code) with status
+  task             one task: status, parts, timeline and result link (--watch)
 
 Run citt <command> --help for its options. Every command takes --json.
 EOF
@@ -122,6 +126,14 @@ main() {
       . "$CITT_LIB/cmd-capture.sh"
       # shellcheck source=lib/cmd-capture-run.sh
       . "$CITT_LIB/cmd-capture-run.sh"
+      ;;
+    native)
+      # shellcheck source=lib/cmd-native.sh
+      . "$CITT_LIB/cmd-native.sh"
+      ;;
+    tasks | task)
+      # shellcheck source=lib/cmd-tasks.sh
+      . "$CITT_LIB/cmd-tasks.sh"
       ;;
   esac
   # stdout passes through clean (app text can hold terminal control characters); auth prints the

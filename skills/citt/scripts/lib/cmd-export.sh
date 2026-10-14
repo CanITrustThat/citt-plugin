@@ -300,13 +300,23 @@ cmd_export() {
         fi
         _defuse_tree "$base/$platform/$pkg/tree"
         ;;
+      native_code)
+        # Binary Ninja output of the build's native binaries: native/binja_output/<binary>/.
+        _check_tar "$export_id" "$tmp/zip/$name"
+        mkdir -p "$base/$platform/$pkg/native"
+        if ! tar -xzf "$tmp/zip/$name" -C "$base/$platform/$pkg/native" --no-same-owner; then
+          rm -rf "$tmp"
+          die 1 "cannot unpack the native code of $pkg"
+        fi
+        _defuse_tree "$base/$platform/$pkg/native"
+        ;;
     esac
   done < <(jq -r '.files[] | [.name, .role, .platform, .package_id] | @tsv' "$man")
 
   # The plugin document, before the stage is moved.
   local doc
   doc="$(tmpfile export_doc)"
-  (cd "$tmp/stage" && find . -type f ! -path "./$kind/*/*/tree/*" ! -name manifest.json | sed 's|^\./||' | sort) | while IFS= read -r name; do
+  (cd "$tmp/stage" && find . -type f ! -path "./$kind/*/*/tree/*" ! -path "./$kind/*/*/native/*" ! -name manifest.json | sed 's|^\./||' | sort) | while IFS= read -r name; do
     platform="${name#"$kind"/}"
     platform="${platform%%/*}"
     pkg="${name#"$kind/$platform/"}"
@@ -349,6 +359,10 @@ cmd_export() {
       if [ -d "$d/tree" ]; then
         tf="$(find "$d/tree" -type f | wc -l | tr -d ' ')"
         parts="$parts${parts:+, }tree/ with $tf file$([ "$tf" = 1 ] || printf s)"
+      fi
+      if [ -d "$d/native/binja_output" ]; then
+        tf="$(find "$d/native/binja_output" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+        parts="$parts${parts:+, }native/ with $tf decompiled binar$([ "$tf" = 1 ] && printf y || printf ies)"
       fi
       printf 'Wrote %s/ (%s).\n' "$d" "$parts"
     done < <(jq -r '[.files[] | [.platform, .package_id]] | unique[] | @tsv' "$man")

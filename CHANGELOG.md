@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.3.0
+
+- `citt native PACKAGE --project NAME` starts the native code run of an app's build: Binary Ninja decompiles the build's native binaries (Android `.so` libraries of one CPU type, iOS executables and frameworks from the stored bundle) into its sources. It prints the task id, the binaries to decompile and the skipped ones with their reason; a build that already has a run gets that run back. `--wait` prints a line per change (done of total, binaries being decompiled, binaries ahead in the queue, estimated end, decompiler offline) and exits 0 on done, 13 on done with gaps, 8 on failed, 14 on cancelled, 12 at the timeout.
+- `citt tasks` lists submissions (scans, questions, thread turns, kids checks, captures, exports, native code, legacy scans) of a project, an app or every project, with status and progress, who submitted them from where, the local submit time and the duration; `--running`, `--failed`, `--kind`, `--mine`, `--watch`.
+- `citt task ID` prints one task with its parts, timeline, reason and next step, and the result link on the dashboard; `--watch` follows it to its end.
+- `citt prompt --native` (both forms and follow-ups) decompiles the build's native binaries first; the question waits for the run and reads its output. A waiting turn prints `waiting for native code`; an answer without native output names the `citt native` command.
+- `citt export-sources` unpacks the native code of a build (`native-<sha>.tar.gz`, role `native_code`) into `<package>/native/binja_output/`, checked like the tree, and counts its binaries in the `Wrote` line.
+- Every request sends `X-CITT-Client: citt-plugin <version>`, so the service records plugin submissions as `plugin` in Tasks.
+- Times in `citt native`, `citt tasks` and `citt task` print in the machine's time zone with its abbreviation; `--json` keeps ISO UTC.
+
 ## 2.2.0
 
 - `citt capture-start` starts a network capture run of an Android app of a project on a lab phone: duration, exit state, session length, phone (the first free one by default), persona age and tracking. It prints the run id and key, the phone, the planned sessions, the estimated end and the commands that follow, stop and download the run. A re-run of the same command after a network failure returns the run the first call created.

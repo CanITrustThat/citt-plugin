@@ -39,6 +39,20 @@ CITT_KR_ACCOUNT="device_token"
 CITT_CMD="${CITT_CMD:-citt}"
 CITT_JSON=0
 
+# plugin_version: the timer copy's VERSION file, else the version in the plugin's manifest (four
+# levels above lib/), else "unknown".
+plugin_version() {
+  if [ -f "${CITT_LIB:-.}/../VERSION" ]; then
+    tr -d '\n' <"${CITT_LIB:-.}/../VERSION"
+  else
+    jq -r '.version // "unknown"' "${CITT_LIB:-.}/../../../../.claude-plugin/plugin.json" 2>/dev/null || printf 'unknown'
+  fi
+}
+
+# The X-CITT-Client value on every request: the service records it on the task a submission
+# creates and reads "citt-plugin ..." as the plugin (DESIGN-native-and-tasks B2).
+CITT_CLIENT="citt-plugin $(plugin_version)"
+
 # Removes the temp directories of earlier runs that ended without their EXIT trap (SIGKILL):
 # those whose recorded pid is gone, and pid-less ones older than an hour.
 _citt_sweep() {
@@ -295,6 +309,7 @@ http() {
   local -a args
   args=(-sS -g -o "$out" -D "$HDRS" -w '%{http_code}' --connect-timeout 20)
   if [ "$method" = HEAD ]; then args+=(-I); else args+=(-X "$method"); fi
+  args+=(-H "X-CITT-Client: $CITT_CLIENT")
   if [ -n "$HTTP_HEADERS" ]; then
     while IFS= read -r h; do
       [ -z "$h" ] || args+=(-H "$h")
@@ -726,3 +741,102 @@ table() {
 JQ_CSV='def cell: if . == null then "" elif type == "string" and test("^[=+@-]") then "'"'"'" + . else tostring end
   | if test("[,\"\r\n]") then "\"" + gsub("\""; "\"\"") + "\"" else . end;
   def csvrow: map(cell) | join(",");'
+
+# --- local times -----------------------------------------------------------
+
+# Times print in the machine's time zone with its abbreviation (DESIGN-native-and-tasks D12):
+# `2026-10-14 14:02 CDT`; --json keeps the API's ISO UTC strings.
+# jq's strflocaltime prints the standard-time abbreviation in summer (jq 1.7), so `date` formats.
+
+# JQ_TS: `ts`, epoch seconds of an API time (fractional seconds, `Z` or `+00:00`); 0 for null.
+JQ_TS='def ts: if . == null or . == "" then 0 else
+  (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601) end;'
+
+# local_time EPOCH: the local date and time with the zone abbreviation.
+local_time() {
+  date -d "@$1" '+%Y-%m-%d %H:%M %Z' 2>/dev/null || date -r "$1" '+%Y-%m-%d %H:%M %Z'
+}
+
+# local_times FILE: a JSON object mapping every API time string in FILE to its local_time, for jq's
+# `$L` (with JQ_LT).
+local_times() {
+  local iso e
+  jq -r "$JQ_TS"' [.. | strings | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}"))] | unique[]
+    | "\(.)\t\(ts | floor)"' "$1" 2>/dev/null | while IFS=$'\t' read -r iso e; do
+    jq -nc --arg k "$iso" --arg v "$(local_time "$e")" '{($k): $v}'
+  done | jq -sc 'add // {}'
+}
+
+# JQ_LT: `lt`, an API time as local_time through $L; "-" for null. `dur`, seconds as 45s, 12m, 1h 05m, 2d 3h.
+# shellcheck disable=SC2016
+JQ_LT="$JQ_TS"'
+def lt: if . == null then "-" else ($L[.] // .) end;
+def dur: (. | floor) as $s
+  | if $s < 60 then "\($s)s" elif $s < 3600 then "\($s / 60 | floor)m"
+    elif $s < 86400 then "\($s / 3600 | floor)h \($s % 3600 / 60 | floor | tostring | if length < 2 then "0" + . else . end)m"
+    else "\($s / 86400 | floor)d \($s % 86400 / 3600 | floor)h" end;'
+
+# --- project apps ----------------------------------------------------------
+
+# resolve_app PACKAGE PLATFORM: sets APP_ID, APP_PLATFORM and APP_PACKAGE, the project app of
+# PACKAGE in PROJECT_ID (resolve_project first). PLATFORM empty: either platform, when only one
+# has the package.
+APP_ID=""
+APP_PLATFORM=""
+APP_PACKAGE=""
+resolve_app() {
+  local pkg="$1" platform="$2" rows n
+  E_KIND=project
+  call GET "$CITT_V1/projects/$PROJECT_ID/apps$(query q "$pkg")"
+  # Rows of the package, newest first (a package can be in the project more than once, e.g. re-added builds).
+  rows="$(jq -c --arg p "$pkg" --arg pl "$platform" \
+    '[.apps[]? | select(.package_id == $p and ($pl == "" or .platform == $pl)) | {project_app_id, platform, added_at: (.added_at // "")}]
+     | sort_by([.added_at, .project_app_id]) | reverse' "$RESP" 2>/dev/null)" \
+    || die 1 "unparseable response from GET $CITT_V1/projects/$PROJECT_ID/apps"
+  n="$(jq 'length' <<<"$rows")"
+  case "$n" in
+    0) die 4 "$pkg${platform:+ ($platform)} is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $pkg" ;;
+  esac
+  # Both platforms, and none chosen: ask which.
+  if [ "$(jq '[.[].platform] | unique | length' <<<"$rows")" -gt 1 ]; then
+    usage_error "$pkg is in the project for android and ios; give --platform android or --platform ios"
+  fi
+  # Several rows of one platform: the newest one.
+  if [ "$n" -gt 1 ]; then
+    err "${CITT_CMD:-citt}: $pkg is in the project $n times ($(jq -r 'map(.project_app_id | tostring) | join(", ")' <<<"$rows")); using the newest, project app $(jq -r '.[0].project_app_id' <<<"$rows")"
+  fi
+  APP_ID="$(jq -r '.[0].project_app_id' <<<"$rows")"
+  APP_PLATFORM="$(jq -r '.[0].platform' <<<"$rows")"
+  APP_PACKAGE="$pkg"
+  E_KIND=app
+  E_PACKAGE="$pkg"
+}
+
+# project_flag_or_id: --project given a number is the project id (as `citt capture-*` take it).
+project_flag_or_id() {
+  if [ -n "$OPT_PROJECT" ] && [ -z "$OPT_PROJECT_ID" ] && is_uint "$OPT_PROJECT"; then
+    OPT_PROJECT_ID="$OPT_PROJECT"
+    OPT_PROJECT=""
+  fi
+  check_project_flags optional
+}
+
+# app_url HREF: a dashboard path as a full URL on the app host.
+app_url() {
+  case "$1" in
+    http://* | https://*) printf '%s' "$1" ;;
+    /*) printf '%s%s' "$CITT_APP_HOST" "$1" ;;
+    *) printf '%s/%s' "$CITT_APP_HOST" "$1" ;;
+  esac
+}
+
+# JQ_NEXT: `next_line`, a NextAction ({label, href, method}) as words: a POST to start native code
+# is the citt native command; another POST is the API call; a page is its URL on the app host.
+# shellcheck disable=SC2016
+JQ_NEXT='def next_line($host): if . == null then null
+  elif .method == "POST" and ((.href // "") | test("^/project-apps/[0-9]+/native-code$")) then
+    "\(.label): citt native \(.href | capture("/project-apps/(?<id>[0-9]+)/").id)"
+  elif .method == "POST" then "\(.label): POST /api/research/v1\(.href | sub("^/api/research/v1"; ""))"
+  elif (.href // "") == "" then .label
+  elif (.href | test("^https?://")) then "\(.label): \(.href)"
+  else "\(.label): \($host)\(.href)" end;'

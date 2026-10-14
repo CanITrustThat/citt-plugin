@@ -118,9 +118,9 @@ EOF
 
 help_prompt() {
   cat <<'EOF'
-citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--wait] [--timeout SEC] [--json]
-citt prompt --thread N ["QUESTION"] [--schema FILE] [--wait] [--timeout SEC] [--json]
-citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--json]
+citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
+citt prompt --thread N ["QUESTION"] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
+citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native] [--json]
 
 TARGET is a build file (an existing .apk, .xapk, .apks, .apkm or .ipa), a store link, or a
 package id. A file is uploaded in 32 MiB chunks; a re-run after an interruption resumes the
@@ -129,6 +129,8 @@ findings and data.
   --platform  the platform of a package id (default android)
   --thread    ask a follow-up in thread N; with --wait and no question, wait for its last turn
   --schema    a JSON Schema file; the answer then carries data matching it
+  --native    decompile the build's native binaries first (citt native); the question waits
+              for that run and its answer reads the output
   --wait      poll until the turn is answered (default timeout 540 s, then exit 12)
 The project form runs a prompt over a project's decompiled apps; answers become findings with
 source llm_prompt.
@@ -257,5 +259,54 @@ citt capture-stop RUN [--json]
 
 Stops a capture run (id or run key). A running run goes to stopping: the phone ends the current
 session and uploads it. A queued run ends unstarted. A run that has ended prints its final state.
+EOF
+}
+
+help_native() {
+  cat <<'EOF'
+citt native PACKAGE (--project NAME|ID | --project-id N) [--platform android|ios] [--wait] [--timeout SEC] [--json]
+citt native PROJECT_APP_ID [--wait] [--timeout SEC] [--json]
+
+Starts the native code run of the app's stored build: Binary Ninja decompiles its native
+binaries (.so libraries, iOS frameworks and executables) into the build's sources. Prints the
+task id, the binaries to decompile, the skipped ones with their reason, and the progress. A build
+that already has a run (open, done or done with gaps) gets that run back; nothing new is queued.
+  --platform  android or ios, when the package is in the project for both
+  --wait      follow the run: a line per change (done of total, binaries being decompiled, place
+              in the queue, estimated end, decompiler offline); exits 0 on done, 13 on done with
+              gaps, 8 on failed, 14 on cancelled; after --timeout (default 540) exits 12 with a
+              re-run: line
+A number without --project is a project app id, as an answer's "citt native N" line gives it.
+EOF
+}
+
+help_tasks() {
+  cat <<'EOF'
+citt tasks [--project NAME|ID | --project-id N] [--app PACKAGE [--platform P]] [--kind K[,K...]]
+           [--running | --failed] [--mine] [--watch [--timeout SEC]] [--limit N] [--cursor C] [--json]
+
+Submissions, newest first: one row per scan request, Ask, thread turn, kids check, capture run
+or group, export, native code run or legacy scan, with its status and progress, who sent it and
+from where (web, plugin, api), when (local time) and how long it took. Without a project: every
+project of the account.
+  --kind     rule_scan, deep_scan, question, thread_turn, kids_check, capture, capture_group,
+             export, native_code, legacy_scan
+  --running  queued and running tasks only;  --failed  failed tasks only;  --mine  your own
+  --watch    after the table, a line per task that changes, until none is queued or running
+             (default timeout 540 s, then exit 12)
+EOF
+}
+
+help_task() {
+  cat <<'EOF'
+citt task ID [--cancel] [--watch [--timeout SEC]] [--json]
+
+One task: kind, status with progress and queue place, who submitted it and from where, times in
+local time, the reason of a failure with the next step, the result link on the dashboard, its
+parts (apps, checklist parts, sessions, binaries) and its timeline.
+  --cancel cancel the task first (a native code run, a capture or capture group, a question that
+           waits for native code); work already done stays; with --watch, follow it to its end
+  --watch  print new timeline events until the task ends; exits 0 on done, 13 on done with
+           gaps, 8 on failed, 14 on cancelled, 12 after --timeout (default 540)
 EOF
 }

@@ -74,7 +74,9 @@ In Claude Code each command is also a slash command, `/citt:<command>`. In Codex
 | `prompt` | ask a question about one app: a package id, a store link, or an APK, XAPK, APKS, APKM or IPA file |
 | `findings`, `scrutinize` | findings across a project; a model's review of a finding against the decompiled code |
 | `projects`, `owners` | your projects; who owns a project |
-| `export-results`, `export-sources` | per-app JSON; decompiled sources |
+| `export-results`, `export-sources` | per-app JSON; decompiled sources, with the native code output when the build has it |
+| `native` | decompile an app's native binaries with Binary Ninja into its sources; `--wait` follows the run |
+| `tasks`, `task` | submissions with status, progress and timeline; `--running` for what runs now, `--watch` to follow |
 | `usage` | this month's counts and limits |
 
 `citt <command> --help` prints each command's options. `--json` prints one JSON document, also on error.

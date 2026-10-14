@@ -83,7 +83,7 @@ _is_build() {
 }
 
 _prompt_target() {
-  local thread="" platform="" schema="" wait=0 timeout=540 npos=0 p1="" p2="" opts=1
+  local thread="" platform="" schema="" wait=0 native=0 timeout=540 npos=0 p1="" p2="" opts=1
   while [ $# -gt 0 ]; do
     if [ "$opts" = 1 ]; then
       case "$1" in
@@ -120,6 +120,7 @@ _prompt_target() {
           continue
           ;;
         --wait) wait=1 ;;
+        --native) native=1 ;;
         --json) CITT_JSON=1 ;;
         --help | -h)
           help_prompt
@@ -150,6 +151,7 @@ _prompt_target() {
       0)
         [ "$wait" = 1 ] || usage_error "give the message of the follow-up, or --wait to wait for the thread's last turn"
         [ -z "$schema" ] || usage_error "--schema needs a message"
+        [ "$native" = 0 ] || usage_error "--native needs a message"
         ;;
       1) text="$p1" ;;
       *) usage_error "with --thread give only the message, quoted; the thread fixes the app" ;;
@@ -201,8 +203,9 @@ _prompt_target() {
       return
     fi
     body="$(tmpfile turn_body)"
-    jq -nc --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" \
-      '{prompt: $p, idempotency_key: $k} + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)' >"$body"
+    jq -nc --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" --argjson n "$native" \
+      '{prompt: $p, idempotency_key: $k} + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)
+       + (if $n == 1 then {decompile_native: true} else {} end)' >"$body"
     HTTP_RETRY=yes
     call_prompt POST "$CITT_V1/prompts/$tid/turns" "$body"
     seq="$(body_field '.seq')"
@@ -218,8 +221,9 @@ _prompt_target() {
     esac
     E_KIND=upload
     body="$(tmpfile prompt_body)"
-    jq -nc --argjson t "$tjson" --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" \
-      '{target: $t, prompt: $p, idempotency_key: $k} + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)' >"$body"
+    jq -nc --argjson t "$tjson" --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" --argjson n "$native" \
+      '{target: $t, prompt: $p, idempotency_key: $k} + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)
+       + (if $n == 1 then {decompile_native: true} else {} end)' >"$body"
     HTTP_RETRY=yes
     call_prompt POST "$CITT_V1/prompts" "$body"
     tid="$(body_field '.thread_id')"
@@ -239,7 +243,9 @@ _prompt_target() {
   fi
   jq -r --arg t "$tid" --arg s "${seq:-?}" '
     (if .target.package_id then " for \(.target.package_id) (\(.target.platform // "-"))" else "" end) as $app
-    | "Thread \($t): turn \($s) \((.turns // [.]) | map(select((.seq | tostring) == $s)) | first | .status // "queued")\($app).",
+    | ((.turns // [.]) | map(select((.seq | tostring) == $s)) | first) as $u
+    | "Thread \($t): turn \($s) \($u.status // "queued")\($app)"
+      + (if $u.stage == "native_decompile" then ", waiting for native code: the question is answered once the build'"'"'s native binaries are decompiled (follow: citt tasks --running)" else "" end) + ".",
       "Answer: citt prompt --thread \($t) --wait",
       "Follow-up: citt prompt --thread \($t) \"QUESTION\""' "$RESP" \
     || die 1 "unparseable prompt response"
@@ -248,7 +254,7 @@ _prompt_target() {
 # _prompt_wait THREAD SEQ TIMEOUT: polls GET /prompts/THREAD until turn SEQ (empty: the last turn)
 # is answered (exit 0) or failed (exit 8); exit 12 at the timeout.
 _prompt_wait() {
-  local tid="$1" seq="$2" timeout="$3" start st=""
+  local tid="$1" seq="$2" timeout="$3" start st="" stage="" said=0
   E_KIND=thread
   E_THREAD="$tid"
   start="$(now_s)"
@@ -257,8 +263,13 @@ _prompt_wait() {
     [ -n "$seq" ] || seq="$(body_field '.turns | last | .seq')"
     st="$(jq -r --arg s "$seq" '[.turns[]? | select((.seq | tostring) == $s)] | first | .status // empty' "$RESP" 2>/dev/null)"
     case "$st" in answered | failed) break ;; esac
+    stage="$(jq -r --arg s "$seq" '[.turns[]? | select((.seq | tostring) == $s)] | first | .stage // empty' "$RESP" 2>/dev/null)"
+    if [ "$stage" = native_decompile ] && [ "$said" = 0 ] && [ "$CITT_JSON" != 1 ]; then
+      printf 'Turn %s: waiting for native code; the question is answered once the build'"'"'s native binaries are decompiled (follow: citt tasks --running).\n' "$seq"
+      said=1
+    fi
     if [ $(($(now_s) - start)) -ge "$timeout" ]; then
-      _prompt_done 12 timeout "turn $seq of thread $tid is still ${st:-queued} after $timeout s; re-run: citt prompt --thread $tid --wait"
+      _prompt_done 12 timeout "turn $seq of thread $tid is still ${st:-queued}$([ "$stage" = native_decompile ] && printf ', waiting for native code,') after $timeout s; re-run: citt prompt --thread $tid --wait"
     fi
     poll_sleep "$(body_field '.poll_after_seconds')"
   done
@@ -285,7 +296,7 @@ _prompt_done() {
 
 # _prompt_print THREAD SEQ: the answered turn as text, from the thread in $RESP.
 _prompt_print() {
-  jq -r --arg t "$1" --arg s "$2" --arg label "$PROMPT_LABEL" '
+  jq -r --arg t "$1" --arg s "$2" --arg label "$PROMPT_LABEL" --arg h "$CITT_APP_HOST" "$JQ_NEXT"'
     def cell: if . == null then "-" else tostring end;
     ([.turns[] | select((.seq | tostring) == $s)] | first) as $u
     | "Thread \($t), turn \($s)\(if .target.package_id then " (\(.target.package_id), \(.target.platform // "-"))" else "" end): \($u.status)",
@@ -301,6 +312,13 @@ _prompt_print() {
          "\($u.rejected_findings) finding\(if $u.rejected_findings == 1 then "" else "s" end) failed the citation check and were not stored."
        else empty end),
       (if $u.data != null then "Data:", ($u.data | tojson) else empty end),
+      (if $u.reason == "native_not_decompiled" then
+         "The answer read no native code: the build'"'"'s native binaries are not decompiled."
+         + (if $u.next_action then " \($u.next_action | next_line($h))" else "" end)
+       elif $u.reason == "native_running" then
+         "The answer read no native code: the build'"'"'s native binaries were being decompiled when it was written."
+         + (if $u.next_action then " \($u.next_action | next_line($h))" else "" end) + "; ask again once the run ends (citt tasks --running)"
+       else empty end),
       "",
       $label,
       "Follow-up: citt prompt --thread \($t) \"QUESTION\""' "$RESP" \
@@ -310,7 +328,7 @@ _prompt_print() {
 # --- the project form ------------------------------------------------------
 
 _prompt_project() {
-  local apps="" file="" text="" have_text=0 n
+  local apps="" file="" text="" have_text=0 native=0 n
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
     n=$?
@@ -329,6 +347,7 @@ _prompt_project() {
         file="$2"
         shift
         ;;
+      --native) native=1 ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_prompt
@@ -355,8 +374,9 @@ _prompt_project() {
   resolve_project
   local body
   body="$(tmpfile prompt_body)"
-  jq -nc --arg apps "$apps" --arg p "$text" \
-    '{apps: (if $apps == "all" then "all" else ($apps | split(",") | map(select(. != ""))) end), prompt: $p}' >"$body"
+  jq -nc --arg apps "$apps" --arg p "$text" --argjson n "$native" \
+    '{apps: (if $apps == "all" then "all" else ($apps | split(",") | map(select(. != ""))) end), prompt: $p}
+     + (if $n == 1 then {decompile_native: true} else {} end)' >"$body"
   call POST "$CITT_V1/projects/$PROJECT_ID/prompt" "$body"
   if [ "$CITT_JSON" = 1 ]; then
     cat "$RESP"
@@ -368,6 +388,8 @@ _prompt_project() {
   jq -r --arg ref "$ref" '
     .counts as $c
     | "Queued a custom prompt for \($c.apps) app\(if $c.apps == 1 then "" else "s" end) (\($c.llm_prompt) llm_prompt job\(if $c.llm_prompt == 1 then "" else "s" end); \($c.deep_prepare) need\(if $c.deep_prepare == 1 then "s" else "" end) deep preparation first).",
+      ([(.jobs // [])[] | select(.native_run_id != null)] | length) as $w
+      | (if $w > 0 then "\($w) app\(if $w == 1 then " waits" else "s wait" end) for native code first: each question is answered once the app'"'"'s native binaries are decompiled (follow: citt tasks\(if $ref == "" then "" else " " + $ref end) --kind native_code)." else empty end),
       "Answers appear as findings with source llm_prompt: citt status \($ref) --wait, then citt findings \($ref) --source llm_prompt"' "$RESP" \
     || die 1 "unparseable prompt response"
 }

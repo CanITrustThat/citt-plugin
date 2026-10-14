@@ -25,11 +25,13 @@ cmd_usage() {
   # The allowances /pricing names, as the dashboard's Usage page lists them; other meters are left out.
   jq -c '{"rule_scan": "Rule scans", "deep_scan": "Deep scans", "llm_prompt": "Questions"} as $name
     | [["ACTION", "USED", "LIMIT", "REMAINING"]]
-      + [.actions[] | select($name[.action]) | [$name[.action], .used, .limit, .remaining]]' "$RESP" | table
+      + [.actions[] | select($name[.action]) | [$name[.action], .used, .limit, .remaining]]
+      + (if .native_code_binaries != null then [["Native code (binaries)", .native_code_binaries, "no limit", "-"]] else [] end)' "$RESP" | table
   jq -r '.actions[] | select(.action == "rule_scan" and .daily_limit != null)
     | "Rule scans in the last 24 hours: \(.daily_used // 0) of \(.daily_limit) in the plan; past them, each is charged from the prepaid balance"' "$RESP"
   printf "Past the plan's count, rule scans and questions are charged from the prepaid balance: %s/settings/billing\n" "$CITT_APP_HOST"
   printf 'Exports are unlimited and leave these counts unchanged.\n'
+  jq -r 'if .native_code_binaries != null then "Native code counts one per binary decompiled, to the account that pays for the project; it has no price and no limit." else empty end' "$RESP"
   # The deep-scan lines apply to a plan with Deep scans.
   jq -r 'if .deep_scan_charged == null or ([.actions[] | select(.action == "deep_scan" and (.limit // 0) > 0)] | length) == 0 then empty
     else "Deep scans started on the dashboard count as deep_scan when they complete.",
