@@ -693,13 +693,15 @@ resolve_project() {
 
 # --- polling ---------------------------------------------------------------
 
-# poll_sleep SECONDS: the response's poll_after_seconds (or 15); CITT_POLL_INTERVAL in test mode.
+# poll_sleep SECONDS [MAX]: the response's poll_after_seconds (or 15); CITT_POLL_INTERVAL in test
+# mode; at most MAX seconds when given (the time left before a --timeout).
 poll_sleep() {
-  local s="${1:-}"
+  local s="${1:-}" max="${2:-}"
   if [ "${CITT_TEST_MODE:-}" = "1" ] && [ -n "${CITT_POLL_INTERVAL:-}" ]; then
     s="$CITT_POLL_INTERVAL"
   fi
   is_uint "$s" || s=15
+  if is_uint "$max" && [ "$s" -gt "$max" ]; then s="$max"; fi
   [ "$s" -gt 0 ] && sleep "$s"
   return 0
 }

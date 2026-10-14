@@ -1,0 +1,517 @@
+#!/usr/bin/env bash
+# lib/cmd-capture-run.sh: citt capture-options, capture-start, capture-watch and capture-stop (TASK-505).
+# Starts a network capture run on a lab phone (POST /project-apps/{id}/ad-sessions), follows it
+# (GET /capture-runs/{id}) and stops it (POST /capture-runs/{id}/stop). Sourced after cmd-capture.sh.
+# shellcheck shell=bash disable=SC2034,SC2016,SC2153
+
+CR_TERMINAL=" done done_with_gaps stopped failed imported "
+
+# jq helpers: short durations (5m, 1h, 7d), counted nouns, UTC minutes.
+CR_JQ="$CS_JQ_TS"'
+def short: (. | floor) as $s | if $s % 86400 == 0 then "\($s / 86400 | floor)d" elif $s % 3600 == 0 then "\($s / 3600 | floor)h"
+  elif $s % 60 == 0 then "\($s / 60 | floor)m" else "\($s)s" end;
+def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
+def utc: ts | floor | strftime("%Y-%m-%d %H:%M UTC");'
+
+# --- arguments -------------------------------------------------------------------------
+
+# _cr_secs FLAG VALUE: <n>s, <n>m, <n>h or <n>d in seconds.
+_cr_secs() {
+  local n
+  case "$2" in
+    *[0-9]s) n="${2%s}" ;;
+    *[0-9]m) n="$((${2%m} * 60))" ;;
+    *[0-9]h) n="$((${2%h} * 3600))" ;;
+    *[0-9]d) n="$((${2%d} * 86400))" ;;
+    *) n="" ;;
+  esac
+  case "${2%?}" in '' | *[!0-9]*) n="" ;; esac
+  [ -n "$n" ] || usage_error "$1 takes <n>m, <n>h or <n>d (or <n>s), got: $2"
+  printf '%s' "$n"
+}
+
+# _cr_package APP: the package id of a package id or a Google Play link.
+_cr_package() {
+  local a="$1" p
+  case "$a" in
+    *apps.apple.com* | *itunes.apple.com*) usage_error "capture runs take an Android app: a package id or a Google Play link" ;;
+    http://* | https://*)
+      case "$a" in *play.google.com*) ;; *) usage_error "not a Google Play link: $a" ;; esac
+      p="$(printf '%s' "$a" | sed -n 's/.*[?&]id=\([^&#]*\).*/\1/p')"
+      ;;
+    *) p="$a" ;;
+  esac
+  [[ "$p" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$ ]] || usage_error "not an Android package id or Google Play link: $a"
+  printf '%s' "$p"
+}
+
+# _cr_project_flag VALUE: --project takes a name or, when numeric, a project id.
+_cr_project_fix() {
+  if [ -n "$OPT_PROJECT" ] && [ -z "$OPT_PROJECT_ID" ] && is_uint "$OPT_PROJECT"; then
+    OPT_PROJECT_ID="$OPT_PROJECT"
+    OPT_PROJECT=""
+  fi
+  check_project_flags
+}
+
+# _cr_app PACKAGE: resolves the project and sets CR_PAPP, the project app id of PACKAGE.
+_cr_app() {
+  E_KIND=project
+  resolve_project
+  call GET "$CITT_V1/projects/$PROJECT_ID/apps$(query q "$1")"
+  CR_PAPP="$(jq -r --arg p "$1" '[.apps[] | select(.platform == "android" and .package_id == $p) | .project_app_id] | first // empty' "$RESP" 2>/dev/null)" \
+    || die 1 "unparseable response from GET $CITT_V1/projects/$PROJECT_ID/apps"
+  [ -n "$CR_PAPP" ] || die 4 "$1 is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $1"
+  E_KIND=app
+  E_PACKAGE="$1"
+}
+
+# _cr_options: GET the start options of CR_PAPP into CR_OPTS.
+_cr_options() {
+  call GET "$CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
+  CR_OPTS="$(tmpfile options.json)"
+  cp "$RESP" "$CR_OPTS"
+  jq -e 'type == "object"' "$CR_OPTS" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
+}
+
+# _cr_run_id RUN: the experiment id of a run id or key.
+_cr_run_id() {
+  if is_uint "$1"; then
+    printf '%s' "$1"
+    return 0
+  fi
+  CS_RUNS="$1"
+  CS_PIDS=""
+  _cs_resolve_runs
+  printf '%s' "$CS_RIDS"
+}
+
+# _cr_get_run ID: GET /capture-runs/ID into RESP; 404 is "no capture run".
+_cr_get_run() {
+  http GET "$CITT_V1/capture-runs/$1"
+  case "$CODE" in
+    2??) ;;
+    404) [ -z "$(body_field '.error')" ] && fail_http; die 4 "no capture run $1 in your projects (see: citt captures)" ;;
+    *) fail_http ;;
+  esac
+}
+
+# --- capture-options -------------------------------------------------------------------
+
+cmd_capture_options() {
+  local app="" dur="" dur_s="" pkg
+  CITT_CMD="citt capture-options"
+  while [ $# -gt 0 ]; do
+    take_project_flag "$@"
+    local used=$?
+    if [ "$used" -gt 0 ]; then
+      shift "$used"
+      continue
+    fi
+    case "$1" in
+      --duration)
+        need_value "$1" $#
+        dur="$2"
+        shift
+        ;;
+      --json) CITT_JSON=1 ;;
+      --help | -h)
+        help_capture_options
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$app" ] || usage_error "one app at a time; got $app and $1"
+        app="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
+  pkg="$(_cr_package "$app")" || exit $?
+  _cr_project_fix
+  [ -z "$dur" ] || dur_s="$(_cr_secs --duration "$dur")" || exit $?
+  need_auth
+  _cr_app "$pkg"
+  _cr_options
+  if [ "$CITT_JSON" = 1 ]; then
+    cat "$CR_OPTS"
+    printf '\n'
+    return 0
+  fi
+  jq -r --arg proj "${PROJECT_NAME:-$PROJECT_ID}" --argjson papp "$CR_PAPP" "$CR_JQ"'
+    "App: \(.package_id) in project \"\($proj)\" (project app \($papp)): "
+      + (if .package_allowed then "capture allowed" else "capture not allowed for this package" end),
+    "Launcher: " + (if .launcher_online then "online" elif .launcher_seen_at then "offline since \(.launcher_seen_at | utc); a run queues until it is back"
+      else "never seen; a run queues until it reports" end)' "$CR_OPTS"
+  printf '\n'
+  if [ "$(jq '.devices | length' "$CR_OPTS")" = 0 ]; then
+    printf 'Phones: none registered\n'
+  else
+    jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status, (.active_runs // 0)]]' "$CR_OPTS" | table
+  fi
+  printf '\n'
+  jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" "$CR_JQ"'
+    "Exit states (servers): " + ([.states[] | "\(.code) \(.servers // "-")"] | join(", ") | if . == "" then "none reported" else . end),
+    "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
+    "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
+    "Profile: age \(.default_profile.persona_age // "-"), tracking \(.default_profile.tracking // "-") (--age \(.min_persona_age) to \(.max_persona_age), --tracking allow|refuse)"
+      + (if .default_exit_state then "; last exit state \(.default_exit_state)" else "" end),
+    (if .bytes_per_hour == null then "Measured size: none yet; no session of this package has been ingested"
+     else "Measured size: BPH:\(.bytes_per_hour) per captured hour over \(n(.measured_sessions // 0; "session"; "sessions"))"
+       + (if $dur != "" then "; \($dur) is about EST:\(.bytes_per_hour * ($ds | tonumber) / 3600 | floor)" else "" end) end)' "$CR_OPTS" \
+    | while IFS= read -r line; do
+      case "$line" in
+        "Measured size: BPH:"*)
+          local bph est rest
+          rest="${line#Measured size: BPH:}"
+          bph="${rest%% *}"
+          rest="${rest#* }"
+          line="Measured size: $(_cs_bytes "$bph") $rest"
+          case "$line" in *EST:*)
+            est="${line##*EST:}"
+            line="${line%EST:*}$(_cs_bytes "$est")"
+            ;;
+          esac
+          ;;
+      esac
+      printf '%s\n' "$line"
+    done
+}
+
+# --- capture-start ---------------------------------------------------------------------
+
+# _cr_pick PHONE_ARG: sets CR_DEV and CR_DEV_NAME from CR_OPTS.
+_cr_pick() {
+  local sel
+  if [ -n "$1" ]; then
+    sel="$(jq -c --arg p "$1" '.devices as $d
+      | ([$d[] | select(($p | test("^[0-9]+$")) and .device_id == ($p | tonumber))]
+         + [$d[] | select(.device_name == $p)]
+         + [$d[] | select((.device_name // "" | ascii_downcase) == ($p | ascii_downcase))]) | first // empty' "$CR_OPTS")"
+    [ -n "$sel" ] || die 4 "no phone \"$1\"; phones: $(jq -r '[.devices[] | "\(.device_name) (device \(.device_id))"] | join(", ") | if . == "" then "none registered" else . end' "$CR_OPTS")"
+    case "$(jq -r '.status' <<<"$sel")" in
+      busy) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is busy ($(jq -r '.active_runs // 0' <<<"$sel") active runs); the run queues behind them" ;;
+      offline) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is offline; the run queues until it reports" ;;
+    esac
+  else
+    sel="$(jq -c '[.devices[] | select(.status == "free")] | first // empty' "$CR_OPTS")"
+    if [ -z "$sel" ]; then
+      [ "$(jq '.devices | length' "$CR_OPTS")" != 0 ] || die 5 "no lab phone is registered"
+      die 5 "no free phone: $(jq -r 'def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
+        [.devices[] | "\(.device_name) (device \(.device_id)) \(.status)"
+          + (if (.active_runs // 0) > 0 then ", " + n(.active_runs; "active run"; "active runs") else "" end)] | join("; ")' "$CR_OPTS"); give one with --phone NAME|ID to queue the run on it"
+    fi
+  fi
+  CR_DEV="$(jq -r '.device_id' <<<"$sel")"
+  CR_DEV_NAME="$(jq -r '.device_name' <<<"$sel")"
+}
+
+# _cr_split DURATION_S: the default session length for a duration from CR_OPTS.
+_cr_split() {
+  jq -r --argjson d "$1" '(.split_options_s // []) as $o
+    | if (.default_split_s // 0) > 0 and .default_split_s <= $d then .default_split_s
+      elif ([$o[] | select(. <= $d)] | length) > 0 then [$o[] | select(. <= $d)] | max
+      elif ($o | length) > 0 then $o | min
+      else $d end' "$CR_OPTS"
+}
+
+_cr_nonce() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
+
+cmd_capture_start() {
+  local app="" pkg dur="" dur_s split="" split_s="" state="" phone="" age="" tracking="" wait=0 timeout=540
+  CITT_CMD="citt capture-start"
+  while [ $# -gt 0 ]; do
+    take_project_flag "$@"
+    local used=$?
+    if [ "$used" -gt 0 ]; then
+      shift "$used"
+      continue
+    fi
+    case "$1" in
+      --duration | --split | --state | --phone | --age | --tracking | --timeout)
+        need_value "$1" $#
+        case "$1" in
+          --duration) dur="$2" ;;
+          --split) split="$2" ;;
+          --state) state="$2" ;;
+          --phone) phone="$2" ;;
+          --age) age="$2" ;;
+          --tracking) tracking="$2" ;;
+          --timeout) timeout="$2" ;;
+        esac
+        shift
+        ;;
+      --wait) wait=1 ;;
+      --json) CITT_JSON=1 ;;
+      --help | -h)
+        help_capture_start
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$app" ] || usage_error "one app at a time; got $app and $1"
+        app="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
+  pkg="$(_cr_package "$app")" || exit $?
+  _cr_project_fix
+  [ -n "$dur" ] || usage_error "give --duration, such as 1h, 90m or 2d"
+  dur_s="$(_cr_secs --duration "$dur")" || exit $?
+  [ -z "$split" ] || split_s="$(_cr_secs --split "$split")" || exit $?
+  [[ "$state" =~ ^[A-Za-z]{2}$ ]] || usage_error "give --state with a two-letter exit state code, such as CA (see: citt capture-options)"
+  state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
+  [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
+  case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
+  is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
+  need_auth
+  _cr_app "$pkg"
+
+  # A re-run of the same command within a day reuses the nonce, phone and session length of the
+  # interrupted one, so the API returns the run that call may have created.
+  local dir h pend nonce key now
+  dir="$CITT_STATE/capture-start"
+  h="$(_cs_str_sha "v1|$CITT_HOST|$CR_PAPP|$phone|$state|$dur_s|$split_s|$age|$tracking")"
+  pend="$dir/$h.json"
+  now="$(now_s)"
+  nonce=""
+  if [ -f "$pend" ] && [ $((now - $(jq -r '.created_at // 0' "$pend" 2>/dev/null || echo 0))) -lt 86400 ]; then
+    nonce="$(jq -r '.nonce // empty' "$pend")"
+    CR_DEV="$(jq -r '.device_id // empty' "$pend")"
+    CR_DEV_NAME="$(jq -r '.device_name // empty' "$pend")"
+    split_s="$(jq -r '.split_s // empty' "$pend")"
+  fi
+  if [ -z "$nonce" ] || [ -z "$CR_DEV" ] || [ -z "$split_s" ]; then
+    _cr_options
+    [ "$(jq -r '.package_allowed' "$CR_OPTS")" = true ] || die 7 "$pkg is not among the packages allowed for capture runs"
+    [ "$(jq -r '.launcher_online' "$CR_OPTS")" = true ] || err "$CITT_CMD: the lab launcher is offline; the run queues until it reports"
+    _cr_pick "$phone"
+    [ -n "$split_s" ] || split_s="$(_cr_split "$dur_s")"
+    nonce="$(_cr_nonce)"
+    (umask 077 && mkdir -p "$dir")
+    (umask 077 && jq -nc --arg n "$nonce" --argjson d "$CR_DEV" --arg dn "$CR_DEV_NAME" --argjson s "$split_s" --argjson t "$now" \
+      '{nonce: $n, device_id: $d, device_name: $dn, split_s: $s, created_at: $t}' >"$pend")
+  fi
+  key="plugin-$(_cs_str_sha "$h:$nonce" | cut -c1-32)"
+
+  local body
+  body="$(tmpfile start.json)"
+  jq -nc --argjson d "$CR_DEV" --arg st "$state" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
+    '{device_id: $d, exit_state: $st, duration_s: $dur, split_s: $sp, idempotency_key: $k}
+     + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
+     + (if $tr == "" then {} else {tracking: $tr} end)' >"$body"
+  HTTP_RETRY=yes
+  http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
+  # With --wait the key is kept until the watch returns, so a re-run after a network or server
+  # failure while watching gets the same run back and follows it.
+  case "$CODE" in
+    2??) [ "$wait" = 1 ] || rm -f "$pend" ;;
+    400 | 402 | 403 | 404 | 409 | 422) rm -f "$pend" ;;
+  esac
+  ok || fail_http
+  local launch rid
+  launch="$(tmpfile launch.json)"
+  cp "$RESP" "$launch"
+  rid="$(jq -r '.experiment_id // empty' "$launch" 2>/dev/null)"
+  [ -n "$rid" ] || die 1 "unparseable response from POST $CITT_V1/project-apps/$CR_PAPP/ad-sessions"
+  if [ "$wait" = 1 ]; then
+    if [ "$CITT_JSON" != 1 ]; then
+      _cr_started "$launch" "$rid"
+    else
+      _cr_get_run "$rid"
+    fi
+    local wcode=0
+    _cr_watch "$rid" "$rid" "$timeout" "$launch" || wcode=$?
+    rm -f "$pend"
+    return "$wcode"
+  fi
+  if [ "$CITT_JSON" = 1 ]; then
+    cat "$launch"
+    printf '\n'
+    return 0
+  fi
+  _cr_started "$launch" "$rid"
+}
+
+# _cr_started LAUNCH_FILE RUN_ID: the four lines after a start (the end from GET /capture-runs/ID).
+_cr_started() {
+  local eta=""
+  http GET "$CITT_V1/capture-runs/$2"
+  if ok; then eta="$(jq -r "$CR_JQ"' .run.eta_at // empty | utc' "$RESP" 2>/dev/null)"; fi
+  jq -r --arg eta "${eta:-unknown}" "$CR_JQ"'
+    "Run \(.experiment_id) (\(.run_key)): \(.status) on \(.device_name // "phone") (device \(.device_id))"
+      + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
+      + (if .status_reason then ": \(.status_reason)" else "" end),
+    "Exit state \(.exit_state); \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+      + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end),
+    "Estimated end: \($eta)",
+    "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
+}
+
+# --- capture-watch ---------------------------------------------------------------------
+
+# _cr_watch RUN_ID RUN_ARG TIMEOUT [LAUNCH_FILE]: polls the run until it ends or TIMEOUT passes.
+# One line per state change and per finished session; the printed sessions are kept in the state
+# folder, so a re-run prints only new ones.
+_cr_watch() {
+  local rid="$1" arg="$2" timeout="$3" launch="${4:-}" start left polls=0 last="" now_state seen sfile lines line ended=false
+  sfile="$CITT_STATE/capture-watch/run-$rid"
+  (umask 077 && mkdir -p "$CITT_STATE/capture-watch")
+  [ -f "$sfile" ] || : >"$sfile"
+  start="$(now_s)"
+  while :; do
+    _cr_get_run "$rid"
+    polls=$((polls + 1))
+    seen="$(jq -R -s -c 'split("\n") | map(select(. != "") | tonumber)' "$sfile")"
+    lines="$(jq -r --argjson seen "$seen" "$CR_JQ"'
+      . as $d | $d.run.planned_sessions as $p
+      | [($d.progress // [])[] | select((.status == "ingested" or .status == "failed") and (.seq as $q | any($seen[]; . == $q) | not))]
+      | sort_by(.seq)[] | . as $g
+      | (([($d.sessions // [])[] | select(.seq == $g.seq)] | first | .flags) // 0) as $f
+      | "\($g.seq)\tSession \($g.seq) of \($p // "?"): "
+        + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)' "$RESP" 2>/dev/null)" \
+      || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
+    if [ -n "$lines" ]; then
+      while IFS=$'\t' read -r q line; do
+        [ "$CITT_JSON" = 1 ] || printf '%s\n' "$line"
+        printf '%s\n' "$q" >>"$sfile"
+      done <<<"$lines"
+    fi
+    now_state="$(jq -r '"\(.run.state)|\(.run.status_reason // "")"' "$RESP")"
+    if [ "$now_state" != "$last" ] && [ "$CITT_JSON" != 1 ]; then
+      jq -r "$CR_JQ"' .run as $r
+        | "Run \($r.experiment_id) (\($r.run_key)): \($r.state)" + (if $r.status_reason then ": \($r.status_reason)" else "" end)
+          + ", " + (if $r.planned_sessions then "\($r.finished_sessions // 0) of \(n($r.planned_sessions; "session"; "sessions"))"
+                    else n($r.finished_sessions // 0; "session"; "sessions") end)
+          + (if ($r.failed_sessions // 0) > 0 then ", \($r.failed_sessions) failed" else "" end)
+          + (if ($r.flags // 0) > 0 then ", " + n($r.flags; "flag"; "flags") else "" end)
+          + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)' "$RESP"
+    fi
+    last="$now_state"
+    case "$CR_TERMINAL" in *" ${now_state%%|*} "*)
+      ended=true
+      break
+      ;;
+    esac
+    left=$((timeout - ($(now_s) - start)))
+    [ "$left" -gt 0 ] || break
+    poll_sleep "" "$left"
+  done
+
+  local st key fin planned failed reason code=0
+  st="${now_state%%|*}"
+  reason="${now_state#*|}"
+  key="$(jq -r '.run.run_key // empty' "$RESP")"
+  fin="$(jq -r '.run.finished_sessions // 0' "$RESP")"
+  planned="$(jq -r '.run.planned_sessions // "?"' "$RESP")"
+  failed="$(jq -r '.run.failed_sessions // 0' "$RESP")"
+  if [ "$CITT_JSON" = 1 ]; then
+    jq -c --argjson polls "$polls" --argjson ended "$ended" --slurpfile l "${launch:-/dev/null}" \
+      '{schema: "citt.plugin.capture-watch/1", polls: $polls, ended: $ended, run: .} + (if ($l | length) > 0 then {started: $l[0]} else {} end)' "$RESP"
+  fi
+  if [ "$ended" != true ]; then
+    err "$CITT_CMD: run $rid is still $st after $timeout s; re-run: citt capture-watch $(shq "$arg")"
+    return 12
+  fi
+  rm -f "$sfile"
+  if [ "$CITT_JSON" != 1 ] && [ "$(jq '([(.progress // [])[] | select(.status == "ingested")] | length) + ((.sessions // []) | length)' "$RESP")" -gt 0 ]; then
+    printf 'Next: citt capture-sync --run %s\n' "$key"
+  fi
+  case "$st" in
+    done_with_gaps)
+      err "$CITT_CMD: run $rid ended done_with_gaps: $failed of $planned sessions failed"
+      code=13
+      ;;
+    stopped)
+      err "$CITT_CMD: run $rid was stopped: $fin of $planned sessions finished"
+      code=14
+      ;;
+    failed)
+      err "$CITT_CMD: run $rid failed${reason:+: $reason}"
+      code=8
+      ;;
+  esac
+  return "$code"
+}
+
+cmd_capture_watch() {
+  local run="" timeout=540 rid
+  CITT_CMD="citt capture-watch"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --timeout)
+        need_value "$1" $#
+        timeout="$2"
+        shift
+        ;;
+      --json) CITT_JSON=1 ;;
+      --help | -h)
+        help_capture_watch
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$run" ] || usage_error "one run at a time; got $run and $1"
+        run="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$run" ] || usage_error "give the run id or run key (see: citt captures)"
+  is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
+  need_auth
+  rid="$(_cr_run_id "$run")" || exit $?
+  _cr_watch "$rid" "$run" "$timeout"
+}
+
+# --- capture-stop ----------------------------------------------------------------------
+
+cmd_capture_stop() {
+  local run="" rid st
+  CITT_CMD="citt capture-stop"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) CITT_JSON=1 ;;
+      --help | -h)
+        help_capture_stop
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$run" ] || usage_error "one run at a time; got $run and $1"
+        run="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$run" ] || usage_error "give the run id or run key (see: citt captures)"
+  need_auth
+  rid="$(_cr_run_id "$run")" || exit $?
+  _cr_get_run "$rid"
+  st="$(jq -r '.run.state // empty' "$RESP")"
+  case "$CR_TERMINAL" in *" $st "*)
+    if [ "$CITT_JSON" = 1 ]; then
+      cat "$RESP"
+      printf '\n'
+    else
+      jq -r '"Run \(.run.experiment_id) (\(.run.run_key)) had already ended: \(.run.state)"' "$RESP"
+    fi
+    return 0
+    ;;
+  esac
+  E_KIND=run
+  HTTP_RETRY=yes
+  call POST "$CITT_V1/capture-runs/$rid/stop"
+  if [ "$CITT_JSON" = 1 ]; then
+    cat "$RESP"
+    printf '\n'
+    return 0
+  fi
+  jq -r '"Run \(.experiment_id) (\(.run_key))" as $r
+    | if .status == "stopping" then "\($r): stopping; the phone ends the current session and uploads it", "Next: citt capture-watch \(.experiment_id)"
+      elif .status_reason == "stopped before it started" then "\($r): stopped before it started"
+      else "\($r) has ended: \(.status)" end' "$RESP"
+}

@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # citt: the citt plugin. Projects of Android apps scanned by the CITT research
 # service: submit, status, apps, findings, scrutiny, custom prompts, exports, owners, usage,
-# and the capture sync of network capture sessions.
+# network capture runs (start, watch, stop) and the capture sync of their sessions.
 # shellcheck source-path=SCRIPTDIR
 set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize prompt export-results export-sources owners usage captures capture-sync"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop"
 
 top_help() {
   cat <<'EOF'
@@ -31,6 +31,10 @@ Commands:
   usage            this month's usage and limits
   captures         network capture runs across your projects
   capture-sync     download completed capture sessions into a folder (--install-timer to repeat)
+  capture-options  the phones, exit states and session lengths a capture run of an app can use
+  capture-start    start a network capture run of an app on a lab phone
+  capture-watch    follow a capture run to its end (--timeout, then re-run)
+  capture-stop     stop a capture run
 
 Run citt <command> --help for its options. Every command takes --json.
 EOF
@@ -113,6 +117,12 @@ main() {
       # shellcheck source=lib/cmd-capture.sh
       . "$CITT_LIB/cmd-capture.sh"
       ;;
+    capture-options | capture-start | capture-watch | capture-stop)
+      # shellcheck source=lib/cmd-capture.sh
+      . "$CITT_LIB/cmd-capture.sh"
+      # shellcheck source=lib/cmd-capture-run.sh
+      . "$CITT_LIB/cmd-capture-run.sh"
+      ;;
   esac
   # stdout passes through clean (app text can hold terminal control characters); auth prints the
   # sign-in link while it waits, so it writes directly.
@@ -121,6 +131,10 @@ main() {
     export-results) cmd_export results "$@" | clean ;;
     export-sources) cmd_export sources "$@" | clean ;;
     capture-sync) cmd_capture_sync "$@" | clean ;;
+    capture-options) cmd_capture_options "$@" | clean ;;
+    capture-start) cmd_capture_start "$@" | clean ;;
+    capture-watch) cmd_capture_watch "$@" | clean ;;
+    capture-stop) cmd_capture_stop "$@" | clean ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }

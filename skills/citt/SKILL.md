@@ -1,6 +1,6 @@
 ---
 name: citt
-description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, list network capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
+description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, start a network capture run of an app on a lab phone, follow it to its end and stop it, list capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
@@ -26,7 +26,7 @@ Run `citt auth --start`, show the printed link to the user, then run `citt auth 
 
 ## Long-running commands
 
-`citt status --wait`, `citt scrutinize --wait`, `citt prompt --wait` and the export commands stop after `--timeout` seconds (default 540, below the 600 s limit of the Bash tool) with exit 12 and a line `re-run: <command>` on stderr. Run that command to continue; exports resume with `--export-id`, so no second export is requested; an interrupted `citt prompt` upload resumes when the same command is run again.
+`citt status --wait`, `citt scrutinize --wait`, `citt prompt --wait`, `citt capture-watch`, `citt capture-start --wait` and the export commands stop after `--timeout` seconds (default 540, below the 600 s limit of the Bash tool) with exit 12 and a line `re-run: <command>` on stderr. Run that command to continue; exports resume with `--export-id`, so no second export is requested; an interrupted `citt prompt` upload resumes when the same command is run again. A capture run lasts minutes to days: follow it with `citt capture-watch RUN --timeout 540` (the default) and, on exit 12, run the printed `re-run: citt capture-watch RUN` line; never loop on it without a timeout. Exit 0, 13 (`done_with_gaps`), 14 (`stopped`) and 8 with a `failed` line mean the run has ended. A `citt capture-start` that exits 9 (network), or 8 with a `server error` line, is safe to run again with the same arguments: it returns the run the first call created, and with `--wait` follows it again.
 
 ## Codex
 
@@ -244,6 +244,60 @@ The summary line: `3 new sessions, 1 updated, 41 files, 6.2 GB in 12 min; 0 fail
 
 The timer reads the token where the plugin stores it, the system keyring or `~/.config/citt/device_token`; no unit file holds a token. A keyring that is locked outside a login session stops the install with the reason and names the fix: on a host without a desktop session, sign in with `citt auth --file`, which keeps the token in that file only and makes every command read it before the keyring, then install again. Re-run `--install-timer` after a plugin update to refresh the copy; `--status` shows the copy's version against the plugin's. `--uninstall-timer` removes the units. `--print-cron` prints one crontab line for other systems and leaves the crontab to you.
 
+### citt capture-options
+
+```
+citt capture-options APP --project NAME|ID [--duration D] [--json]
+```
+
+What a capture run of one app can use (`GET /project-apps/{id}/ad-sessions/options`). APP is an Android package id or Google Play link of an app in the project; `--project` takes the name or the numeric id (`--project-id` also works). The output: whether the package is allowed for capture runs, whether the lab launcher is online, a table of the lab phones (name, device id, status `free`, `busy` or `offline`, active runs), the exit states with their server counts, the session lengths `--split` takes with the default, the duration range, the default profile (persona age, tracking) with the last exit state, and the measured size per captured hour with the number of sessions it was measured over. `--duration` adds the estimated download size of a run that long. An app missing from the project exits 4 with the `citt submit` command that adds it. `--json` prints the API body.
+
+### citt capture-start
+
+```
+citt capture-start APP --project NAME|ID --duration D --state XX [--split S] [--phone NAME|ID]
+                   [--age N] [--tracking allow|refuse] [--wait [--timeout SECONDS]] [--json]
+```
+
+Starts a network capture run of APP on a lab phone (`POST /project-apps/{id}/ad-sessions`). Durations take `<n>m`, `<n>h` or `<n>d` (`90m`, `3h`, `2d`), 1 minute to 7 days. `--state` is the exit state code from `citt capture-options`. `--split` is the session length; without it the options' default length is used, or the longest offered length that fits in the duration. Without `--phone` the first free phone is used; when no phone is free the command exits 5 with each phone's status and active runs. `--phone` takes a phone name or device id and accepts a busy or offline phone: the run queues behind its other runs. `--age` (5 to 99) and `--tracking` default to the project's profile.
+
+The output:
+
+```
+Run 15 (ui-3950-20261014T120000Z-abcd1234): queued on Pixel 4a #1 (device 2)
+Exit state CA; 3 sessions of 1h over 3h; persona age 30, tracking allow
+Estimated end: 2026-10-14 15:05 UTC
+Next: citt capture-watch 15 to follow it; citt capture-stop 15 to stop it; citt capture-sync --run ui-3950-20261014T120000Z-abcd1234 to download its sessions
+```
+
+Every start request has an `idempotency_key` derived from the arguments and a random value saved in `~/.config/citt/capture-start/` until the API answers, or with `--wait` until the watch ends or reaches its timeout. A re-run of the same command within 24 hours after a network failure or a server error (exit 9, or 8 with a `server error` line) sends the same key, and the API returns the run the first call created instead of starting a second one; with `--wait` the re-run follows that run again. Any other command, or the same command after an answer, starts a new run. A key reused with a different request is 409 `idempotency_conflict` (exit 5). `--wait` follows the run as `citt capture-watch` does, with the same `--timeout` and exit codes. `--json` prints the API body, or with `--wait` the `capture-watch` document with the start response under `started`.
+
+### citt capture-watch
+
+```
+citt capture-watch RUN [--timeout SECONDS] [--json]
+```
+
+Follows a capture run (its id or run key) with `GET /capture-runs/{id}`, every 15 seconds. It prints a line at each state change and one per finished session:
+
+```
+Run 15 (ui-3950-20261014T120000Z-abcd1234): running, 0 of 3 sessions, estimated end 2026-10-14 15:05 UTC
+Session 1 of 3: ingested, 2 flags
+Session 2 of 3: failed: upload failed
+Run 15 (ui-3950-20261014T120000Z-abcd1234): done_with_gaps, 3 of 3 sessions, 1 failed, 2 flags
+Next: citt capture-sync --run ui-3950-20261014T120000Z-abcd1234
+```
+
+Exit codes: 0 when the run ends `done` (or is `imported`), 13 on `done_with_gaps`, 14 on `stopped`, 8 on `failed`, each nonzero end with a stderr line. After `--timeout` seconds (default 540) it exits 12 with `re-run: citt capture-watch RUN` on stderr; the wait before the last poll is cut to the time left, so the command ends within the timeout plus one request. The sessions already printed are kept in `~/.config/citt/capture-watch/`, so the re-run prints only new ones. `--json` prints one document at the end: `schema` `citt.plugin.capture-watch/1`, `polls`, `ended` and `run`, the last `GET /capture-runs/{id}` body.
+
+### citt capture-stop
+
+```
+citt capture-stop RUN [--json]
+```
+
+Stops a capture run (its id or run key) with `POST /capture-runs/{id}/stop`. A running run prints `stopping; the phone ends the current session and uploads it` and the `citt capture-watch` command that follows it to `stopped`. A queued run ends at once: `stopped before it started`. A run that has ended prints `had already ended:` with its final state, sends no stop request and exits 0. A run ingested from the command line is stopped on the lab host; the API answers 409 `not_launched` (exit 5).
+
 ## Exit codes
 
 | Code | Meaning |
@@ -253,14 +307,16 @@ The timer reads the token where the plugin stores it, the system keyring or `~/.
 | 2 | Usage: unknown flag, missing or conflicting arguments, invalid finding id or email, CSV over the size limit, a capture sync folder of another account |
 | 3 | Not authenticated, or not in this account's plan: no token, 401, device-flow denial or expiry; 403 `not_entitled`, which prints `this needs a Researcher, Deep Researcher or Custom plan (in a shared project, its first owner's plan); on Pay as you go, scan one Android app with citt submit PACKAGE and ask about it with citt prompt; plans: https://canitrustthat.com/pricing`; any other 403 (`ios_rule_scan_plan`, `custom_prompt_not_in_plan`, `account_paused`) prints the service's reason. Read the line: run `citt auth` only for a sign-in problem |
 | 4 | Not found: no such project, app, finding, export or prompt thread among yours |
-| 5 | Conflict or not ready: several projects with the name, last owner, app without a finished scan, a thread at its turn limit |
+| 5 | Conflict or not ready: several projects with the name, last owner, app without a finished scan, a thread at its turn limit, no free lab phone for `citt capture-start`, a reused capture start key with a different request |
 | 6 | Usage limit reached (429: the period, the reset time and the plan that raises it), including the upload limits `upload_rate_limit` and `upload_quota`; or the prepaid balance is short (402 `insufficient_balance`: the price, the balance and the top-up link) |
 | 7 | Rejected request: 400 or 422; a rejected upload (status `rejected`, 409 `upload_rejected`, 413 `upload_too_large`) |
-| 8 | Server error after retries, or an export, job or prompt turn that ended failed, or capture sessions left in the sync's failed list |
+| 8 | Server error after retries, or an export, job or prompt turn that ended failed, or capture sessions left in the sync's failed list, or a capture run that ended `failed` |
 | 9 | Network: host unreachable, TLS failure or timeout after retries |
 | 10 | Route not deployed on this server |
 | 11 | Export integrity: a zip or file hash differs from the manifest or the capture file list, or an unsafe entry name or file path |
-| 12 | Still running: a `--wait`, export or upload-validation poll reached its timeout; re-run the printed command |
+| 12 | Still running: a `--wait`, export, upload-validation or `citt capture-watch` poll reached its timeout; re-run the printed command |
+| 13 | A capture run ended `done_with_gaps`: at least one planned session failed; the others can be downloaded |
+| 14 | A capture run ended `stopped` by a stop request |
 
 ## Workflows
 
@@ -291,3 +347,11 @@ The timer reads the token where the plugin stores it, the system keyring or `~/.
 3. `citt findings --project proxy-sweep --family proxyware`
 4. `citt scrutinize <finding id> --project proxy-sweep --wait`: the verdict, the number of files cited and the rationale.
 5. `citt export-sources --project proxy-sweep --apps com.zenshield.app`, re-run with the printed `--export-id` on exit 12. The decompiled tree is then in `./citt-exports/proxy-sweep/sources/android/com.zenshield.app/tree/`, readable with local file tools.
+
+### A network capture run of one app
+
+1. `citt submit --project capture-lab com.example.app` when the app is not yet in the project.
+2. `citt capture-options com.example.app --project capture-lab --duration 3h`: the free phones, exit states and the estimated size.
+3. `citt capture-start com.example.app --project capture-lab --duration 3h --state CA`: prints the run id and key.
+4. `citt capture-watch <run id>`: repeat while it exits 12; 0, 13 or 14 mean the run has ended.
+5. `citt capture-sync --run <run key>`: downloads its sessions into `./citt-captures/`.

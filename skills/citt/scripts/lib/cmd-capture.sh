@@ -1485,7 +1485,7 @@ cmd_captures() {
     if [ -n "$state" ] || [ -n "$CS_PIDS" ]; then
       printf 'No capture runs match these filters; all runs: citt captures\n'
     else
-      printf 'No capture runs in your projects yet. A capture starts from an Android app'"'"'s Network section on %s\n' "$CITT_APP_HOST"
+      printf 'No capture runs in your projects yet. Start one with citt capture-start, or from an Android app'"'"'s Network section on %s\n' "$CITT_APP_HOST"
     fi
     return 0
   fi

@@ -207,3 +207,55 @@ an interrupted file resumes on the next sync. Runs without a model or tokens.
   --print-cron    print a crontab line for other systems
 EOF
 }
+
+help_capture_options() {
+  cat <<'EOF'
+citt capture-options APP --project NAME|ID [--duration D] [--json]
+
+What a capture run of APP (an Android package id or Google Play link in the project) can use:
+whether the package is allowed, the lab phones with their device id, status and active runs,
+the exit states with their server counts, the session lengths, the duration range, the
+default profile, whether the lab launcher is online, and the measured size per captured hour.
+  --duration   also print the estimated download size of a run this long (90m, 3h, 2d)
+EOF
+}
+
+help_capture_start() {
+  cat <<'EOF'
+citt capture-start APP --project NAME|ID --duration D --state XX [--split S] [--phone NAME|ID]
+                   [--age N] [--tracking allow|refuse] [--wait [--timeout SECONDS]] [--json]
+
+Starts a network capture run of APP (an Android package id or Google Play link in the project)
+on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
+the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
+  --duration   run length, 1m to 7d
+  --state      exit state code, such as CA (see: citt capture-options)
+  --split      session length (default: the options' default, or the longest that fits)
+  --phone      phone name or device id; without it the first free phone; a busy phone queues
+  --age        persona age, 5 to 99 (default: the project's profile)
+  --tracking   allow or refuse (default: the project's profile)
+  --wait       follow the run as citt capture-watch does, up to --timeout (default 540)
+A re-run of the same command within 24 hours sends the same idempotency key and returns the
+same run; any other command starts a new run.
+EOF
+}
+
+help_capture_watch() {
+  cat <<'EOF'
+citt capture-watch RUN [--timeout SECONDS] [--json]
+
+Follows a capture run (id or run key) and prints a line per state change and per finished
+session. Exits 0 on done, 13 on done_with_gaps, 14 on stopped, 8 on failed. After --timeout
+(default 540) it exits 12 with re-run: citt capture-watch RUN; a re-run prints only sessions
+not printed before.
+EOF
+}
+
+help_capture_stop() {
+  cat <<'EOF'
+citt capture-stop RUN [--json]
+
+Stops a capture run (id or run key). A running run goes to stopping: the phone ends the current
+session and uploads it. A queued run ends unstarted. A run that has ended prints its final state.
+EOF
+}
