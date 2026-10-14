@@ -1493,7 +1493,7 @@ cmd_captures() {
     + [.runs[] | [.experiment_id, .run_key,
         (.state // "-") + (if .status_reason then ": " + .status_reason else "" end),
         (.app_label // .package_id),
-        (.device_model // .device_serial // "-"),
+        (.device_name // "-"),
         (if .planned_sessions then "\(.finished_sessions // 0)/\(.planned_sessions)" else "\(.finished_sessions // .sessions // 0)" end)
           + (if (.failed_sessions // 0) > 0 then ", \(.failed_sessions) failed" else "" end),
         (.flags // 0),
