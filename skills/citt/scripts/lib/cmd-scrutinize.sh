@@ -3,9 +3,13 @@
 # shellcheck shell=bash disable=SC2034
 
 cmd_scrutinize() {
-  local prompt="" wait=0 timeout=540 job_ids="" n id
+  local prompt="" wait=0 timeout=540 job_ids="" n id a
   local -a ids
   ids=()
+  CHECK_RERUN="citt scrutinize"
+  for a in "$@"; do
+    CHECK_RERUN="$CHECK_RERUN $(shq "$a")"
+  done
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
     n=$?
@@ -31,6 +35,7 @@ cmd_scrutinize() {
         shift
         ;;
       --json) CITT_JSON=1 ;;
+      --as-typed | --accept-suggested) take_check_flag "$1" ;;
       --help | -h)
         help_scrutinize
         exit 0
@@ -51,6 +56,14 @@ cmd_scrutinize() {
     wait=1
   fi
   need_auth
+  check_flags_ok
+  # The reviewer's instruction is checked before the paid jobs: its wording reaches the model that
+  # answers, and the answers go through the same word check (TASK-507). `POST /findings/scrutinize`
+  # takes no check_id, so a checked instruction records none.
+  if [ -n "$prompt" ] && [ -z "$job_ids" ]; then
+    check_gate each_app "$prompt" 1
+    prompt="$CHECK_PROMPT"
+  fi
   E_KIND=finding
   E_FINDING="${ids[0]}"
   local pid=null
@@ -77,8 +90,7 @@ cmd_scrutinize() {
     cp "$RESP" "$jobs"
     if [ "$wait" = 0 ]; then
       if [ "$CITT_JSON" = 1 ]; then
-        cat "$RESP"
-        printf '\n'
+        print_json_body "$RESP"
         return 0
       fi
       jq -r --arg ref "$( [ "$pid" = null ] && printf -- '--project NAME' || project_ref)" --arg ids "${ids[*]}" '

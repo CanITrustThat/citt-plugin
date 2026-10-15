@@ -255,6 +255,8 @@ HTTP_AUTH=1
 HTTP_RETRY=auto
 HTTP_OUT=""
 HTTP_RESUME=0
+# Wall time of one request in seconds; 300 unless a command sets less for one call.
+HTTP_MAX_TIME=""
 # Extra request headers, one per line.
 HTTP_HEADERS=""
 # Extra curl arguments for every request until changed, one per line (citt capture-sync --limit-rate).
@@ -330,7 +332,7 @@ EOF
   elif [ "$HTTP_RESUME" = 1 ]; then
     args+=(-C -)
   else
-    args+=(--max-time 300)
+    args+=(--max-time "${HTTP_MAX_TIME:-300}")
   fi
   while :; do
     attempt=$((attempt + 1))
@@ -368,6 +370,7 @@ EOF
   HTTP_RESUME=0
   HTTP_HEADERS=""
   HTTP_CHUNK=""
+  HTTP_MAX_TIME=""
 }
 
 ok() { case "$CODE" in 2??) return 0 ;; esac; return 1; }

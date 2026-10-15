@@ -109,18 +109,25 @@ EOF
 help_scrutinize() {
   cat <<'EOF'
 citt scrutinize FINDING_ID... [--project NAME | --project-id N] [--prompt TEXT]
-                [--wait] [--timeout SEC] [--job-id N[,N...]] [--json]
+                [--wait] [--timeout SEC] [--job-id N[,N...]]
+                [--as-typed | --accept-suggested] [--json]
 
 Queues LLM scrutiny of the findings. --wait polls until each finding has the verdict of its
 job. --job-id waits for jobs queued earlier without queueing new ones.
+--prompt TEXT goes to the free check POST /questions/check first: a suggested change prints the
+suggested instruction, queues no job and exits 15. --accept-suggested queues the suggested
+instruction, --as-typed the instruction as typed.
 EOF
 }
 
 help_prompt() {
   cat <<'EOF'
-citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
-citt prompt --thread N ["QUESTION"] [--schema FILE] [--native] [--wait] [--timeout SEC] [--json]
-citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native] [--json]
+citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC]
+            [--as-typed | --accept-suggested] [--json]
+citt prompt --thread N ["QUESTION"] [--schema FILE] [--native] [--wait] [--timeout SEC]
+            [--as-typed | --accept-suggested] [--json]
+citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native]
+            [--as-typed | --accept-suggested] [--json]
 
 TARGET is a build file (an existing .apk, .xapk, .apks, .apkm or .ipa), a store link, or a
 package id. A file is uploaded in 32 MiB chunks; a re-run after an interruption resumes the
@@ -134,6 +141,18 @@ findings and data.
   --wait      poll until the turn is answered (default timeout 540 s, then exit 12)
 The project form runs a prompt over a project's decompiled apps; answers become findings with
 source llm_prompt.
+
+Every question goes to the free check POST /questions/check first, which costs nothing and
+suggests a wording a static reading can answer. A suggested change prints the suggested question
+with `Q>` on every one of its lines, then one line per change, creates no job and exits 15. Its
+header states how many lines the question is: take exactly that many lines after the header, strip
+one `Q>` from each and join them with a newline to recover the question. Later `Q>` lines of the
+output, in a re-run line or in an answer, are outside it.
+  --accept-suggested  submit the suggested question in the same run
+  --as-typed          submit the question as typed; the check is recorded, except with --thread,
+                      whose turn route takes no check_id
+A check that fails, times out, is over its daily limit or is not deployed, and a question over
+4,000 characters, print one line and the question is submitted as typed.
 EOF
 }
 

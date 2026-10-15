@@ -100,10 +100,14 @@ main() {
       . "$CITT_LIB/cmd-findings.sh"
       ;;
     scrutinize)
+      # shellcheck source=lib/question-check.sh
+      . "$CITT_LIB/question-check.sh"
       # shellcheck source=lib/cmd-scrutinize.sh
       . "$CITT_LIB/cmd-scrutinize.sh"
       ;;
     prompt)
+      # shellcheck source=lib/question-check.sh
+      . "$CITT_LIB/question-check.sh"
       # shellcheck source=lib/tus.sh
       . "$CITT_LIB/tus.sh"
       # shellcheck source=lib/cmd-prompt.sh

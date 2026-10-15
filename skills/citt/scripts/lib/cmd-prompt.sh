@@ -122,6 +122,7 @@ _prompt_target() {
         --wait) wait=1 ;;
         --native) native=1 ;;
         --json) CITT_JSON=1 ;;
+        --as-typed | --accept-suggested) take_check_flag "$1" ;;
         --help | -h)
           help_prompt
           exit 0
@@ -192,6 +193,15 @@ _prompt_target() {
   fi
 
   need_auth
+  check_flags_ok
+  # The check runs before the upload and before the job: a question whose wording would make every
+  # answer be refused costs no upload quota and no model work (TASK-507). The follow-up turn route
+  # takes no check_id, so a checked follow-up records none.
+  if [ -n "$text" ]; then
+    CHECK_RERUN="$PROMPT_RERUN"
+    check_gate each_app "$text" 1
+    text="$CHECK_PROMPT"
+  fi
   local tid seq="" body key
   key="plugin-$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
   if [ -n "$thread" ]; then
@@ -221,9 +231,12 @@ _prompt_target() {
     esac
     E_KIND=upload
     body="$(tmpfile prompt_body)"
-    jq -nc --argjson t "$tjson" --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" --argjson n "$native" \
-      '{target: $t, prompt: $p, idempotency_key: $k} + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)
-       + (if $n == 1 then {decompile_native: true} else {} end)' >"$body"
+    jq -nc --argjson t "$tjson" --arg p "$text" --arg k "$key" --slurpfile s "${schema_json:-/dev/null}" \
+      --argjson n "$native" --argjson cid "$(check_id_json)" \
+      '{target: $t, prompt: $p, idempotency_key: $k}
+       + (if ($s | length) > 0 then {output_schema: $s[0]} else {} end)
+       + (if $n == 1 then {decompile_native: true} else {} end)
+       + (if $cid == null then {} else {check_id: $cid} end)' >"$body"
     HTTP_RETRY=yes
     call_prompt POST "$CITT_V1/prompts" "$body"
     tid="$(body_field '.thread_id')"
@@ -237,8 +250,7 @@ _prompt_target() {
     return
   fi
   if [ "$CITT_JSON" = 1 ]; then
-    cat "$RESP"
-    printf '\n'
+    print_json_body "$RESP"
     return 0
   fi
   jq -r --arg t "$tid" --arg s "${seq:-?}" '
@@ -278,8 +290,7 @@ _prompt_wait() {
       '[.turns[] | select((.seq | tostring) == $s)] | first | .reason // "no reason given"' "$RESP")"
   fi
   if [ "$CITT_JSON" = 1 ]; then
-    cat "$RESP"
-    printf '\n'
+    print_json_body "$RESP"
     return 0
   fi
   _prompt_print "$tid" "$seq"
@@ -349,6 +360,7 @@ _prompt_project() {
         ;;
       --native) native=1 ;;
       --json) CITT_JSON=1 ;;
+      --as-typed | --accept-suggested) take_check_flag "$1" ;;
       --help | -h)
         help_prompt
         exit 0
@@ -371,16 +383,25 @@ _prompt_project() {
   fi
   [ -n "$(printf '%s' "$text" | tr -d ' \t\r\n')" ] || usage_error "the prompt is empty"
   need_auth
+  check_flags_ok
+  # The apps the question is asked of: the list given, or 1 with --apps all, whose count is not
+  # known before the job. The count shapes the checker's reading of the question, nothing else.
+  local count
+  count="$(jq -rn --arg a "$apps" 'if $a == "all" then 1 else ([$a | split(",")[] | select(. != "")] | length) end')"
+  is_uint "$count" && [ "$count" -ge 1 ] || count=1
   resolve_project
+  CHECK_RERUN="$PROMPT_RERUN"
+  check_gate each_app "$text" "$count"
+  text="$CHECK_PROMPT"
   local body
   body="$(tmpfile prompt_body)"
-  jq -nc --arg apps "$apps" --arg p "$text" --argjson n "$native" \
+  jq -nc --arg apps "$apps" --arg p "$text" --argjson n "$native" --argjson cid "$(check_id_json)" \
     '{apps: (if $apps == "all" then "all" else ($apps | split(",") | map(select(. != ""))) end), prompt: $p}
-     + (if $n == 1 then {decompile_native: true} else {} end)' >"$body"
+     + (if $n == 1 then {decompile_native: true} else {} end)
+     + (if $cid == null then {} else {check_id: $cid} end)' >"$body"
   call POST "$CITT_V1/projects/$PROJECT_ID/prompt" "$body"
   if [ "$CITT_JSON" = 1 ]; then
-    cat "$RESP"
-    printf '\n'
+    print_json_body "$RESP"
     return 0
   fi
   local ref
