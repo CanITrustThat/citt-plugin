@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.4.0
+
+- `citt capture-sync` downloads each missing file from its presigned storage URL, listed per session by `GET /capture-runs/{id}/download-list?sessions=`, with up to 32 downloads at once (`--parallel`, 1 to 32, default 8). These requests are sent without the sign-in and the API is used only for listing, so a capture archive of 20 GB and more is pulled as fast as the link allows.
+- Each presigned file resumes with `Range`, is checked against the listed size and sha256 before its final name, and its list is fetched again before `expires_at` or after the storage host refuses a URL.
+- The API stays the fallback: a session whose presigned list is unavailable, and the rest of a session whose storage host fails 5 times or refuses a URL from a fresh list, are downloaded through the API with at most 4 at once, with one line naming the session. `--via api` downloads every file through the API.
+- The folder layout, `.citt-session.json`, `checksums.sha256`, `state.json`, `--status` and the exit codes are unchanged.
+
 ## 2.3.1
 
 - The `Q>` block of a printed question states how many lines the question is, and the recovery rule is scoped to that count: the question is the next N lines, and recovery takes exactly N lines, strips one `Q>` from each and joins them with a newline. The first rule said only that a `Q>` line is question text, and stdout holds `Q>` lines outside the question in two cases: the two re-run lines hold the typed question verbatim, and `--wait` prints the answer after the block, so a typed line or an answer line starting with `Q>` was recovered as part of the question.

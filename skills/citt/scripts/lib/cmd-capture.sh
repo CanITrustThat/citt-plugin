@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # lib/cmd-capture.sh: citt capture-sync and citt captures (DESIGN-capture-data 2.5).
-# capture-sync downloads completed capture sessions through the authenticated API: the
-# GET /capture-sessions feed from a changed_after cursor, then each session's file list and each
-# file with Range resume and a sha256 check. Only <file>.part is ever incomplete; a final name exists
+# capture-sync downloads completed capture sessions: the GET /capture-sessions feed from a
+# changed_after cursor, then each session's file list, then each missing file from its presigned
+# storage URL of GET /capture-runs/{id}/download-list (NP-579; up to 32 at once, no token sent) or,
+# when presigned URLs are unavailable, through the authenticated API; both with Range resume and a
+# sha256 check. Only <file>.part is ever incomplete; a final name exists
 # only after its hash matches; the session marker is written last; the state file is renamed into
 # place. --install-timer runs the same command from a systemd user timer or a launchd agent, which
 # read the token where the plugin stores it (keyring or the 0600 file); no unit holds a token.
@@ -115,7 +117,16 @@ CS_DIR=""
 CS_META=""
 CS_GROUPS="$CS_GROUPS_ALL"
 CS_SINCE=""
-CS_PARALLEL=2
+# Files downloaded at once: empty for the default of the path (8 presigned, 2 through the API).
+CS_PARALLEL=""
+# presigned (the default, with the API as the fallback) or api (--via api).
+CS_VIA=presigned
+# 1 when --via was given, so a timer or cron line repeats it (CITT_CAPTURE_VIA is not repeated).
+CS_VIA_OPT=0
+CS_PAR_MAX=32
+CS_API_PAR_MAX=4
+# Seconds before expires_at when a presigned list is fetched again.
+CS_EXPIRY_MARGIN=300
 CS_RATE=""
 CS_DRY=0
 CS_VERIFY=0
@@ -158,13 +169,15 @@ EOF
   while IFS= read -r v; do [ -z "$v" ] || printf -- '--run\n%s\n' "$v"; done <<EOF
 $CS_RUNS
 EOF
-  [ "$CS_PARALLEL" = 2 ] || printf -- '--parallel\n%s\n' "$CS_PARALLEL"
+  [ -z "$CS_PARALLEL" ] || printf -- '--parallel\n%s\n' "$CS_PARALLEL"
+  [ "$CS_VIA_OPT" = 0 ] || printf -- '--via\n%s\n' "$CS_VIA"
   [ -z "$CS_RATE" ] || printf -- '--limit-rate\n%s\n' "$CS_RATE"
   [ -z "$CS_SINCE" ] || printf -- '--since\n%s\n' "$CS_SINCE"
 }
 
 cmd_capture_sync() {
   local mode=sync dir="${CITT_CAPTURE_DIR:-./citt-captures}" groups="$CS_GROUPS_ALL" every="" since="" g
+  CS_VIA="${CITT_CAPTURE_VIA:-presigned}"
   CITT_CMD="citt capture-sync"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -198,6 +211,12 @@ cmd_capture_sync() {
         CS_PARALLEL="$2"
         shift
         ;;
+      --via)
+        need_value "$1" $#
+        CS_VIA="$2"
+        CS_VIA_OPT=1
+        shift
+        ;;
       --limit-rate)
         need_value "$1" $#
         CS_RATE="$2"
@@ -226,9 +245,10 @@ cmd_capture_sync() {
   [ -n "$dir" ] || usage_error "--dir needs a folder"
   CS_GROUPS="$(_cs_norm_groups "$groups")"
   [ -n "$CS_GROUPS" ] || usage_error "--groups takes a comma list of analysis, network, data and video, got: $groups"
-  if ! is_uint "$CS_PARALLEL" || [ "$CS_PARALLEL" -lt 1 ] || [ "$CS_PARALLEL" -gt 4 ]; then
-    usage_error "--parallel takes 1 to 4 (the service streams 4 files at a time per account), got: $CS_PARALLEL"
+  if [ -n "$CS_PARALLEL" ] && { ! is_uint "$CS_PARALLEL" || [ "$CS_PARALLEL" -lt 1 ] || [ "$CS_PARALLEL" -gt "$CS_PAR_MAX" ]; }; then
+    usage_error "--parallel takes 1 to $CS_PAR_MAX (at most $CS_API_PAR_MAX through the API), got: $CS_PARALLEL"
   fi
+  case "$CS_VIA" in presigned | api) ;; *) usage_error "--via takes presigned or api, got: $CS_VIA" ;; esac
   if [ -n "$CS_RATE" ] && ! printf '%s' "$CS_RATE" | grep -qE '^[0-9]+[kKmMgG]?$'; then
     usage_error "--limit-rate takes bytes per second such as 500k or 2M, got: $CS_RATE"
   fi
@@ -417,12 +437,132 @@ _cs_retry_after() {
   if is_uint "$ra" && [ "$ra" -le 300 ]; then printf '%s' "$ra"; else printf '5'; fi
 }
 
-# _cs_fetch SESSION REL SIZE SHA FINAL: downloads one file to FINAL.part with resume, checks the
-# ETag and the sha256, then renames it to FINAL. On failure sets CS_FCODE (an exit code) and CS_FMSG.
+# --- presigned lists (NP-579) ----------------------------------------------------------
+# A session's presigned list is kept in $_CITT_TMP: dl.SID (rel, size, sha256, url per line), dlexp.SID
+# (expires_at in epoch seconds), dlat.SID (when it was fetched), dlgen.SID (a counter raised by every
+# refresh) and dlmeta.SID (run id, run key and folder). The s3down.SID directory marks a session whose
+# remaining files go through the API; its creator prints the one line for the session. Workers refresh it under the dlock.SID directory, so one expiry refreshes the
+# list once for every worker of the session.
+
+CS_DL_MSG=""
+
+# _cs_dlist_get SESSION RUN_ID RUN_KEY FOLDER: GET /capture-runs/RUN/download-list?sessions=SESSION into
+# dl.SESSION and dlexp.SESSION. Returns 0 on a list, 1 when presigned URLs are unavailable (CS_DL_MSG
+# names why), 2 after 11 answers of 429 and 3 on 401.
+_cs_dlist_get() {
+  local sid="$1" rid="$2" rk="$3" folder="$4" waits=0 exp
+  while :; do
+    http GET "$CITT_V1/capture-runs/$rid/download-list?sessions=$sid&groups=$(urlenc "$CS_GROUPS")"
+    case "$CODE" in
+      2??) break ;;
+      401) return 3 ;;
+      429)
+        waits=$((waits + 1))
+        [ "$waits" -le 10 ] || return 2
+        sleep "$(_cs_retry_after)"
+        ;;
+      000)
+        CS_DL_MSG="had no answer ($NET_REASON)"
+        return 1
+        ;;
+      *)
+        CS_DL_MSG="answered $CODE"
+        return 1
+        ;;
+    esac
+  done
+  exp="$(jq -r "$CS_JQ_TS"' .expires_at // empty | ts | floor' "$RESP" 2>/dev/null)"
+  if ! is_uint "$exp" || ! jq -e '.files | type == "array"' "$RESP" >/dev/null 2>&1; then
+    CS_DL_MSG="answered an unreadable list"
+    return 1
+  fi
+  if ! jq -r --arg pre "$rk/$folder/" '.files[] | select((.path | type) == "string" and (.url | type) == "string"
+      and (.path | startswith($pre))) | [(.path | ltrimstr($pre)), (.size | tostring), .sha256, .url] | @tsv' \
+    "$RESP" >"$_CITT_TMP/dl.$sid.new" 2>/dev/null; then
+    CS_DL_MSG="answered an unreadable list"
+    return 1
+  fi
+  mv -f "$_CITT_TMP/dl.$sid.new" "$_CITT_TMP/dl.$sid"
+  printf '%s' "$exp" >"$_CITT_TMP/dlexp.$sid"
+  now_s >"$_CITT_TMP/dlat.$sid"
+  return 0
+}
+
+# _cs_s3_down SESSION REASON: the rest of SESSION goes through the API; the first worker prints the line.
+_cs_s3_down() {
+  if mkdir "$_CITT_TMP/s3down.$1" 2>/dev/null; then
+    err "$CITT_CMD: session $1: the remaining files downloaded through the API, at most $CS_API_PAR_MAX at once ($2)"
+  fi
+  return 0
+}
+
+# _cs_api_take / _cs_api_give: one of the CS_API_PAR_MAX slots of the session in CS_API_SEM, so API file
+# requests stay at the API cap while more presigned workers run (NP-579 round 2). No-op when CS_API_SEM is
+# empty (the worker count is already within the cap).
+CS_API_SEM=""
+CS_API_SLOT=""
+_cs_api_take() {
+  local i
+  CS_API_SLOT=""
+  [ -n "$CS_API_SEM" ] || return 0
+  while :; do
+    i=0
+    while [ "$i" -lt "$CS_API_PAR_MAX" ]; do
+      if mkdir "$CS_API_SEM.$i" 2>/dev/null; then
+        CS_API_SLOT="$CS_API_SEM.$i"
+        return 0
+      fi
+      i=$((i + 1))
+    done
+    sleep 0.05
+  done
+}
+_cs_api_give() {
+  [ -z "$CS_API_SLOT" ] || rmdir "$CS_API_SLOT" 2>/dev/null
+  CS_API_SLOT=""
+  return 0
+}
+
+# _cs_dl_url SESSION REL SIZE SHA: the presigned URL of REL in the current list, empty when it is absent
+# or listed with another size or sha256.
+_cs_dl_url() {
+  awk -F '\t' -v r="$2" -v n="$3" -v h="$4" '$1 == r && $2 == n && $3 == h { print $4; exit }' "$_CITT_TMP/dl.$1" 2>/dev/null
+  return 0
+}
+
+# _cs_dl_refresh SESSION GEN: a new list unless another worker already replaced generation GEN.
+# Returns 0 when the list is newer than GEN.
+_cs_dl_refresh() {
+  local sid="$1" gen="$2" cur rc=0 i=0 meta
+  until mkdir "$_CITT_TMP/dlock.$sid" 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 3000 ] || return 1
+    sleep 0.1
+  done
+  cur="$(cat "$_CITT_TMP/dlgen.$sid" 2>/dev/null)"
+  if [ "$cur" = "$gen" ]; then
+    meta="$(cat "$_CITT_TMP/dlmeta.$sid")"
+    # shellcheck disable=SC2086
+    if _cs_dlist_get "$sid" $meta; then
+      printf '%s' "$((gen + 1))" >"$_CITT_TMP/dlgen.$sid"
+    else
+      rc=1
+    fi
+  fi
+  rmdir "$_CITT_TMP/dlock.$sid"
+  return "$rc"
+}
+
+# _cs_fetch SESSION REL SIZE SHA FINAL [URL]: downloads one file to FINAL.part with resume, checks the
+# size and the sha256 (and the ETag of an API answer), then renames it to FINAL. URL is the presigned
+# URL of the file; empty: the API path. On failure sets CS_FCODE (an exit code) and CS_FMSG.
 _cs_fetch() {
-  local sid="$1" rel="$2" size="$3" sha="$4" final="$5" part url have got e total tries=0 bad=0 waits=0 tagbad
+  local sid="$1" rel="$2" size="$3" sha="$4" final="$5" s3url="${6:-}" part url have got e total tries=0 bad=0 waits=0 tagbad
+  local s3fail=0 refreshed=0 gen now exp at
   part="$final.part"
   url="$CITT_V1/capture-sessions/$sid/file?path=$(urlenc "$rel")"
+  # The URL of the current list: another worker may have fetched a new one.
+  [ -z "$s3url" ] || s3url="$(_cs_dl_url "$sid" "$rel" "$size" "$sha")"
   if ! mkdir -p "$(dirname "$final")" 2>/dev/null; then
     CS_FCODE=1
     CS_FMSG="cannot create $(dirname "$final")"
@@ -435,11 +575,86 @@ _cs_fetch() {
       have=0
     fi
     tagbad=0
-    if [ "$have" -lt "$size" ] || [ ! -e "$part" ]; then
+    # The presigned path: a fresh list before an expired URL; after 5 failed requests, the API.
+    if [ -n "$s3url" ] && [ -e "$_CITT_TMP/s3down.$sid" ]; then s3url=""; fi
+    if [ -n "$s3url" ] && [ "$refreshed" = 0 ] && { [ "$have" -lt "$size" ] || [ ! -e "$part" ]; }; then
+      now="$(now_s)"
+      exp="$(cat "$_CITT_TMP/dlexp.$sid" 2>/dev/null)"
+      gen="$(cat "$_CITT_TMP/dlgen.$sid" 2>/dev/null)"
+      at="$(cat "$_CITT_TMP/dlat.$sid" 2>/dev/null)"
+      is_uint "$at" || at=0
+      if { ! is_uint "$exp" || [ $((now + CS_EXPIRY_MARGIN)) -ge "$exp" ]; } && { [ "$gen" = 0 ] || [ $((now - at)) -ge 60 ]; }; then
+        refreshed=1
+        if ! _cs_dl_refresh "$sid" "$gen"; then
+          CS_FCODE=8
+          CS_FMSG="$rel: the presigned download list expired and could not be fetched again; the next sync tries again"
+          return 1
+        fi
+        s3url="$(_cs_dl_url "$sid" "$rel" "$size" "$sha")"
+      fi
+    fi
+    if [ -n "$s3url" ] && { [ "$have" -lt "$size" ] || [ ! -e "$part" ]; }; then
       tries=$((tries + 1))
       HTTP_OUT="$part"
       HTTP_RESUME=1
+      HTTP_AUTH=0
+      HTTP_CLIENT_HDR=0
+      HTTP_RETRY=no
+      http GET "$s3url"
+      case "$CODE" in
+        200 | 206) ;;
+        416)
+          rm -f "$part"
+          [ "$tries" -ge 5 ] || continue
+          CS_FCODE=8
+          CS_FMSG="$rel: the storage host refused the byte range (416)"
+          return 1
+          ;;
+        400 | 403)
+          # An expired or refused signature: one fresh list; a refusal after it sends the rest of the
+          # session through the API (NP-579 round 2).
+          if [ "$refreshed" = 0 ] && [ ! -e "$_CITT_TMP/s3down.$sid" ]; then
+            refreshed=1
+            gen="$(cat "$_CITT_TMP/dlgen.$sid" 2>/dev/null)"
+            if _cs_dl_refresh "$sid" "$gen"; then
+              s3url="$(_cs_dl_url "$sid" "$rel" "$size" "$sha")"
+              [ -n "$s3url" ] || err "$CITT_CMD: session $sid: $rel downloaded through the API (absent from the fresh presigned list)"
+              continue
+            fi
+          fi
+          _cs_s3_down "$sid" "the storage host refused the presigned download ($CODE) after a fresh list"
+          s3url=""
+          tries=0
+          continue
+          ;;
+        000 | 5??)
+          s3fail=$((s3fail + 1))
+          if [ "$s3fail" -ge 5 ]; then
+            _cs_s3_down "$sid" "the storage host failed 5 times, the last with HTTP $CODE"
+            s3url=""
+            tries=0
+          fi
+          continue
+          ;;
+        *)
+          err "$CITT_CMD: session $sid: $rel downloaded through the API (the storage host answered $CODE)"
+          s3url=""
+          tries=0
+          continue
+          ;;
+      esac
+      [ -e "$part" ] || : >"$part"
+      # The ETag of a stored object is its MD5, never the sha256: the size and the sha256 decide.
+      e=""
+      if [ "$CODE" = 206 ]; then total="$(hdr Content-Range | sed -n 's|^bytes [0-9]*-[0-9]*/\([0-9]*\)$|\1|p')"; else total="$(hdr Content-Length)"; fi
+      ! is_uint "$total" || [ "$total" = "$size" ] || tagbad=1
+    elif [ "$have" -lt "$size" ] || [ ! -e "$part" ]; then
+      tries=$((tries + 1))
+      HTTP_OUT="$part"
+      HTTP_RESUME=1
+      _cs_api_take
       http GET "$url"
+      _cs_api_give
       case "$CODE" in
         200 | 206) ;;
         416)
@@ -525,7 +740,8 @@ _cs_fetch() {
   done
 }
 
-# _cs_worker N LIST OUT SESSION SESSDIR: downloads the files of LIST (rel, size, sha per line) in a
+# _cs_worker N LIST OUT SESSION SESSDIR: downloads the files of LIST (rel, size, sha, presigned URL or
+# empty per line) in a
 # background subshell with its own header and error files; one result line per file in OUT.
 _cs_worker() {
   local n="$1" list="$2" out="$3" sid="$4" sdir="$5"
@@ -538,9 +754,9 @@ _cs_worker() {
     # --fail keeps an error body out of a .part; the speed limit ends a stalled stream for a resume.
     HTTP_EXTRA_ARGS="${HTTP_EXTRA_ARGS}${HTTP_EXTRA_ARGS:+$'\n'}--fail"$'\n'"--speed-limit"$'\n'"1"$'\n'"--speed-time"$'\n'"120"
     local drops=0
-    while IFS=$'\t' read -r rel size sha <&4; do
+    while IFS=$'\t' read -r rel size sha s3url <&4; do
       [ -n "$rel" ] || continue
-      if _cs_fetch "$sid" "$rel" "$size" "$sha" "$sdir/$rel"; then
+      if _cs_fetch "$sid" "$rel" "$size" "$sha" "$sdir/$rel" "$s3url"; then
         printf 'ok\t%s\t%s\n' "$rel" "$size" >>"$out"
         drops=0
       else
@@ -706,15 +922,65 @@ _cs_session() {
   fi
   printf '%s\t%s\n' "$run_id" "$run_key" >>"$_CITT_TMP/touched"
 
-  # Downloads, the largest files first, spread over --parallel workers.
+  # The presigned list of the session (NP-579); the API path when it is unavailable or with --via api.
+  local par via=api need4="$_CITT_TMP/need4.$sid" dlrc
+  if [ "$nneed" -gt 0 ] && [ "$CS_VIA" = presigned ]; then
+    rm -f "$_CITT_TMP/dl.$sid" "$_CITT_TMP/dlat.$sid"
+    rmdir "$_CITT_TMP/s3down.$sid" 2>/dev/null || true
+    if [ -z "$run_id" ]; then
+      err "$CITT_CMD: session $sid: downloaded through the API (the session has no run id for a presigned list)"
+    else
+      printf '%s %s %s' "$run_id" "$run_key" "$folder" >"$_CITT_TMP/dlmeta.$sid"
+      printf '0' >"$_CITT_TMP/dlgen.$sid"
+      CS_DL_MSG=""
+      dlrc=0
+      _cs_dlist_get "$sid" "$run_id" "$run_key" "$folder" || dlrc=$?
+      case "$dlrc" in
+        0) via=presigned ;;
+        2)
+          _cs_abort 6 "the service refused the presigned download list of session $sid 11 times (429); the next sync continues"
+          return
+          ;;
+        3) fail_http ;;
+        *) err "$CITT_CMD: session $sid: downloaded through the API (the presigned download list $CS_DL_MSG)" ;;
+      esac
+    fi
+  fi
+  : >"$need4"
+  while IFS=$'\t' read -r rel size sha; do
+    if [ "$via" = presigned ]; then
+      printf '%s\t%s\t%s\t%s\n' "$rel" "$size" "$sha" "$(_cs_dl_url "$sid" "$rel" "$size" "$sha")" >>"$need4"
+    else
+      printf '%s\t%s\t%s\t\n' "$rel" "$size" "$sha" >>"$need4"
+    fi
+  done <"$need"
+  if [ "$via" = presigned ]; then
+    par="${CS_PARALLEL:-8}"
+  else
+    par="${CS_PARALLEL:-2}"
+    if [ "$par" -gt "$CS_API_PAR_MAX" ]; then
+      [ -e "$_CITT_TMP/parlowered" ] || [ "$nneed" = 0 ] || err "$CITT_CMD: --parallel $par is lowered to $CS_API_PAR_MAX for downloads through the API"
+      : >"$_CITT_TMP/parlowered"
+      par="$CS_API_PAR_MAX"
+    fi
+  fi
+
+  # More workers than the API cap: API file requests (fallback files) take one of 4 slots.
+  CS_API_SEM=""
+  if [ "$par" -gt "$CS_API_PAR_MAX" ]; then
+    CS_API_SEM="$_CITT_TMP/apisem.$sid"
+    rmdir "$CS_API_SEM".* 2>/dev/null || true
+  fi
+
+  # Downloads, the largest files first, spread over the parallel workers.
   res="$_CITT_TMP/res.$sid"
   : >"$res"
   if [ "$nneed" -gt 0 ]; then
     local i pids=""
     rm -f "$_CITT_TMP/list.$sid".*
-    sort -t "$(printf '\t')" -k2,2nr "$need" | awk -v n="$CS_PARALLEL" -v base="$_CITT_TMP/list.$sid" '{ print > (base "." ((NR - 1) % n)) }'
+    sort -t "$(printf '\t')" -k2,2nr "$need4" | awk -v n="$par" -v base="$_CITT_TMP/list.$sid" '{ print > (base "." ((NR - 1) % n)) }'
     i=0
-    while [ "$i" -lt "$CS_PARALLEL" ]; do
+    while [ "$i" -lt "$par" ]; do
       if [ -s "$_CITT_TMP/list.$sid.$i" ]; then
         _cs_worker "$i" "$_CITT_TMP/list.$sid.$i" "$res" "$sid" "$sdir"
         pids="$pids $!"

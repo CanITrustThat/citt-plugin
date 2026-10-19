@@ -252,6 +252,8 @@ REQ_METHOD=""
 REQ_PATH=""
 # Set before http to change its behaviour for one call.
 HTTP_AUTH=1
+# 0: no X-CITT-Client header, for a request to a host other than the API (a presigned storage URL).
+HTTP_CLIENT_HDR=1
 HTTP_RETRY=auto
 HTTP_OUT=""
 HTTP_RESUME=0
@@ -311,7 +313,7 @@ http() {
   local -a args
   args=(-sS -g -o "$out" -D "$HDRS" -w '%{http_code}' --connect-timeout 20)
   if [ "$method" = HEAD ]; then args+=(-I); else args+=(-X "$method"); fi
-  args+=(-H "X-CITT-Client: $CITT_CLIENT")
+  [ "$HTTP_CLIENT_HDR" = 0 ] || args+=(-H "X-CITT-Client: $CITT_CLIENT")
   if [ -n "$HTTP_HEADERS" ]; then
     while IFS= read -r h; do
       [ -z "$h" ] || args+=(-H "$h")
@@ -365,6 +367,7 @@ EOF
   done
   RETRIED=$((attempt - 1))
   HTTP_AUTH=1
+  HTTP_CLIENT_HDR=1
   HTTP_RETRY=auto
   HTTP_OUT=""
   HTTP_RESUME=0

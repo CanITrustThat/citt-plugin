@@ -205,19 +205,21 @@ EOF
 help_capture_sync() {
   cat <<'EOF'
 citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--groups LIST] [--since DATE]
-                  [--parallel N] [--limit-rate RATE] [--dry-run | --verify] [--json]
+                  [--parallel N] [--via api] [--limit-rate RATE] [--dry-run | --verify] [--json]
 citt capture-sync [--dir DIR] [options] --watch [--every 15m]
 citt capture-sync [--dir DIR] [options] --install-timer [--every 15m]
 citt capture-sync [--dir DIR] (--status | --uninstall-timer | --print-cron [--every 15m])
 
 Downloads the capture sessions completed since the last sync into DIR/<run key>/<session>/,
-with the run's README.md, run.json and checksums.sha256. Each file is checked against its sha256;
+with the run's README.md, run.json and checksums.sha256. Files come from presigned storage URLs,
+or through the API when those are unavailable. Each file is checked against its sha256;
 an interrupted file resumes on the next sync. Runs without a model or tokens.
   --dir           the sync folder (default $CITT_CAPTURE_DIR, else ./citt-captures)
   --project       only these projects; --run only these runs
   --groups        analysis,network,data,video (default all four)
   --since         a date or UTC time for the first sync (default: every session)
-  --parallel      files downloaded at once, 1 to 4 (default 2)
+  --parallel      files downloaded at once, 1 to 32 (default 8); through the API 1 to 4 (default 2)
+  --via api       download every file through the API instead of its presigned storage URL
   --limit-rate    bandwidth cap passed to curl, such as 2M
   --dry-run       list the sessions, files and bytes to download; write nothing
   --verify        hash every local file again and download any that differ
@@ -235,22 +237,23 @@ citt capture-options APP --project NAME|ID [--duration D] [--json]
 
 What a capture run of APP (an Android package id or Google Play link in the project) can use:
 whether the package is allowed, the lab phones with their device id, status and active runs,
-the exit states with their server counts, the session lengths, the duration range, the
-default profile, whether the lab launcher is online, and the measured size per captured hour.
+the exit states and the exit countries (per NordVPN region) with their server counts, the
+session lengths, the duration range, the default profile, whether the lab launcher is online, and the measured size per captured hour.
   --duration   also print the estimated download size of a run this long (90m, 3h, 2d)
 EOF
 }
 
 help_capture_start() {
   cat <<'EOF'
-citt capture-start APP --project NAME|ID --duration D --state XX [--split S] [--phone NAME|ID]
+citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--wait [--timeout SECONDS]] [--json]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
 the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --duration   run length, 1m to 7d
-  --state      exit state code, such as CA (see: citt capture-options)
+  --state      US exit state code, such as CA (see: citt capture-options)
+  --country    exit country code, such as SG (see: citt capture-options); a US exit needs --state
   --split      session length (default: the options' default, or the longest that fits)
   --phone      phone name or device id; without it the first free phone; a busy phone queues
   --age        persona age, 5 to 99 (default: the project's profile)

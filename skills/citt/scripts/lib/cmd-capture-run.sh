@@ -153,10 +153,19 @@ cmd_capture_options() {
   printf '\n'
   jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" "$CR_JQ"'
     "Exit states (servers): " + ([.states[] | "\(.code) \(.servers // "-")"] | join(", ") | if . == "" then "none reported" else . end),
+    (if ((.countries // []) | length) > 0 then
+       (.regions // ([.countries[].region] | unique)) as $regions
+       | ($regions[] as $g | [.countries[] | select(.region == $g)
+           | "\(.code) \(.servers // "?")" + (if .code == "US" then " (by state, --state)" else "" end)]
+         | select(length > 0) | "Exit countries (servers), \($g): " + join(", ")),
+         (if any(.countries[]; .servers == null) then
+            "? is a country no phone worker has reported a server count for yet; --country CC takes any code listed" else empty end)
+     else empty end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
     "Profile: age \(.default_profile.persona_age // "-"), tracking \(.default_profile.tracking // "-") (--age \(.min_persona_age) to \(.max_persona_age), --tracking allow|refuse)"
-      + (if .default_exit_state then "; last exit state \(.default_exit_state)" else "" end),
+      + (if .default_exit_state then "; last exit state \(.default_exit_state)" else "" end)
+      + (if .default_exit_country then "; last exit country \(.default_exit_country)" else "" end),
     (if .bytes_per_hour == null then "Measured size: none yet; no session of this package has been ingested"
      else "Measured size: BPH:\(.bytes_per_hour) per captured hour over \(n(.measured_sessions // 0; "session"; "sessions"))"
        + (if $dur != "" then "; \($dur) is about EST:\(.bytes_per_hour * ($ds | tonumber) / 3600 | floor)" else "" end) end)' "$CR_OPTS" \
@@ -219,8 +228,9 @@ _cr_split() {
 _cr_nonce() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 
 cmd_capture_start() {
-  local app="" pkg dur="" dur_s split="" split_s="" state="" phone="" age="" tracking="" wait=0 timeout=540
+  local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   CITT_CMD="citt capture-start"
+  CR_OPTS=""
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
     local used=$?
@@ -229,10 +239,11 @@ cmd_capture_start() {
       continue
     fi
     case "$1" in
-      --duration | --split | --state | --phone | --age | --tracking | --timeout)
+      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout)
         need_value "$1" $#
         case "$1" in
           --duration) dur="$2" ;;
+          --country) country="$2" ;;
           --split) split="$2" ;;
           --state) state="$2" ;;
           --phone) phone="$2" ;;
@@ -262,8 +273,21 @@ cmd_capture_start() {
   [ -n "$dur" ] || usage_error "give --duration, such as 1h, 90m or 2d"
   dur_s="$(_cr_secs --duration "$dur")" || exit $?
   [ -z "$split" ] || split_s="$(_cr_secs --split "$split")" || exit $?
-  [[ "$state" =~ ^[A-Za-z]{2}$ ]] || usage_error "give --state with a two-letter exit state code, such as CA (see: citt capture-options)"
-  state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
+  # NP-503: --country CC exits through a NordVPN server in that country; a US exit (no --country, or --country US) needs
+  # --state, and its request body is the one of before NP-503 (exit_state only).
+  if [ -n "$country" ]; then
+    [[ "$country" =~ ^[A-Za-z]{2}$ ]] || usage_error "--country takes a two-letter country code, such as SG (see: citt capture-options)"
+    country="$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')"
+  fi
+  if [ -n "$country" ] && [ "$country" != US ]; then
+    [ -z "$state" ] || usage_error "--state applies to US exits only; leave it out for --country $country"
+    exit_key="country:$country"
+  else
+    country=""
+    [[ "$state" =~ ^[A-Za-z]{2}$ ]] || usage_error "give --state with a two-letter exit state code, such as CA (see: citt capture-options)"
+    state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
+    exit_key="$state"
+  fi
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -274,7 +298,7 @@ cmd_capture_start() {
   # interrupted one, so the API returns the run that call may have created.
   local dir h pend nonce key now
   dir="$CITT_STATE/capture-start"
-  h="$(_cs_str_sha "v1|$CITT_HOST|$CR_PAPP|$phone|$state|$dur_s|$split_s|$age|$tracking")"
+  h="$(_cs_str_sha "v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking")"
   pend="$dir/$h.json"
   now="$(now_s)"
   nonce=""
@@ -284,8 +308,13 @@ cmd_capture_start() {
     CR_DEV_NAME="$(jq -r '.device_name // empty' "$pend")"
     split_s="$(jq -r '.split_s // empty' "$pend")"
   fi
-  if [ -z "$nonce" ] || [ -z "$CR_DEV" ] || [ -z "$split_s" ]; then
+  if [ -n "$country" ]; then
     _cr_options
+    [ "$(jq -r --arg c "$country" 'any(.countries[]?; .code == $c)' "$CR_OPTS")" = true ] \
+      || die 4 "no exit country $country in the capture options; list them with: citt capture-options $pkg$(project_arg)"
+  fi
+  if [ -z "$nonce" ] || [ -z "$CR_DEV" ] || [ -z "$split_s" ]; then
+    [ -n "$CR_OPTS" ] || _cr_options
     [ "$(jq -r '.package_allowed' "$CR_OPTS")" = true ] || die 7 "$pkg is not among the packages allowed for capture runs"
     [ "$(jq -r '.launcher_online' "$CR_OPTS")" = true ] || err "$CITT_CMD: the lab launcher is offline; the run queues until it reports"
     _cr_pick "$phone"
@@ -299,8 +328,9 @@ cmd_capture_start() {
 
   local body
   body="$(tmpfile start.json)"
-  jq -nc --argjson d "$CR_DEV" --arg st "$state" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    '{device_id: $d, exit_state: $st, duration_s: $dur, split_s: $sp, idempotency_key: $k}
+  jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
+    '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
+     + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
      + (if $tr == "" then {} else {tracking: $tr} end)' >"$body"
   HTTP_RETRY=yes
@@ -345,7 +375,7 @@ _cr_started() {
     "Run \(.experiment_id) (\(.run_key)): \(.status) on \(.device_name // "phone") (device \(.device_id))"
       + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
       + (if .status_reason then ": \(.status_reason)" else "" end),
-    "Exit state \(.exit_state); \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+    (if .exit_state then "Exit state \(.exit_state)" else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
       + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
