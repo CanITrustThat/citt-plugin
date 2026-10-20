@@ -120,6 +120,23 @@ instruction, --as-typed the instruction as typed.
 EOF
 }
 
+help_verdict() {
+  cat <<'EOF'
+citt verdict FINDING_ID --verdict confirmed|false_positive|cleared --reason TEXT
+             [--cite PATH[#LOCATOR]]... [--cite capture:SESSION/REQUEST]...
+             [--project NAME | --project-id N] [--json]
+
+Records a Researcher verdict on the finding in the project: no model run, nothing charged.
+It is the current verdict of the finding over any scrutiny until cleared; --verdict cleared
+hands the current verdict back to the latest scrutiny. The project is needed only when the
+finding is in several of your projects. A request equal to the latest Researcher verdict
+writes nothing and prints "Already recorded".
+  --reason  the record of the decision, 1 to 2000 characters
+  --cite    a file of the build's prepared tree, with an optional locator after the last #
+            (src/a.java#38), or a captured request of the app (capture:12/34); repeatable
+EOF
+}
+
 help_prompt() {
   cat <<'EOF'
 citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC]

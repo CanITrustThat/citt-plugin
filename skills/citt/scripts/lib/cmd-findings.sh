@@ -2,6 +2,14 @@
 # lib/cmd-findings.sh: citt findings.
 # shellcheck shell=bash disable=SC2034
 
+# The current verdict of a row (TASK-528): the latest scrutiny, or a Researcher verdict (a note) and the user id of
+# the account that recorded it (TASK-529).
+JQ_VERDICT='
+  def is_researcher: .latest_event.author == "researcher" or .latest_event.kind == "note";
+  def is_verdict: .latest_event.kind == "scrutiny" or is_researcher;
+  def recorded_by: if is_verdict and is_researcher and .latest_event.verdict != null then .latest_event.recorded_by else null end;
+'
+
 cmd_findings() {
   local rule="" family="" severity="" source="" app="" verdict="" limit=500 all=0 csv=0 n
   while [ $# -gt 0 ]; do
@@ -67,17 +75,22 @@ cmd_findings() {
     return 0
   fi
   if [ "$csv" = 1 ]; then
-    jq -r "$JQ_CSV"'
-      ["finding_id", "package_id", "platform", "source", "rule_id", "family", "severity", "title", "subject", "evidence_total", "verdict"],
+    jq -r "$JQ_CSV$JQ_VERDICT"'
+      ["finding_id", "package_id", "platform", "source", "rule_id", "family", "severity", "title", "subject", "evidence_total", "verdict", "verdict_by", "verdict_recorded_by"],
       (.[] | [.finding_id, .package_id, .platform, .source, .rule_id, .family, .severity, .title, .subject,
-        .evidence_total, (if .latest_event.kind == "scrutiny" then .latest_event.verdict else null end)])
+        .evidence_total, (if is_verdict then .latest_event.verdict else null end),
+        (if is_verdict and .latest_event.verdict != null then (if is_researcher then "Researcher" else "Scrutiny" end) else null end),
+        recorded_by])
       | csvrow' "$rows"
   else
-    jq -c '
+    jq -c "$JQ_VERDICT"'
       def cut($n): if length > $n then .[0:$n] + "..." else . end;
       [["SEVERITY", "FAMILY", "APP", "RULE", "SUBJECT", "VERDICT", "FINDING_ID"]]
       + [.[] | [.severity, .family, .package_id, (.rule_id // .source), (.subject // "" | gsub("[\r\n\t]"; " ") | cut(80)),
-          (if .latest_event.kind == "scrutiny" then (.latest_event.verdict // "-") else "-" end), .finding_id]]' "$rows" | table
+          (if is_verdict and .latest_event.verdict != null
+            then .latest_event.verdict + (if is_researcher
+              then " (Researcher" + (if recorded_by == null then "" else ", user " + (recorded_by | tostring) end) + ")" else "" end)
+            else "-" end), .finding_id]]' "$rows" | table
   fi
   if [ -n "$more" ]; then
     err "$(jq 'length' "$rows") findings shown and more exist; use --all or --limit"

@@ -1,6 +1,6 @@
 ---
 name: citt
-description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, decompile an app's native binaries (.so libraries, iOS frameworks) with Binary Ninja into its sources, list and follow submissions (tasks) with their status and timeline, start a network capture run of an app on a lab phone, follow it to its end and stop it, list capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
+description: Use when the user wants to scan an Android app with CanITrustThat (CITT) and see what is inside it, or work with many apps: scan one app by package id or Google Play link, submit apps or a CSV to a project, follow scan progress, list apps and findings (ad SDKs, analytics, data brokers, residential proxy SDKs, keys and secrets, known-vulnerable libraries, consent, children, store declarations), ask for LLM scrutiny of a finding, record a Researcher verdict (confirmed or false positive) on a finding by hand, ask a question about one app (an APK, XAPK, APKS, APKM or IPA file, a store link or a package id) or run a custom prompt over a project's decompiled apps, export per-app JSON or decompiled sources, decompile an app's native binaries (.so libraries, iOS frameworks) with Binary Ninja into its sources, list and follow submissions (tasks) with their status and timeline, start a network capture run of an app on a lab phone, follow it to its end and stop it, list capture runs or sync completed capture sessions to a folder, manage project owners, or check usage.
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 
@@ -137,7 +137,7 @@ citt findings (--project NAME | --project-id N) [--rule ID] [--family F] [--seve
               [--json | --csv]
 ```
 
-Findings ordered by severity (critical first), app, rule and subject, 500 per page by default; `--all` follows every page. Subjects are printed as found, keys included, cut at 80 characters in the table. `VERDICT` is the verdict of the latest scrutiny, or `-`. `--csv` columns: `finding_id,package_id,platform,source,rule_id,family,severity,title,subject,evidence_total,verdict`.
+Findings ordered by severity (critical first), app, rule and subject, 500 per page by default; `--all` follows every page. Subjects are printed as found, keys included, cut at 80 characters in the table. `VERDICT` is the current verdict: a Researcher verdict (`citt verdict`) printed with the user id of the account that recorded it, as `false_positive (Researcher, user 42)`, otherwise the verdict of the latest scrutiny, or `-`. `--csv` columns: `finding_id,package_id,platform,source,rule_id,family,severity,title,subject,evidence_total,verdict,verdict_by,verdict_recorded_by`; `verdict_by` is `Researcher` or `Scrutiny`, empty without a verdict; `verdict_recorded_by` is the user id of the account that recorded a Researcher verdict, empty otherwise.
 
 ### citt scrutinize
 
@@ -148,6 +148,16 @@ citt scrutinize FINDING_ID... [--project NAME | --project-id N] [--prompt TEXT]
 ```
 
 Queues LLM scrutiny of findings (ids `f_` plus 52 characters). The project is needed only when a finding is in several of your projects. `--wait` polls each finding until it has the verdict of its job and prints `FINDING_ID VERDICT PROPOSED_SEVERITY CITATIONS RATIONALE`. `VERDICT` reads `inconclusive (not read)` when the model gave `inconclusive` without reading the code the finding rests on (the event's `reason` is `not_read`), and `inconclusive` for a reasoned one; `--json` keeps each event's `reason` as the API sends it. `--job-id` waits for jobs queued earlier without queueing new ones. A job that fails stops the wait for its findings with `citt scrutinize: job N failed: <message> (<code>)` on stderr, and the command exits 8 once the other findings settle; with `--json` the document carries `failed: [{job_id, finding_id, reason}]`.
+
+### citt verdict
+
+```
+citt verdict FINDING_ID --verdict confirmed|false_positive|cleared --reason TEXT
+             [--cite PATH[#LOCATOR]]... [--cite capture:SESSION/REQUEST]...
+             [--project NAME | --project-id N] [--json]
+```
+
+Records a Researcher verdict on one finding in one project (`POST /findings/{finding_id}/verdicts`): no model runs and nothing is charged. The project is needed only when the finding is in several of your projects. A Researcher verdict is the current verdict of the finding in that project, over any scrutiny, earlier or later, until it is cleared; `--verdict cleared` hands the current verdict back to the latest scrutiny. `--reason` is required, 1 to 2000 characters, and passes the service's word check: "sent" and "transmit" need a `--cite capture:` citation. `--cite PATH` names a file of the build's prepared tree, `--cite PATH#LOCATOR` a place in it (split at the last `#`, so `C:\` paths are unaffected), and `--cite capture:12/34` request 34 of capture session 12 of the app; each is repeatable, at most 20. Prints `Recorded researcher verdict false positive on f_... in project N (event E).`; a request equal to the latest Researcher verdict writes nothing and prints `Already recorded: researcher verdict ... (event E).` with that event; a clear prints `Cleared the researcher verdict on f_... in project N (event E); the latest scrutiny is the current verdict again.` A refusal (exit 7) prints the service's sentence. `--json` prints the response `{project_id, finding_id, event_id, verdict, unchanged}`.
 
 ### citt prompt
 

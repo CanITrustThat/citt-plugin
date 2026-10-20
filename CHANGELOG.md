@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.0
+
+- `citt verdict FINDING_ID --verdict confirmed|false_positive|cleared --reason TEXT [--cite PATH[#LOCATOR] | --cite capture:SESSION/REQUEST]... [--project NAME | --project-id ID] [--json]` records a Researcher verdict on a finding by hand, with no model run and no charge (TASK-528). It prints "Recorded researcher verdict false positive on FINDING_ID in project N (event E).", "Already recorded: ..." for a verdict equal to the latest one, or "Cleared the researcher verdict ..."; `--json` prints the response; a refusal prints the service's sentence and exits 7; a missing `--verdict` or `--reason` exits 2.
+- `citt findings` prints the current verdict: a Researcher verdict before the latest scrutiny, as `false_positive (Researcher, user 42)`, where 42 is the user id of the account that recorded it (TASK-528, TASK-529). `--csv` ends with `verdict_by` (`Researcher` or `Scrutiny`) and `verdict_recorded_by` (that user id, empty otherwise).
+
 ## 2.4.1
 
 - The plugin version is checked by the plugin test suite: the top entry of this changelog and the versions of the Claude Code and Codex manifests are one version, and a release whose version differs from them is refused before it is built. The commands, options, output and exit codes are those of 2.4.0.
