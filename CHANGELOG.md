@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.4.1
+
+- The plugin version is checked by the plugin test suite: the top entry of this changelog and the versions of the Claude Code and Codex manifests are one version, and a release whose version differs from them is refused before it is built. The commands, options, output and exit codes are those of 2.4.0.
+
 ## 2.4.0
 
 - `citt capture-sync` downloads each missing file from its presigned storage URL, listed per session by `GET /capture-runs/{id}/download-list?sessions=`, with up to 32 downloads at once (`--parallel`, 1 to 32, default 8). These requests are sent without the sign-in and the API is used only for listing, so a capture archive of 20 GB and more is pulled as fast as the link allows.
