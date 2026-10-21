@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # citt: the citt plugin. Projects of Android apps scanned by the CITT research
-# service: submit, status, apps, findings, scrutiny, Researcher verdicts, custom prompts, exports, owners, usage,
+# service: submit, status, apps, findings, scrutiny, Researcher verdicts, feedback, custom prompts, exports, owners, usage,
 # network capture runs (start, watch, stop), the capture sync of their sessions, native code runs
 # and tasks.
 # shellcheck source-path=SCRIPTDIR
@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -26,6 +26,7 @@ Commands:
   findings         the findings of a project
   scrutinize       ask for LLM scrutiny of findings
   verdict          record a Researcher verdict on a finding (no model run, no charge)
+  feedback         send feedback to the CITT team, free text (Markdown recommended)
   prompt           ask one question about a build file, a store link or a package id
   export-results   download the per-app JSON of a project
   export-sources   download APKs and decompiled trees
@@ -109,6 +110,10 @@ main() {
     verdict)
       # shellcheck source=lib/cmd-verdict.sh
       . "$CITT_LIB/cmd-verdict.sh"
+      ;;
+    feedback)
+      # shellcheck source=lib/cmd-feedback.sh
+      . "$CITT_LIB/cmd-feedback.sh"
       ;;
     prompt)
       # shellcheck source=lib/question-check.sh

@@ -137,6 +137,21 @@ writes nothing and prints "Already recorded".
 EOF
 }
 
+help_feedback() {
+  cat <<'EOF'
+citt feedback TEXT | --file PATH | - [--json]
+
+Sends feedback to the CITT team from the signed-in account, as one body of free text.
+Markdown is recommended. Give the body one way: TEXT (every word given, joined by one space), --file PATH
+(the file's full content, any extension) or - (stdin). The body is UTF-8 text, not empty, at most
+1,048,576 bytes (1 MiB), sent unchanged. Any account may send feedback, at most 20 in 24 hours;
+nothing is charged. Prints "Feedback sent (id N). Thank you."
+  --file  read the body from a file
+  --json  print the response {id, created_at}
+  --      end the options: every word after it is TEXT, even one that starts with -
+EOF
+}
+
 help_prompt() {
   cat <<'EOF'
 citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native] [--wait] [--timeout SEC]

@@ -457,6 +457,8 @@ fail_http() {
       else
         local unknown
         unknown="$(body_field '(.unknown_apps // []) | join(", ") | select(. != "")')"
+        # EPIC-18: a 400 `invalid_feedback` holds its reason in `detail`.
+        [ -n "$message" ] || message="$(body_field '.detail | strings')"
         msg="request rejected: ${message:-$error}${unknown:+: $unknown}"
       fi
       code=7
@@ -523,7 +525,11 @@ fail_http() {
       code=7
       ;;
     429)
-      msg="$(_limit_line)"
+      if [ "$E_KIND" = feedback ]; then
+        msg="the daily feedback limit is reached (20 per account in 24 hours); send it again later"
+      else
+        msg="$(_limit_line)"
+      fi
       code=6
       ;;
     502)

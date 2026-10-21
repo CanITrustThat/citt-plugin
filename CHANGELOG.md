@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.6.0
+
+- `citt feedback TEXT | --file PATH | - [--json]` sends feedback to the CITT team from any signed-in account (`POST /feedback` with `{"body": ...}`, EPIC-18): one body of free text, Markdown recommended. The body is TEXT (every word given, joined by one space), the full content of `--file PATH` (any extension) or stdin with `-`, sent unchanged; it is UTF-8 text, not empty, at most 1,048,576 bytes (1 MiB). An empty, oversized, unreadable or non-UTF-8 body, two sources or none exit 2 with no request. It prints `Feedback sent (id N). Thank you.`; `--json` prints the response. The 21st feedback of an account in 24 hours exits 6 with a line saying the daily feedback limit is reached; a refusal by the service exits 7 with its reason. The request is sent once and never retried, so a feedback is never stored twice.
+
 ## 2.5.0
 
 - `citt verdict FINDING_ID --verdict confirmed|false_positive|cleared --reason TEXT [--cite PATH[#LOCATOR] | --cite capture:SESSION/REQUEST]... [--project NAME | --project-id ID] [--json]` records a Researcher verdict on a finding by hand, with no model run and no charge (TASK-528). It prints "Recorded researcher verdict false positive on FINDING_ID in project N (event E).", "Already recorded: ..." for a verdict equal to the latest one, or "Cleared the researcher verdict ..."; `--json` prints the response; a refusal prints the service's sentence and exits 7; a missing `--verdict` or `--reason` exits 2.
