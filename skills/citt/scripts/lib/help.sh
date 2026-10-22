@@ -226,18 +226,20 @@ EOF
 
 help_captures() {
   cat <<'EOF'
-citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--limit N] [--cursor C] [--json]
+citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--mine] [--limit N] [--cursor C] [--json]
 
 The network capture runs of your projects, newest first: state, app, phone, sessions done of
-planned, flags and the estimated end. States: queued, starting, running, stopping, done,
-done_with_gaps, stopped, failed, imported; active is the first four.
+planned, flags, the estimated end and who booked the run. States: queued, starting, running,
+stopping, done, done_with_gaps, stopped, failed, imported; active is the first four.
+  --mine   only the runs you booked
 EOF
 }
 
 help_capture_sync() {
   cat <<'EOF'
-citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--groups LIST] [--since DATE]
-                  [--parallel N] [--via api] [--limit-rate RATE] [--dry-run | --verify] [--json]
+citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--session ID]... [--groups LIST]
+                  [--exclude GLOB]... [--no-unpack] [--since DATE] [--parallel N] [--via api] [--limit-rate RATE]
+                  [--dry-run | --verify] [--json]
 citt capture-sync [--dir DIR] [options] --watch [--every 15m]
 citt capture-sync [--dir DIR] [options] --install-timer [--every 15m]
 citt capture-sync [--dir DIR] (--status | --uninstall-timer | --print-cron [--every 15m])
@@ -246,15 +248,30 @@ Downloads the capture sessions completed since the last sync into DIR/<run key>/
 with the run's README.md, run.json and checksums.sha256. Files come from presigned storage URLs,
 or through the API when those are unavailable. Each file is checked against its sha256;
 an interrupted file resumes on the next sync. Runs without a model or tokens.
+A layout 2 session is stored as a few archives (core.tar.gz, large-bodies.tar, frames.tar,
+video.mp4, raw.tar.gz) and manifest.json; each archive is one download, unpacked into the
+session folder at the paths of a layout 1 session (network/session.har, data/frames/...).
   --dir           the sync folder (default $CITT_CAPTURE_DIR, else ./citt-captures)
   --project       only these projects; --run only these runs
-  --groups        analysis,network,data,video (default all four)
+  --session       only these sessions: an id, a key such as s0002 (with --run when several runs
+                  have it) or a folder; repeat for more sessions
+  --groups        layout 1 sessions: analysis,network,data,video (default all four);
+                  layout 2 sessions: core,large-bodies,frames,video,raw,analysis (default
+                  analysis,core); one list may name both, each session gets its layout's names
+  --exclude       leave out session files whose path inside the session folder matches GLOB
+                  (network/flows.mitm, 'data/frames/*'; * also matches /); repeat for more
+                  patterns; layout 2: applied at unpack, an archive left with no file is skipped
+  --no-unpack     keep layout 2 archives as downloaded, in the session folder
   --since         a date or UTC time for the first sync (default: every session)
-  --parallel      files downloaded at once, 1 to 32 (default 8); through the API 1 to 4 (default 2)
+  --parallel      files (layout 2: archives) downloaded at once, 1 to 32 (default 8); through the
+                  API 1 to 4 (default 2)
   --via api       download every file through the API instead of its presigned storage URL
   --limit-rate    bandwidth cap passed to curl, such as 2M
   --dry-run       list the sessions, files and bytes to download; write nothing
-  --verify        hash every local file again and download any that differ
+  --verify        hash the local files of the synced sessions (of --run when given) again and download
+                  any that differ (layout 2: the archive of a differing file); the cursor, filters and
+                  recorded groups stay as they are. A plain sync hashes only files whose size or
+                  modification time differ from the session's .citt-session.json
   --watch         sync every --every (5 min at least) until stopped
   --install-timer run this sync every --every from a systemd user timer (Linux) or a launchd agent
                   (macOS) with the plugin's sign-in; re-run after a plugin update

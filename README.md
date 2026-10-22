@@ -15,6 +15,8 @@ A plugin for Claude Code and Codex that scans Android apps with [CanITrustThat](
 
 From a terminal, the first two steps are `claude plugin marketplace add CanITrustThat/citt-plugin && claude plugin install citt@citt`.
 
+With Claude Code 2.1.292 or later, one command adds the marketplace and installs: `claude plugin install citt --marketplace CanITrustThat/citt-plugin`.
+
 Updating from 0.4: `claude plugin marketplace update citt`, then `claude plugin update citt@citt`. A token stored by 0.4 is used as is.
 
 ### Codex

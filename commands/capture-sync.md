@@ -1,6 +1,6 @@
 ---
 description: Download completed network capture sessions into a folder, or install a timer that does it
-argument-hint: [--dir DIR] [--install-timer | --status | --dry-run]
+argument-hint: [--dir DIR] [--groups LIST] [--install-timer | --status | --dry-run]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 

@@ -1,6 +1,6 @@
 ---
-description: List network capture runs across your projects with state, progress and ETA
-argument-hint: [--state active] [--project NAME]
+description: List network capture runs across your projects with state, progress, ETA and who booked each
+argument-hint: [--state active] [--project NAME] [--mine]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 

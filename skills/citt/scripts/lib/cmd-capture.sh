@@ -12,7 +12,12 @@
 # its subshell (SC2030, SC2031); CODE is set by http() in common.sh (SC2153).
 # shellcheck shell=bash disable=SC2034,SC2016,SC2030,SC2031,SC2153
 
+# Layout 1 groups (the default of a layout 1 session); layout 2 groups are the archive names and analysis
+# (LAYOUT-V2); a layout 2 session without --groups gets CS_GROUPS_V2_DEFAULT.
 CS_GROUPS_ALL="analysis,network,data,video"
+CS_GROUPS_V2="analysis,core,large-bodies,frames,video,raw"
+CS_GROUPS_V2_DEFAULT="analysis,core"
+CS_GROUP_ORDER="analysis network data core large-bodies frames video raw"
 CS_SCHEMAS="run session event request ad bid citation app"
 CS_RUN_FILES="README.md run.json citations.jsonl app.json"
 CS_EPOCH="1970-01-01T00:00:00Z"
@@ -95,9 +100,10 @@ _cs_segment() {
   return 0
 }
 
-# _cs_unsafe PATH: true when PATH is absolute, empty, has a backslash or a "", "." or ".." segment.
+# _cs_unsafe PATH: true when PATH is absolute, empty, starts with "-" (tar -T reads "-C DIR" as a directory change),
+# has a backslash or a "", "." or ".." segment.
 _cs_unsafe() {
-  case "$1" in /* | *\\* | '') return 0 ;; esac
+  case "$1" in /* | -* | *\\* | '') return 0 ;; esac
   case "/$1/" in */../* | */./* | *//*) return 0 ;; esac
   return 1
 }
@@ -116,6 +122,11 @@ _cs_version() {
 CS_DIR=""
 CS_META=""
 CS_GROUPS="$CS_GROUPS_ALL"
+# 1 when --groups was given; CS_EG the groups of the session being synced (CS_GROUPS within its layout).
+CS_GROUPS_SET=0
+CS_EG=""
+# 0 with --no-unpack: layout 2 archives stay in the session folder as downloaded.
+CS_UNPACK=1
 CS_SINCE=""
 # Files downloaded at once: empty for the default of the path (8 presigned, 2 through the API).
 CS_PARALLEL=""
@@ -136,17 +147,53 @@ CS_RUNS=""
 CS_PIDS=""
 CS_RIDS=""
 CS_FILTER_Q=""
+# --exclude patterns, one per line, sorted and de-duplicated; CS_EXCL_JSON is the same list as JSON.
+CS_EXCLUDES=""
+CS_EXCL_JSON="[]"
+# --session ids as given, sorted; CS_SIDS and CS_SRIDS the resolved session ids and their runs.
+CS_SESSIONS=""
+CS_SIDS=""
+CS_SRIDS=""
 
-# _cs_norm_groups LIST: the groups in canonical order; empty when one is unknown.
+# _cs_norm_groups LIST: the groups of both layouts in canonical order (manifest left out); empty when one is unknown.
 _cs_norm_groups() {
   local g out=""
   for g in $(printf '%s' "$1" | tr ',' ' '); do
-    case "$g" in analysis | network | data | video) ;; *) return 0 ;; esac
+    case " $CS_GROUP_ORDER manifest " in *" $g "*) ;; *) return 0 ;; esac
   done
-  for g in analysis network data video; do
+  for g in $CS_GROUP_ORDER; do
     case ",$1," in *",$g,"*) out="$out${out:+,}$g" ;; esac
   done
   printf '%s' "$out"
+}
+
+# _cs_groups_of LAYOUT: the groups a session of LAYOUT gets: --groups within its layout, else its default.
+_cs_groups_of() {
+  local all="$CS_GROUPS_ALL" g out=""
+  if [ "$1" = 2 ]; then
+    all="$CS_GROUPS_V2"
+    if [ "$CS_GROUPS_SET" = 0 ]; then
+      printf '%s' "$CS_GROUPS_V2_DEFAULT"
+      return 0
+    fi
+  fi
+  for g in $(printf '%s' "$CS_GROUPS" | tr ',' ' '); do
+    case ",$all," in *",$g,"*) out="$out${out:+,}$g" ;; esac
+  done
+  printf '%s' "$out"
+}
+
+# _cs_excluded REL: true when REL matches one --exclude glob (* also matches /).
+_cs_excluded() {
+  local x
+  while IFS= read -r x; do
+    [ -n "$x" ] || continue
+    # shellcheck disable=SC2254
+    case "$1" in $x) return 0 ;; esac
+  done <<EOF
+$CS_EXCLUDES
+EOF
+  return 1
 }
 
 # _cs_since TEXT: an RFC 3339 time for a date or a UTC time; empty when malformed.
@@ -162,12 +209,19 @@ _cs_since() {
 _cs_args() {
   local v
   printf -- '--dir\n%s\n' "$CS_DIR"
-  [ "$CS_GROUPS" = "$CS_GROUPS_ALL" ] || printf -- '--groups\n%s\n' "$CS_GROUPS"
+  [ "$CS_GROUPS_SET" = 0 ] || printf -- '--groups\n%s\n' "$CS_GROUPS"
+  [ "$CS_UNPACK" = 1 ] || printf -- '--no-unpack\n'
   while IFS= read -r v; do [ -z "$v" ] || printf -- '--project\n%s\n' "$v"; done <<EOF
 $CS_PROJECTS
 EOF
   while IFS= read -r v; do [ -z "$v" ] || printf -- '--run\n%s\n' "$v"; done <<EOF
 $CS_RUNS
+EOF
+  while IFS= read -r v; do [ -z "$v" ] || printf -- '--session\n%s\n' "$v"; done <<EOF
+$CS_SESSIONS
+EOF
+  while IFS= read -r v; do [ -z "$v" ] || printf -- '--exclude\n%s\n' "$v"; done <<EOF
+$CS_EXCLUDES
 EOF
   [ -z "$CS_PARALLEL" ] || printf -- '--parallel\n%s\n' "$CS_PARALLEL"
   [ "$CS_VIA_OPT" = 0 ] || printf -- '--via\n%s\n' "$CS_VIA"
@@ -196,9 +250,23 @@ cmd_capture_sync() {
         CS_RUNS="$CS_RUNS$2"$'\n'
         shift
         ;;
+      --session)
+        need_value "$1" $#
+        _cs_segment "$2" || usage_error "--session takes a session id, key or folder such as 8, s0002 or s0002_2026-10-12T1830Z, got: $2"
+        CS_SESSIONS="$CS_SESSIONS$2"$'\n'
+        shift
+        ;;
       --groups)
         need_value "$1" $#
         groups="$2"
+        CS_GROUPS_SET=1
+        shift
+        ;;
+      --no-unpack) CS_UNPACK=0 ;;
+      --exclude)
+        need_value "$1" $#
+        [ -n "$2" ] || usage_error "--exclude takes a glob such as network/flows.mitm or 'frames/*'"
+        CS_EXCLUDES="$CS_EXCLUDES$2"$'\n'
         shift
         ;;
       --since)
@@ -244,7 +312,11 @@ cmd_capture_sync() {
   done
   [ -n "$dir" ] || usage_error "--dir needs a folder"
   CS_GROUPS="$(_cs_norm_groups "$groups")"
-  [ -n "$CS_GROUPS" ] || usage_error "--groups takes a comma list of analysis, network, data and video, got: $groups"
+  CS_EXCLUDES="$(printf '%s' "$CS_EXCLUDES" | LC_ALL=C sort -u)"
+  CS_SESSIONS="$(printf '%s' "$CS_SESSIONS" | LC_ALL=C sort -u)"
+  CS_EXCL_JSON="$(jq -nc --arg x "$CS_EXCLUDES" '$x | split("\n") | map(select(. != "")) | unique')"
+  case ",$groups," in *,manifest,*) CS_GROUPS="" ;; esac
+  [ -n "$CS_GROUPS" ] || usage_error "--groups takes a comma list of analysis, network, data, video (layout 1 sessions) and core, large-bodies, frames, video, raw, analysis (layout 2 sessions), got: $groups"
   if [ -n "$CS_PARALLEL" ] && { ! is_uint "$CS_PARALLEL" || [ "$CS_PARALLEL" -lt 1 ] || [ "$CS_PARALLEL" -gt "$CS_PAR_MAX" ]; }; then
     usage_error "--parallel takes 1 to $CS_PAR_MAX (at most $CS_API_PAR_MAX through the API), got: $CS_PARALLEL"
   fi
@@ -418,8 +490,47 @@ EOF
 }
 
 _cs_filters_json() {
-  jq -nc --arg p "$CS_PIDS" --arg r "$CS_RIDS" --arg g "$CS_GROUPS" \
-    '{projects: ($p | split("\n") | map(select(. != "") | tonumber)), runs: ($r | split("\n") | map(select(. != "") | tonumber)), groups: $g}'
+  jq -nc --arg p "$CS_PIDS" --arg r "$CS_RIDS" --arg g "$CS_GROUPS" --argjson x "$CS_EXCL_JSON" --arg s "$CS_SESSIONS" --argjson u "$CS_UNPACK" \
+    '{projects: ($p | split("\n") | map(select(. != "") | tonumber)), runs: ($r | split("\n") | map(select(. != "") | tonumber)), groups: $g, exclude: $x,
+      sessions: ($s | split("\n") | map(select(. != "")))} + (if $u == 0 then {no_unpack: true} else {} end)'
+}
+
+# _cs_resolve_sessions FEED FROM_START: CS_SIDS and CS_SRIDS from CS_SESSIONS, matched by id, session key or folder
+# against the feed rows, then the sessions and failures of the state, within --run. An id that matches
+# nothing exits 4 when the feed was read from the start (else it has not changed since the last sync);
+# a key of sessions in several runs exits 5.
+_cs_resolve_sessions() {
+  local feed="$1" full="$2" w n ids runs
+  CS_SIDS=""
+  CS_SRIDS=""
+  while IFS=$'\t' read -r w n ids runs; do
+    [ -n "$w" ] || continue
+    case "$n" in
+      0)
+        [ "$full" = 0 ] || die 4 "no capture session $w in your projects$([ -z "$CS_RIDS" ] || printf ' in run %s' "$(printf '%s' "$CS_RIDS" | paste -sd, - | sed 's/,/, /g')")$([ -z "$CS_SINCE" ] || printf ' changed after %s' "$CS_SINCE") (see: citt captures)"
+        ;;
+      1)
+        CS_SIDS="$CS_SIDS$ids"$'\n'
+        CS_SRIDS="$CS_SRIDS$runs"$'\n'
+        ;;
+      *)
+        die 5 "several sessions match $w: $(paste -d' ' <(printf '%s\n' "$ids" | tr ',' '\n') <(printf '%s\n' "$runs" | tr ',' '\n') | awk '{ printf "%s%s (run %s)", (NR > 1 ? ", " : ""), $1, $2 }'); give --run or the session id"
+        ;;
+    esac
+  done < <(jq -r -n --slurpfile st "$CS_ST" --arg want "$CS_SESSIONS" --arg rids "$CS_RIDS" '
+    ($want | split("\n") | map(select(. != ""))) as $want
+    | ($rids | split("\n") | map(select(. != ""))) as $only
+    | [inputs | {id: (.session_id | tostring), run: (.run_id | tostring), folder: (.folder // "")}]
+      + [($st[0].sessions // {}) | to_entries[] | {id: .key, run: (.value.run_id | tostring), folder: (.value.folder // "")}]
+      + [($st[0].failures // {}) | to_entries[] | {id: .key, run: (.value.run_id | tostring), folder: (.value.folder // "")}]
+    | map(select(($only | length) == 0 or (.run as $r | $only | index($r)))) as $all
+    | $want[] as $w
+    | ($all | map(select(if ($w | test("^[0-9]+$")) then .id == $w
+        else .folder == $w or (.folder | sub("_[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{4}Z$"; "")) == $w end))
+      | unique_by(.id) | sort_by(.id | tonumber)) as $m
+    | [$w, ($m | length), ($m | map(.id) | join(",")), ($m | map(.run) | join(","))] | @tsv' "$feed")
+  CS_SIDS="$(printf '%s' "$CS_SIDS" | sort -n -u)"
+  CS_SRIDS="$(printf '%s' "$CS_SRIDS" | grep -v '^null$' | sort -n -u)"
 }
 
 # --- downloads -----------------------------------------------------------------------
@@ -452,7 +563,7 @@ CS_DL_MSG=""
 _cs_dlist_get() {
   local sid="$1" rid="$2" rk="$3" folder="$4" waits=0 exp
   while :; do
-    http GET "$CITT_V1/capture-runs/$rid/download-list?sessions=$sid&groups=$(urlenc "$CS_GROUPS")"
+    http GET "$CITT_V1/capture-runs/$rid/download-list?sessions=$sid&groups=$(urlenc "$CS_EG")"
     case "$CODE" in
       2??) break ;;
       401) return 3 ;;
@@ -774,6 +885,119 @@ _cs_worker() {
   ) &
 }
 
+# --- layout 2 ------------------------------------------------------------------------
+
+# jq: `g1` gives the layout 1 group folder of a member path, as the server's Group::of does: network captures and
+# bodies/* under network/, video files under video/, every other path under data/.
+CS_JQ_G1='def g1: ascii_downcase as $l
+  | if (["session.har", "flows.jsonl", "flows.mitm", "bodies.jsonl", "tls_failures.jsonl"] | index($l)) or ($l | startswith("bodies/")) then "network"
+    elif ($l | split("/") | last | test("\\.(mp4|mkv|webm|mov|m4v|ts|h264)$")) then "video" else "data" end;'
+
+CS_STATFMT=""
+
+# _cs_stat DIR PATHS OUT: "path TAB size TAB mtime" in OUT for each file of PATHS (one path relative to DIR per line)
+# that exists; mtime in epoch seconds.
+_cs_stat() {
+  : >"$3"
+  [ -d "$1" ] && [ -s "$2" ] || return 0
+  if [ -z "$CS_STATFMT" ]; then
+    if stat -c %Y / >/dev/null 2>&1; then CS_STATFMT=gnu; else CS_STATFMT=bsd; fi
+  fi
+  if [ "$CS_STATFMT" = gnu ]; then
+    (cd "$1" && tr '\n' '\0' <"$2" | xargs -0 stat -c $'%n\t%s\t%Y' 2>/dev/null) >"$3" || true
+  else
+    (cd "$1" && tr '\n' '\0' <"$2" | xargs -0 stat -f $'%N\t%z\t%m' 2>/dev/null) >"$3" || true
+  fi
+  return 0
+}
+
+# _cs_v2_list LIST XL ARCH MEM: a layout 2 file list rewritten to the files this sync keeps on disk. MEM gets one
+# line per member of a listed archive (path, layout 1 path, archive, size, sha256, 1 when --exclude matches the layout 1
+# path); ARCH one line per listed archive with a member left (name, object, size, sha256). Unpacked, LIST holds
+# manifest.json, the analysis files and the members at their layout 1 paths (src: their archive); with --no-unpack,
+# the archives. XL gets the files left off disk by --exclude; LIST.all the files of both.
+_cs_v2_list() {
+  local list="$1" xl="$2" arch="$3" mem="$4" p vp a n h x
+  jq -r "$CS_JQ_G1"' (.files | map(select(.group != "analysis" and .group != "manifest") | .group)) as $sel
+    | (.members // [])[] | select(.archive as $a | $sel | index($a))
+    | [.path, ((.path | g1) + "/" + .path), .archive, (.size | tostring), .sha256] | @tsv' "$list" \
+    | while IFS=$'\t' read -r p vp a n h; do
+      x=0
+      if [ -n "$CS_EXCLUDES" ] && _cs_excluded "$vp"; then x=1; fi
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$p" "$vp" "$a" "$n" "$h" "$x"
+    done >"$mem"
+  jq -r --rawfile m "$mem" '($m | split("\n") | map(select(. != "") | split("\t") | select(.[5] == "0") | .[2]) | unique) as $keep
+    | .files[] | select(.group != "analysis" and .group != "manifest") | select(.group as $g | $keep | index($g))
+    | [.group, .path, (.size | tostring), .sha256] | @tsv' "$list" >"$arch"
+  jq -c --rawfile m "$mem" --rawfile ar "$arch" --argjson up "$CS_UNPACK" '
+    ($m | split("\n") | map(select(. != "") | split("\t") | {path: .[1], size: (.[3] | tonumber), sha256: .[4], group: .[2], x: .[5]})) as $mem
+    | ($ar | split("\n") | map(select(. != "") | split("\t") | .[0])) as $kept
+    | [.files[] | select(.group == "manifest" or .group == "analysis")] as $plain
+    | (if $up == 1 then [$mem[] | select(.x == "0") | {path, size, sha256, group, src: .group}]
+       else [.files[] | select(.group as $g | $kept | index($g))] end) as $on
+    | (if $up == 1 then [$mem[] | select(.x == "1")] else [$mem[] | select(.group as $g | $kept | index($g) | not)] end
+       | map(del(.x))) as $x
+    | {x: $x, list: (. + {files: ($plain + $on)}), all: (. + {files: ($plain + $on + $x)})}' "$list" >"$list.v2"
+  jq -c '.x' "$list.v2" >"$xl"
+  jq '.list' "$list.v2" >"$list.tmp" && mv -f "$list.tmp" "$list"
+  jq '.all' "$list.v2" >"$list.all"
+}
+
+# _cs_unpack SESSDIR NAME OBJECT MEM: the members of archive NAME that --exclude leaves, extracted from SESSDIR/OBJECT,
+# each checked against its manifest size and sha256 and moved to its layout 1 path; then OBJECT is deleted. On
+# failure nothing of the archive is kept, and CS_FCODE and CS_FMSG are set.
+_cs_unpack() {
+  local sdir="$1" name="$2" obj="$3" ml="$_CITT_TMP/unpack.$3.members" tmp="$1/.unpack.$3" p vp a n h x z=""
+  awk -F '\t' -v a="$name" '$3 == a && $6 == 0' "$4" >"$ml"
+  CS_FCODE=1
+  case "$obj" in
+    *.tar.gz) z=-z ;;
+    *.tar) ;;
+    *)
+      # A stored file (video.mp4) is its one member.
+      IFS=$'\t' read -r p vp a n h x <"$ml"
+      if ! { mkdir -p "$(dirname "$sdir/$vp")" && mv -f "$sdir/$obj" "$sdir/$vp"; }; then
+        CS_FMSG="cannot write $sdir/$vp"
+        return 1
+      fi
+      return 0
+      ;;
+  esac
+  rm -rf "$tmp"
+  mkdir -p "$tmp" || {
+    CS_FMSG="cannot create $tmp"
+    return 1
+  }
+  cut -f1 "$ml" >"$ml.names"
+  # Only the listed members are extracted; -m dates them now, not at the archive's mtime 0.
+  if ! tar -x $z -m -f "$sdir/$obj" -C "$tmp" -T "$ml.names" 2>"$ml.err"; then
+    rm -rf "$tmp"
+    rm -f "$sdir/${obj:?}"
+    CS_FCODE=11
+    CS_FMSG="$obj could not be unpacked ($(head -n1 "$ml.err")); nothing of it was kept, the next try downloads it again"
+    return 1
+  fi
+  while IFS=$'\t' read -r p vp a n h x; do
+    if [ ! -f "$tmp/$p" ] || [ -L "$tmp/$p" ] || [ "$(_cs_size "$tmp/$p")" != "$n" ] || [ "$(sha256_of "$tmp/$p")" != "$h" ]; then
+      rm -rf "$tmp"
+      rm -f "$sdir/${obj:?}"
+      CS_FCODE=11
+      CS_FMSG="$obj: member $p differs from the manifest (listed sha256 $h, $n bytes); nothing of the archive was kept"
+      return 1
+    fi
+  done <"$ml"
+  while IFS=$'\t' read -r p vp a n h x; do
+    if ! { mkdir -p "$(dirname "$sdir/$vp")" && mv -f "$tmp/$p" "$sdir/$vp"; }; then
+      rm -rf "$tmp"
+      CS_FMSG="cannot write $sdir/$vp"
+      return 1
+    fi
+  done <"$ml"
+  rm -rf "$tmp"
+  rm -f "$sdir/$obj"
+  return 0
+}
+
 # --- one session ---------------------------------------------------------------------
 
 CS_NEW=0
@@ -817,16 +1041,39 @@ _cs_fail() {
 }
 
 # _cs_session ROW: lists one session's files, downloads what is missing, writes the marker and
-# the state. ROW is a feed row or a {session_id, src} row of a retry or a verify.
+# the state. ROW is a feed row or a {session_id, src} row of a retry or a verify. A layout 2 session lists
+# manifest.json and its archives; each archive is one download, unpacked at the layout 1 paths unless --no-unpack.
 _cs_session() {
-  local row="$1" sid feed_etag run_id run_key folder etag list files need res rel size sha
+  local row="$1" sid feed_etag run_id run_key folder etag list files need res rel size sha lay relisted=0
   sid="$(jq -r '.session_id' <<<"$row")"
   feed_etag="$(jq -r '.export_etag // empty' <<<"$row")"
   run_id="$(jq -r '.run_id // empty' <<<"$row")"
   [ -n "$run_id" ] || run_id="$(jq -r --arg s "$sid" '.sessions[$s].run_id // .failures[$s].run_id // empty' "$CS_ST")"
+  lay="$(jq -r '.layout // empty' <<<"$row")"
+  [ -n "$lay" ] || lay="$(jq -r --arg s "$sid" '.sessions[$s].layout // 1' "$CS_ST")"
   list="$_CITT_TMP/files.$sid.json"
-  http GET "$CITT_V1/capture-sessions/$sid/files?groups=$(urlenc "$CS_GROUPS")"
-  cp "$RESP" "$list" 2>/dev/null
+  while :; do
+    CS_EG="$(_cs_groups_of "$lay")"
+    if [ -z "$CS_EG" ]; then
+      err "$CITT_CMD: session $sid: a layout $lay session, and --groups $CS_GROUPS names none of its groups ($(if [ "$lay" = 2 ]; then printf '%s' "$CS_GROUPS_V2"; else printf '%s' "$CS_GROUPS_ALL"; fi | sed 's/,/, /g')); nothing downloaded for it"
+      return
+    fi
+    http GET "$CITT_V1/capture-sessions/$sid/files?groups=$(urlenc "$CS_EG")"
+    cp "$RESP" "$list" 2>/dev/null
+    # 409 layout_groups: the session has the other layout than recorded; list it again with that layout's groups.
+    if [ "$CODE" = 409 ] && [ "$relisted" = 0 ] && [ "$(jq -r '.error // empty' "$list" 2>/dev/null)" = layout_groups ]; then
+      case "$(jq -r '.layout // empty' "$list" 2>/dev/null)" in
+        1 | 2)
+          if [ "$(jq -r '.layout' "$list")" != "$lay" ]; then
+            lay="$(jq -r '.layout' "$list")"
+            relisted=1
+            continue
+          fi
+          ;;
+      esac
+    fi
+    break
+  done
   case "$CODE" in
     2??) ;;
     401) fail_http ;;
@@ -842,6 +1089,10 @@ _cs_session() {
       _cs_fail "$sid" 8 "the session is no longer among your projects' captures ($CODE)" "$feed_etag" "$run_id" "" ""
       return
       ;;
+    409)
+      _cs_fail "$sid" 8 "the file list answered 409 $(jq -r '.error // empty' "$list" 2>/dev/null): $(jq -r '.message // empty' "$list" 2>/dev/null)" "$feed_etag" "$run_id" "" ""
+      return
+      ;;
     *)
       _cs_fail "$sid" 8 "the file list failed: server error $CODE$(_retried_suffix)" "$feed_etag" "$run_id" "" ""
       return
@@ -854,45 +1105,120 @@ _cs_session() {
     _cs_fail "$sid" 8 "unparseable file list" "$feed_etag" "$run_id" "" ""
     return
   fi
+  if [ "$(jq -r '.layout // 1' "$list")" != "$lay" ]; then
+    lay="$(jq -r '.layout // 1' "$list")"
+    case "$lay" in
+      1 | 2) CS_EG="$(_cs_groups_of "$lay")" ;;
+      *)
+        _cs_fail "$sid" 8 "the file list names layout $lay, which this plugin does not read; update the plugin" "$feed_etag" "$run_id" "" ""
+        return
+        ;;
+    esac
+  fi
   if ! _cs_segment "$run_key" || ! _cs_segment "$folder"; then
     _cs_fail "$sid" 11 "unsafe run key or session folder in the file list: $run_key/$folder" "$feed_etag" "$run_id" "" ""
     return
   fi
-  # Every path: a safe relative path under a requested group, a size and a sha256.
+  # Every path: a safe relative path under a requested group, a size and a sha256. Layout 2: an archive or
+  # manifest.json by its object name, or an analysis file; each member a safe path of a listed archive.
   local bad
-  bad="$(jq -r --arg g ",$CS_GROUPS," '.files[] | select(
-      ((.path | type) != "string") or ((.size | type) != "number") or ((.sha256 | type) != "string")
-      or (.sha256 | test("^[0-9a-f]{64}$") | not)
-      or ((.path | split("/")[0]) as $grp | $g | contains("," + $grp + ",") | not)) | (.path | tostring)' "$list" | head -n1)"
+  if [ "$lay" = 2 ]; then
+    bad="$(jq -r --arg g ",$CS_EG,manifest," '([.files[] | select(.group != "analysis" and .group != "manifest") | .group]) as $arch
+      | (.files[] | select(
+        ((.path | type) != "string") or ((.size | type) != "number") or ((.sha256 | type) != "string")
+        or (.sha256 | test("^[0-9a-f]{64}$") | not) or ((.group | type) != "string")
+        or (.group as $x | $g | contains("," + $x + ",") | not)
+        or (if .group == "analysis" then (.path | startswith("analysis/") | not) else (.path | contains("/")) end)) | (.path | tostring)),
+      ((.members // [])[] | select(((.path | type) != "string") or ((.size | type) != "number") or ((.sha256 | type) != "string")
+        or (.sha256 | test("^[0-9a-f]{64}$") | not) or (.archive as $a | $arch | index($a) | not)) | (.path | tostring))' "$list" | head -n1)"
+  else
+    bad="$(jq -r --arg g ",$CS_EG," '.files[] | select(
+        ((.path | type) != "string") or ((.size | type) != "number") or ((.sha256 | type) != "string")
+        or (.sha256 | test("^[0-9a-f]{64}$") | not)
+        or ((.path | split("/")[0]) as $grp | $g | contains("," + $grp + ",") | not)) | (.path | tostring)' "$list" | head -n1)"
+  fi
   if [ -z "$bad" ]; then
     while IFS= read -r rel; do
-      if _cs_unsafe "$rel" || [ "${rel#*/}" = "$rel" ]; then
+      if _cs_unsafe "$rel" || { [ "$lay" = 1 ] && [ "${rel#*/}" = "$rel" ]; }; then
         bad="$rel"
         break
       fi
-      case "/$rel/" in */.citt-session.json/* | *.part/*) bad="$rel"; break ;; esac
-    done < <(jq -r '.files[].path' "$list")
+      case "/$rel/" in */.citt-session.json/* | *.part/* | /.unpack.*) bad="$rel"; break ;; esac
+    done < <(jq -r '.files[].path, ((.members // [])[] | .path)' "$list")
   fi
   if [ -n "$bad" ]; then
     _cs_fail "$sid" 11 "unsafe or malformed entry in the file list: $bad" "$etag" "$run_id" "$run_key" "$folder"
     printf '%s\t%s\n' "$run_id" "$run_key" >>"$_CITT_TMP/touched"
     return
   fi
+  # --exclude: matched files leave the list; $list.all keeps the full list for the dropped check.
+  local xl="$_CITT_TMP/excl.$sid.json" arch="$_CITT_TMP/arch.$sid" mem="$_CITT_TMP/mem.$sid"
+  cp "$list" "$list.all"
+  printf '[]' >"$xl"
+  : >"$arch"
+  : >"$mem"
+  if [ "$lay" = 2 ]; then
+    _cs_v2_list "$list" "$xl" "$arch" "$mem"
+  elif [ -n "$CS_EXCLUDES" ]; then
+    jq -r '.files[].path' "$list.all" | while IFS= read -r rel; do
+      if _cs_excluded "$rel"; then printf '%s\n' "$rel"; fi
+    done >"$xl.txt"
+    if [ -s "$xl.txt" ]; then
+      jq -c --rawfile x "$xl.txt" '(reduce ($x | split("\n") | map(select(. != "")))[] as $k ({}; .[$k] = true)) as $set
+        | [.files[] | select($set[.path]) | {path, size, sha256}]' "$list.all" >"$xl"
+      jq --rawfile x "$xl.txt" '(reduce ($x | split("\n") | map(select(. != "")))[] as $k ({}; .[$k] = true)) as $set
+        | .files |= map(select($set[.path] | not))' "$list.all" >"$list"
+    fi
+  fi
   local sdir="$CS_DIR/$run_key/$folder"
   files="$(jq '.files | length' "$list")"
-  # What is missing: files whose final copy is absent or differs.
+  # What is missing: files whose final copy is absent or differs. A file whose size and mtime equal the marker's
+  # is taken as verified without hashing it, except with --verify. A missing member needs its archive.
   need="$_CITT_TMP/need.$sid"
   : >"$need"
-  local missing=0 part_have
-  while IFS=$'\t' read -r rel size sha; do
-    if [ -f "$sdir/$rel" ] && [ "$(_cs_size "$sdir/$rel")" = "$size" ] && [ "$(sha256_of "$sdir/$rel")" = "$sha" ]; then
+  local missing=0 part_have needarch="$_CITT_TMP/needarch.$sid" src st onf="$_CITT_TMP/on.$sid" oldf="$_CITT_TMP/old.$sid.json"
+  : >"$needarch"
+  jq -r '.files[].path' "$list" >"$onf.paths"
+  _cs_stat "$sdir" "$onf.paths" "$onf"
+  jq -c '.files // []' "$sdir/.citt-session.json" >"$oldf" 2>/dev/null || printf '[]' >"$oldf"
+  while IFS=$'\t' read -r rel size sha src st; do
+    case "$st" in
+      ok) continue ;;
+      check) if [ "$(_cs_size "$sdir/$rel")" = "$size" ] && [ "$(sha256_of "$sdir/$rel")" = "$sha" ]; then continue; fi ;;
+    esac
+    if [ "$src" != - ]; then
+      printf '%s\n' "$src" >>"$needarch"
       continue
     fi
     printf '%s\t%s\t%s\n' "$rel" "$size" "$sha" >>"$need"
     part_have="$(_cs_size "$sdir/$rel.part")"
     [ "$part_have" -le "$size" ] || part_have=0
     missing=$((missing + size - part_have))
-  done < <(jq -r '.files[] | [.path, (.size | tostring), .sha256] | @tsv' "$list")
+  done < <(jq -r --rawfile on "$onf" --slurpfile old "$oldf" --argjson verify "$CS_VERIFY" '
+    ($on | split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: {size: .[1], mtime: .[2]}}) | from_entries) as $on
+    | (($old[0] // []) | map({key: (.path | tostring), value: .}) | from_entries) as $old
+    | .files[] | $on[.path] as $o | $old[.path] as $m
+    | (if $o == null then "absent"
+       elif $verify == 0 and $m != null and $m.mtime != null and $m.size == .size and $m.sha256 == .sha256
+         and ($m.mtime | tostring) == $o.mtime and $o.size == (.size | tostring) then "ok"
+       else "check" end) as $st
+    | [.path, (.size | tostring), .sha256, (.src // "-"), $st] | @tsv' "$list")
+  # Archives to unpack: each with a missing member; downloaded unless its verified copy is in the folder.
+  local unpack="$_CITT_TMP/unpack.$sid" unbytes=0 aname aobj asize asha
+  : >"$unpack"
+  while IFS= read -r aname; do
+    [ -n "$aname" ] || continue
+    IFS=$'\t' read -r aobj asize asha < <(awk -F '\t' -v n="$aname" '$1 == n { print $2 "\t" $3 "\t" $4; exit }' "$arch")
+    printf '%s\t%s\n' "$aname" "$aobj" >>"$unpack"
+    unbytes=$((unbytes + $(awk -F '\t' -v n="$aname" '$3 == n && $6 == 0 { s += $4 } END { printf "%.0f", s + 0 }' "$mem")))
+    if [ -f "$sdir/$aobj" ] && [ "$(_cs_size "$sdir/$aobj")" = "$asize" ] && [ "$(sha256_of "$sdir/$aobj")" = "$asha" ]; then
+      continue
+    fi
+    printf '%s\t%s\t%s\n' "$aobj" "$asize" "$asha" >>"$need"
+    part_have="$(_cs_size "$sdir/$aobj.part")"
+    [ "$part_have" -le "$asize" ] || part_have=0
+    missing=$((missing + asize - part_have))
+  done < <(sort -u "$needarch")
   local nneed
   nneed="$(wc -l <"$need" | tr -d ' ')"
   [ "$CS_VERIFY" = 0 ] || {
@@ -910,10 +1236,10 @@ _cs_session() {
     return
   fi
 
-  # Free space: the missing bytes plus 10%.
-  if [ "$missing" -gt 0 ]; then
+  # Free space: the missing bytes and the members to unpack, plus 10%.
+  if [ $((missing + unbytes)) -gt 0 ]; then
     local avail want
-    want=$((missing + missing / 10))
+    want=$((missing + unbytes + (missing + unbytes) / 10))
     avail="$(df -Pk "$CS_DIR" 2>/dev/null | awk 'NR == 2 { printf "%.0f", $4 * 1024 }')"
     if is_uint "$avail" && [ "$avail" -lt "$want" ]; then
       _cs_abort 1 "not enough free space in $CS_DIR: $avail bytes free, about $want bytes needed for session $sid ($(_cs_bytes "$avail") free, $(_cs_bytes "$want") needed); free space or choose another --dir"
@@ -1018,42 +1344,89 @@ _cs_session() {
     _cs_fail "$sid" 8 "$((nneed - okn)) of $nneed downloads ended without a result" "$etag" "$run_id" "$run_key" "$folder"
     return
   fi
+  # Layout 2: each archive with a missing member is unpacked, its members checked, then the archive deleted.
+  while IFS=$'\t' read -r aname aobj; do
+    [ -n "$aname" ] || continue
+    if ! _cs_unpack "$sdir" "$aname" "$aobj" "$mem"; then
+      _cs_fail "$sid" "$CS_FCODE" "$CS_FMSG" "$etag" "$run_id" "$run_key" "$folder"
+      return
+    fi
+  done <"$unpack"
 
   # Every file verified: files the server no longer lists stay on disk and are logged (D23).
-  local marker="$sdir/.citt-session.json" now dropped
+  # keep and xkeep go to jq as files: thousands of kept frames exceed one argument's size limit.
+  local marker="$sdir/.citt-session.json" now dropped same=0 keep="$_CITT_TMP/keep.$sid" mgroups="$CS_EG" gone kg xkeep="$_CITT_TMP/xkeep.$sid"
+  local xrec="[]" gq=",$CS_EG,manifest,"
+  printf '[]' >"$keep"
+  printf '[]' >"$xkeep"
+  local grp='def grp: .group // (.path | split("/")[0]);' ent='{path, size, sha256} + (if .group then {group} else {} end) + (if .mtime then {mtime} else {} end)' 
+  # The patterns that left files of this export off disk; none when nothing matched.
+  [ "$(jq 'length' "$xl")" = 0 ] || xrec="$CS_EXCL_JSON"
   now="$(_cs_now_iso)"
   mkdir -p "$sdir" || {
     _cs_abort 1 "cannot create $sdir"
     return
   }
   if [ -f "$marker" ]; then
-    dropped="$(jq -r --slurpfile l "$list" '($l[0].files | map(.path)) as $now | .files[]?.path | select(. as $p | $now | index($p) | not)' "$marker" 2>/dev/null)"
+    # Same export: the files of groups outside --groups stay recorded while every one is on disk.
+    if [ -n "$etag" ] && [ "$(jq -r '.export_etag // empty' "$marker" 2>/dev/null)" = "$etag" ]; then
+      same=1
+      gone="$(jq -r --arg g "$gq" "$grp"' .files[]? | select(grp as $x | $g | contains("," + $x + ",") | not) | [.path, grp] | @tsv' "$marker" 2>/dev/null \
+        | while IFS=$'\t' read -r rel kg; do [ -f "$sdir/$rel" ] || printf '%s\n' "$kg"; done | sort -u | tr '\n' ',')"
+      if jq -c --arg g "$gq" --arg gone ",$gone" "$grp"' (.groups // "" | split(",")) as $had
+        | [.files[]? | select(grp as $x | ($g | contains("," + $x + ",") | not)
+            and ($had | index($x)) and ($gone | contains("," + $x + ",") | not)) | '"$ent"']' "$marker" >"$keep.tmp" 2>/dev/null; then
+        mv -f "$keep.tmp" "$keep"
+      fi
+      kg="$(jq -r "$grp"' [.[] | grp] | unique | join(",")' "$keep")"
+      mgroups="$(_cs_norm_groups "$CS_EG,$kg")"
+      [ -n "$mgroups" ] || mgroups="$CS_EG"
+      # Excluded files of this export already on disk stay recorded; when all are, no pattern is recorded.
+      jq -r --slurpfile x "$xl" '.files[]? | {path, size, sha256} | select(. as $f | any($x[0][]; {path, size, sha256} == $f)) | .path' "$marker" 2>/dev/null \
+        | while IFS= read -r rel; do if [ -f "$sdir/$rel" ]; then printf '%s\n' "$rel"; fi; done \
+        | jq -R -s -c --slurpfile x "$xl" '(split("\n") | map(select(. != ""))) as $on | [$x[0][] | select(.path as $p | $on | index($p))]' >"$xkeep.tmp"
+      if [ -s "$xkeep.tmp" ]; then mv -f "$xkeep.tmp" "$xkeep"; fi
+      [ "$(jq 'length' "$xkeep")" != "$(jq 'length' "$xl")" ] || xrec="[]"
+    fi
+    dropped="$(jq -r --slurpfile l "$list.all" --arg g "$gq" --argjson same "$same" "$grp"' ($l[0].files | map(.path)) as $now | .files[]?
+      | select($same == 0 or (grp as $x | $g | contains("," + $x + ","))) | .path
+      | select(. as $p | $now | index($p) | not)' "$marker" 2>/dev/null)"
     if [ -n "$dropped" ]; then
       printf '%s\n' "$dropped" | while IFS= read -r rel; do
         [ -e "$sdir/$rel" ] && printf '%s\t%s\n' "$sid" "$run_key/$folder/$rel" >>"$_CITT_TMP/dropped"
       done
     fi
   fi
-  jq -c --arg at "$now" --arg g "$CS_GROUPS" \
-    '{session_id, run_key, folder, export_etag, groups: $g, verified_at: $at, files: [.files[] | {path, size, sha256}]}' \
-    "$list" >"$marker.tmp"
-  if ! mv -f "$marker.tmp" "$marker"; then
+  # Each file verified now gets its size and mtime, so the next sync hashes only files that changed.
+  _cs_stat "$sdir" "$onf.paths" "$onf"
+  if ! jq -c --arg at "$now" --arg g "$mgroups" --slurpfile keep "$keep" --slurpfile xkeep "$xkeep" --argjson xrec "$xrec" \
+    --rawfile on "$onf" --rawfile arch "$arch" --argjson lay "$lay" --argjson up "$CS_UNPACK" \
+    '($on | split("\n") | map(select(. != "") | split("\t") | {key: .[0], value: (.[2] | tonumber)}) | from_entries) as $mt
+    | {session_id, run_key, folder, export_etag, groups: $g, exclude: $xrec, verified_at: $at}
+    + (if $lay == 2 then {layout: 2, unpacked: ($up == 1),
+        archives: [$arch | split("\n")[] | select(. != "") | split("\t") | {path: .[1], group: .[0], size: (.[2] | tonumber), sha256: .[3]}]} else {} end)
+    + {files: ([.files[] | {path, size, sha256} + (if .group then {group} else {} end) + (if $mt[.path] then {mtime: $mt[.path]} else {} end)]
+        + $keep[0] + $xkeep[0])}' \
+    "$list" >"$marker.tmp" || ! mv -f "$marker.tmp" "$marker"; then
+    rm -f "$marker.tmp"
     _cs_abort 1 "cannot write $marker"
     return
   fi
   local known prev_etag bytes
   known="$(jq -r --arg s "$sid" 'if .sessions[$s] then "1" else "0" end' "$CS_ST")"
   prev_etag="$(jq -r --arg s "$sid" '.sessions[$s].export_etag // empty' "$CS_ST")"
-  bytes="$(jq '[.files[].size] | add // 0' "$list")"
+  bytes="$(jq '[.files[].size] | add // 0' "$marker")"
+  files="$(jq '.files | length' "$marker")"
   if [ "$known" = 0 ]; then
     CS_NEW=$((CS_NEW + 1))
   elif [ "$okn" -gt 0 ] || [ "$prev_etag" != "$etag" ]; then
     CS_UPD=$((CS_UPD + 1))
   fi
-  _cs_st '.sessions[$s] = {export_etag: $e, run_id: $r, run_key: $k, folder: $f, groups: $g, files: $n, bytes: $b, verified_at: $at}
+  _cs_st '.sessions[$s] = ({export_etag: $e, run_id: $r, run_key: $k, folder: $f, groups: $g, exclude: $x, files: $n, bytes: $b, verified_at: $at}
+            + ($m[0] | if .layout == 2 then {layout, unpacked, archives} else {} end))
           | del(.failures[$s])' \
-    --arg s "$sid" --arg e "$etag" --argjson r "${run_id:-null}" --arg k "$run_key" --arg f "$folder" --arg g "$CS_GROUPS" \
-    --argjson n "$files" --argjson b "$bytes" --arg at "$now"
+    --arg s "$sid" --arg e "$etag" --argjson r "${run_id:-null}" --arg k "$run_key" --arg f "$folder" --arg g "$mgroups" \
+    --argjson x "$xrec" --argjson n "$files" --argjson b "$bytes" --arg at "$now" --slurpfile m "$marker"
   _cs_save
   [ "${CITT_JSON:-0}" = 1 ] || [ "$nneed" = 0 ] \
     || printf 'Session %s: %s/%s, %s, %s\n' "$sid" "$run_key" "$folder" "$(_cs_n "$okn" file files)" "$(_cs_bytes "$okbytes")"
@@ -1120,7 +1493,7 @@ _cs_checksums() {
 
 # _cs_run_files ID RUN_KEY RUN_ETAG: README.md, run.json, citations.jsonl, app.json and the schemas.
 _cs_run_files() {
-  local id="$1" rk="$2" etag="$3" rd n readme="" s errs=0
+  local id="$1" rk="$2" etag="$3" rd n readme="" s errs=0 rg
   _cs_segment "$rk" || {
     err "$CITT_CMD: run $id has an unsafe run key: $rk"
     CS_INTEG=$((CS_INTEG + 1))
@@ -1131,8 +1504,11 @@ _cs_run_files() {
     _cs_abort 1 "cannot create $rd"
     return
   }
+  # The groups on disk: this call's and those recorded for the run's sessions.
+  rg="$(_cs_norm_groups "$CS_GROUPS,$(jq -r --arg i "$id" '[.sessions // {} | .[] | select((.run_id | tostring) == $i) | .groups // empty] | join(",")' "$CS_ST")")"
+  [ -n "$rg" ] || rg="$CS_GROUPS"
   for n in $CS_RUN_FILES; do
-    _cs_run_get "$CITT_V1/capture-runs/$id/export/$n?groups=$(urlenc "$CS_GROUPS")" "$rd/$n"
+    _cs_run_get "$CITT_V1/capture-runs/$id/export/$n?groups=$(urlenc "$rg")" "$rd/$n"
     case "$CS_RG" in
       ok) [ "$n" != README.md ] || readme=changed ;;
       same | absent) ;;
@@ -1207,10 +1583,12 @@ _cs_runs() {
     cursor="$(body_field '.next_cursor')"
     [ -n "$cursor" ] || break
   done
-  # Targets: touched runs, and local runs whose run_etag moved; only runs inside --run.
+  # Targets: touched runs, and local runs whose run_etag moved; only runs inside --run and of --session.
   want="$(tmpfile run_targets)"
-  jq -r -n --slurpfile st "$CS_ST" --rawfile touched "$_CITT_TMP/touched" --arg rids "$CS_RIDS" '
+  jq -r -n --slurpfile st "$CS_ST" --rawfile touched "$_CITT_TMP/touched" --arg rids "$CS_RIDS" \
+    --arg srids "$CS_SRIDS" --argjson sonly "$([ -n "$CS_SESSIONS" ] && printf 1 || printf 0)" '
     ($rids | split("\n") | map(select(. != ""))) as $only
+    | ($srids | split("\n") | map(select(. != ""))) as $sonly_runs
     | ($touched | split("\n") | map(select(. != "") | split("\t") | {id: .[0], key: .[1]})) as $t
     | [inputs] as $listed
     | ($listed | map({key: (.experiment_id | tostring), value: .}) | from_entries) as $by
@@ -1218,12 +1596,15 @@ _cs_runs() {
       + [$listed[] | (.experiment_id | tostring) as $i | select($st[0].runs[$i] != null and $st[0].runs[$i].run_etag != .run_etag)
          | {id: $i, key: .run_key, etag: .run_etag}] )
     | unique_by(.id)[] | select(($only | length) == 0 or (.id as $i | $only | index($i)))
+    | select($sonly == 0 or (.id as $i | $sonly_runs | index($i)))
     | [.id, .key, .etag] | @tsv' "$all" >"$want" 2>/dev/null
   while IFS=$'\t' read -r id rk etag; do
     [ -n "$id" ] || continue
     _cs_run_files "$id" "$rk" "$etag"
     [ "$CS_ABORT" = 0 ] || return
   done <"$want"
+  # A verify leaves the cursor as it was.
+  [ "$CS_VERIFY" = 0 ] || return 0
   hw="$(jq -r -s --arg old "$hw" "$CS_JQ_TS"' (map(.changed_at) + [$old] | map(select(. != null and . != "")) | max_by(ts)) // empty' "$all")"
   [ -z "$hw" ] || _cs_st '.runs_high_water = $h' --arg h "$hw"
 }
@@ -1264,7 +1645,9 @@ _cs_sync() {
   _cs_resolve_runs
   local filters
   filters="$(_cs_filters_json)"
-  if [ "$(jq -c '.filters' "$CS_ST")" != "$filters" ]; then
+  # A verify neither records its filters nor moves the cursor.
+  # A state from before --exclude has no filters.exclude: the same as none.
+  if [ "$CS_VERIFY" = 0 ] && ! jq -e --argjson f "$filters" '(.filters | if . == null then null else {exclude: [], sessions: []} + . end) == $f' "$CS_ST" >/dev/null; then
     # New filters: list every session again; sessions already on disk are skipped by export_etag.
     [ "$(jq -c '.filters' "$CS_ST")" = null ] || reset=1
     _cs_st '.filters = $f | .high_water = (if $r == 1 then null else .high_water end) | .runs_high_water = (if $r == 1 then null else .runs_high_water end)' \
@@ -1291,20 +1674,29 @@ _cs_sync() {
     cursor="$(body_field '.next_cursor')"
     [ -n "$cursor" ] || break
   done
+  if [ -n "$CS_SESSIONS" ]; then
+    if [ -n "$hw" ]; then _cs_resolve_sessions "$feed" 0; else _cs_resolve_sessions "$feed" 1; fi
+  fi
 
-  # What to process: feed rows, then due retries, then (with --verify) every session on disk.
+  # What to process: feed rows, then due retries, then (with --verify) every session on disk of --run;
+  # with --session only the resolved sessions.
   todo="$(tmpfile todo.jsonl)"
-  jq -c -n --slurpfile st "$CS_ST" --argjson now "$(now_s)" --argjson verify "$CS_VERIFY" "$CS_JQ_TS"'
-    [inputs] as $feed | ($feed | map(.session_id | tostring)) as $ids
+  jq -c -n --slurpfile st "$CS_ST" --argjson now "$(now_s)" --argjson verify "$CS_VERIFY" --arg rids "$CS_RIDS" \
+    --arg sids "$CS_SIDS" --argjson sonly "$([ -n "$CS_SESSIONS" ] && printf 1 || printf 0)" "$CS_JQ_TS"'
+    ($rids | split("\n") | map(select(. != ""))) as $only
+    | ($sids | split("\n") | map(select(. != ""))) as $sonly_ids
+    | [inputs] as $feed | ($feed | map(.session_id | tostring)) as $ids
     | ($feed | map(. + {src: "feed"}))
       + [($st[0].failures // {}) | to_entries[] | select(.key as $k | $ids | index($k) | not)
          | select((.value.next_try_at | ts) <= $now) | {session_id: (.key | tonumber), run_id: .value.run_id, src: "retry"}]
       + (if $verify == 1 then [($st[0].sessions // {}) | to_entries[] | select(.key as $k | $ids | index($k) | not)
+         | select(($only | length) == 0 or (.value.run_id | tostring) as $r | $only | index($r))
          | {session_id: (.key | tonumber), run_id: .value.run_id, src: "verify"}] else [] end)
+    | map(select($sonly == 0 or (.session_id | tostring) as $s | $sonly_ids | index($s)))
     | reduce .[] as $r ({seen: {}, out: []}; if .seen[$r.session_id | tostring] then . else .seen[$r.session_id | tostring] = true | .out += [$r] end)
     | .out[]' "$feed" >"$todo"
 
-  local seen sid etag src skip pending=0 nowiso
+  local seen sid etag src skip pending=0 nowiso lay
   seen="$(tmpfile seen_at)"
   nowiso="$(now_s)"
   while IFS= read -r row <&3; do
@@ -1314,8 +1706,14 @@ _cs_sync() {
     src="$(jq -r '.src' <<<"$row")"
     skip=0
     if [ "$src" = feed ] && [ "$CS_VERIFY" = 0 ]; then
-      skip="$(jq -r --arg s "$sid" --arg e "$etag" --arg g "$CS_GROUPS" --argjson now "$nowiso" "$CS_JQ_TS"'
-        if .sessions[$s].export_etag == $e and .sessions[$s].groups == $g and (.failures[$s] == null) then "done"
+      lay="$(jq -r '.layout // empty' <<<"$row")"
+      [ -n "$lay" ] || lay="$(jq -r --arg s "$sid" '.sessions[$s].layout // 1' "$CS_ST")"
+      skip="$(jq -r --arg s "$sid" --arg e "$etag" --arg g "$(_cs_groups_of "$lay")" --argjson xs "$CS_EXCL_JSON" --argjson now "$nowiso" \
+        --argjson up "$CS_UNPACK" "$CS_JQ_TS"'
+        (.sessions[$s].groups // "" | split(",")) as $have
+        | if .sessions[$s].export_etag == $e and ($g | split(",") | all(. as $x | $have | index($x)))
+            and (.sessions[$s].exclude // [] | all(. as $p | $xs | index($p)))
+            and ((.sessions[$s].layout // 1) != 2 or (.sessions[$s].unpacked == ($up == 1))) and (.failures[$s] == null) then "done"
         elif .failures[$s] != null and .failures[$s].export_etag == $e and ((.failures[$s].next_try_at | ts) > $now) then "wait"
         else "0" end' "$CS_ST")"
       if [ "$skip" = "done" ]; then
@@ -1341,7 +1739,7 @@ _cs_sync() {
   # high_water: the latest change processed in feed order.
   local newhw
   newhw="$(jq -R -r -s --arg old "$hw" "$CS_JQ_TS"' split("\n") + [$old] | map(select(. != "")) | (max_by(ts) // empty)' "$seen")"
-  [ -z "$newhw" ] || _cs_st '.high_water = $h' --arg h "$newhw"
+  [ -z "$newhw" ] || [ "$CS_VERIFY" = 1 ] || _cs_st '.high_water = $h' --arg h "$newhw"
   _cs_save
 
   [ "$CS_ABORT" != 0 ] || _cs_runs "$reset"
@@ -1701,7 +2099,7 @@ _cs_watch() {
 # --- citt captures -------------------------------------------------------------------
 
 cmd_captures() {
-  local state="" limit=50 cursor=""
+  local state="" limit=50 cursor="" mine=""
   CITT_CMD="citt captures"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -1725,6 +2123,7 @@ cmd_captures() {
         cursor="$2"
         shift
         ;;
+      --mine) mine=1 ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_captures
@@ -1739,7 +2138,7 @@ cmd_captures() {
   E_KIND=project
   E_PROJECT_ID="$(printf '%s' "$CS_PROJECTS" | tr '\n' ' ' | sed 's/ *$//')"
   _cs_resolve_projects
-  call GET "$CITT_V1/capture-runs$(query state "$state" limit "$limit" cursor "$cursor")$(_cs_pid_query)"
+  call GET "$CITT_V1/capture-runs$(query state "$state" mine "$mine" limit "$limit" cursor "$cursor")$(_cs_pid_query)"
   if [ "$CITT_JSON" = 1 ]; then
     cat "$RESP"
     printf '\n'
@@ -1748,14 +2147,14 @@ cmd_captures() {
   local n
   n="$(jq '.runs | length' "$RESP" 2>/dev/null)" || die 1 "unparseable response from GET $CITT_V1/capture-runs"
   if [ "$n" = 0 ]; then
-    if [ -n "$state" ] || [ -n "$CS_PIDS" ]; then
+    if [ -n "$state" ] || [ -n "$CS_PIDS" ] || [ -n "$mine" ]; then
       printf 'No capture runs match these filters; all runs: citt captures\n'
     else
       printf 'No capture runs in your projects yet. Start one with citt capture-start, or from an Android app'"'"'s Network section on %s\n' "$CITT_APP_HOST"
     fi
     return 0
   fi
-  jq -c "$CS_JQ_TS"' [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"]]
+  jq -c "$CS_JQ_TS"' [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA", "Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
         (.state // "-") + (if .status_reason then ": " + .status_reason else "" end),
         (.app_label // .package_id),
@@ -1765,8 +2164,9 @@ cmd_captures() {
         (.flags // 0),
         (if .eta_at then (.eta_at | ts | floor | strftime("%Y-%m-%d %H:%M UTC"))
          elif .overdue_s then "overdue \((.overdue_s / 3600) | floor) h \(((.overdue_s % 3600) / 60) | floor) min"
-         else "-" end)]]' "$RESP" | table
+         else "-" end),
+        (.booked_by.name // (if .booked_by.user_id then "user \(.booked_by.user_id)" else "-" end))]]' "$RESP" | table
   local next
   next="$(body_field '.next_cursor')"
-  [ -z "$next" ] || printf '\nMore runs: citt captures%s%s --cursor %s\n' "${state:+ --state $(shq "$state")}" "$( [ "$limit" = 50 ] || printf ' --limit %s' "$limit")" "$(shq "$next")"
+  [ -z "$next" ] || printf '\nMore runs: citt captures%s%s%s --cursor %s\n' "${state:+ --state $(shq "$state")}" "${mine:+ --mine}" "$( [ "$limit" = 50 ] || printf ' --limit %s' "$limit")" "$(shq "$next")"
 }
