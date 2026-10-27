@@ -110,7 +110,7 @@ cmd_submit() {
     done
     unset IFS
   elif [ "${#pkgs[@]}" -gt 0 ]; then
-    for n in "${pkgs[@]}"; do
+    for n in ${pkgs[@]+"${pkgs[@]}"}; do
       { _package_of "$n" || exit 2; printf '\n'; } >>"$list"
     done
   fi

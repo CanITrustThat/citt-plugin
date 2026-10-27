@@ -357,11 +357,11 @@ EOF
     : >"$HDRS"
     [ "$HTTP_RESUME" = 1 ] || : >"$out"
     if [ "$HTTP_AUTH" != 1 ]; then
-      CODE="$(curl -q "${args[@]}" "$url" 2>"$_CITT_ERR" </dev/null)"
+      CODE="$(curl -q ${args[@]+"${args[@]}"} "$url" 2>"$_CITT_ERR" </dev/null)"
     elif [ -n "$chunk" ]; then
-      CODE="$(_chunk_bytes "$chunk" "$HTTP_CHUNK_OFF" "$HTTP_CHUNK_LEN" | curl -q --config <(_citt_cfg) "${args[@]}" "$url" 2>"$_CITT_ERR")"
+      CODE="$(_chunk_bytes "$chunk" "$HTTP_CHUNK_OFF" "$HTTP_CHUNK_LEN" | curl -q --config <(_citt_cfg) ${args[@]+"${args[@]}"} "$url" 2>"$_CITT_ERR")"
     else
-      CODE="$(curl -q --config <(_citt_cfg) "${args[@]}" "$url" 2>"$_CITT_ERR" </dev/null)"
+      CODE="$(curl -q --config <(_citt_cfg) ${args[@]+"${args[@]}"} "$url" 2>"$_CITT_ERR" </dev/null)"
     fi
     rc=$?
     [ -n "$CODE" ] || CODE=000
@@ -868,3 +868,7 @@ JQ_NEXT='def next_line($host): if . == null then null
   elif (.href // "") == "" then .label
   elif (.href | test("^https?://")) then "\(.label): \(.href)"
   else "\(.label): \($host)\(.href)" end;'
+
+# CF-W12: what --tracking changes; printed by capture-options and capture-start --help, and stated in docs/reference.md.
+# shellcheck disable=SC2016 # the backticks are literal Markdown, not command substitution
+CITT_TRACKING_NOTE='`--tracking` is the answer the bot gives to consent and tracking prompts inside the app: `refuse` taps reject or turns every toggle off, and a prompt with no refusal option is accepted and recorded as `consent_no_refuse_option`. CITT changes no ad setting on the phone: the advertising ID, ad personalisation and other system ad settings stay as they are, as for a user who answers the app'\''s prompts only.'

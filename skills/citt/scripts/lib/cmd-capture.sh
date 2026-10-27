@@ -890,7 +890,7 @@ _cs_worker() {
 # jq: `g1` gives the layout 1 group folder of a member path, as the server's Group::of does: network captures and
 # bodies/* under network/, video files under video/, every other path under data/.
 CS_JQ_G1='def g1: ascii_downcase as $l
-  | if (["session.har", "flows.jsonl", "flows.mitm", "bodies.jsonl", "tls_failures.jsonl"] | index($l)) or ($l | startswith("bodies/")) then "network"
+  | if (["session.har", "flows.jsonl", "flows.mitm", "bodies.jsonl", "tls_failures.jsonl", "connections.jsonl", "dns.jsonl"] | index($l)) or ($l | startswith("bodies/")) then "network"
     elif ($l | split("/") | last | test("\\.(mp4|mkv|webm|mov|m4v|ts|h264)$")) then "video" else "data" end;'
 
 CS_STATFMT=""
@@ -1937,11 +1937,11 @@ _cs_preflight() {
   if [ "$1" = systemd ]; then
     local -a sargs
     sargs=()
-    for kv in "${setenv[@]}"; do sargs+=("--setenv=$kv"); done
-    systemd-run --user --wait --pipe --quiet --collect "${sargs[@]}" "$CS_COPY" usage </dev/null >"$out" 2>"$err_f"
+    for kv in ${setenv[@]+"${setenv[@]}"}; do sargs+=("--setenv=$kv"); done
+    systemd-run --user --wait --pipe --quiet --collect ${sargs[@]+"${sargs[@]}"} "$CS_COPY" usage </dev/null >"$out" 2>"$err_f"
     rc=$?
   else
-    launchctl asuser "$(id -u)" env "${setenv[@]}" "$CS_COPY" usage </dev/null >"$out" 2>"$err_f"
+    launchctl asuser "$(id -u)" env ${setenv[@]+"${setenv[@]}"} "$CS_COPY" usage </dev/null >"$out" 2>"$err_f"
     rc=$?
   fi
   [ "$rc" -eq 0 ] && return 0
@@ -1983,7 +1983,7 @@ _cs_install() {
     name="citt-capture-sync-$h"
     mkdir -p "$udir" || die 1 "cannot create $udir"
     execline="ExecStart=$(_cs_sdq "$CS_COPY") capture-sync"
-    for a in "${args[@]}"; do
+    for a in ${args[@]+"${args[@]}"}; do
       if [ "$a" = "$CS_DIR" ]; then execline="$execline $(_cs_sdq "$a")"; else execline="$execline $(_cs_sdword "$a")"; fi
     done
     {
@@ -2009,7 +2009,7 @@ _cs_install() {
       printf '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
       printf '<plist version="1.0">\n<dict>\n  <key>Label</key>\n  <string>%s</string>\n  <key>ProgramArguments</key>\n  <array>\n' "$name"
       printf '    <string>%s</string>\n    <string>capture-sync</string>\n' "$(_cs_xml "$CS_COPY")"
-      for a in "${args[@]}"; do printf '    <string>%s</string>\n' "$(_cs_xml "$a")"; done
+      for a in ${args[@]+"${args[@]}"}; do printf '    <string>%s</string>\n' "$(_cs_xml "$a")"; done
       printf '  </array>\n  <key>EnvironmentVariables</key>\n  <dict>\n'
       while IFS= read -r kv; do
         printf '    <key>%s</key>\n    <string>%s</string>\n' "${kv%%=*}" "$(_cs_xml "${kv#*=}")"
@@ -2084,7 +2084,7 @@ _cs_watch() {
   while IFS= read -r a; do args+=("$a"); done < <(_cs_args)
   [ "${CITT_JSON:-0}" = 0 ] || args+=(--json)
   while :; do
-    "$CITT_LIB/../citt" capture-sync "${args[@]}"
+    "$CITT_LIB/../citt" capture-sync ${args[@]+"${args[@]}"}
     rc=$?
     case "$rc" in 2 | 3) exit "$rc" ;; esac
     ticks=$((ticks + 1))
@@ -2099,7 +2099,7 @@ _cs_watch() {
 # --- citt captures -------------------------------------------------------------------
 
 cmd_captures() {
-  local state="" limit=50 cursor="" mine=""
+  local state="" limit=50 cursor="" mine="" sort=""
   CITT_CMD="citt captures"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -2123,6 +2123,11 @@ cmd_captures() {
         cursor="$2"
         shift
         ;;
+      --sort)
+        need_value "$1" $#
+        sort="$2"
+        shift
+        ;;
       --mine) mine=1 ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
@@ -2134,11 +2139,12 @@ cmd_captures() {
     shift
   done
   if ! is_uint "$limit" || [ "$limit" -lt 1 ] || [ "$limit" -gt 200 ]; then usage_error "--limit takes 1 to 200"; fi
+  case "$sort" in "" | finished) ;; *) usage_error "--sort takes finished (the runs that ended last first, runs not ended after them); got $sort" ;; esac
   need_auth
   E_KIND=project
   E_PROJECT_ID="$(printf '%s' "$CS_PROJECTS" | tr '\n' ' ' | sed 's/ *$//')"
   _cs_resolve_projects
-  call GET "$CITT_V1/capture-runs$(query state "$state" mine "$mine" limit "$limit" cursor "$cursor")$(_cs_pid_query)"
+  call GET "$CITT_V1/capture-runs$(query state "$state" mine "$mine" limit "$limit" cursor "$cursor" sort "$sort")$(_cs_pid_query)"
   if [ "$CITT_JSON" = 1 ]; then
     cat "$RESP"
     printf '\n'
@@ -2154,9 +2160,14 @@ cmd_captures() {
     fi
     return 0
   fi
-  jq -c "$CS_JQ_TS"' [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA", "Booked by"]]
+  jq -c --argjson L "$(local_times "$RESP")" --arg sort "$sort" "$JQ_LT"' '"$CS_JQ_TS"'
+    def ended: if $sort == "finished" then [.finished_at | lt] else [] end;
+    [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
-        (.state // "-") + (if .status_reason then ": " + .status_reason else "" end),
+        (.state // "-") + (if .status_reason then ": " + .status_reason else "" end)
+          + (if .exit_redirected == true
+             then "; captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
+             else "" end),
         (.app_label // .package_id),
         (.device_name // "-"),
         (if .planned_sessions then "\(.finished_sessions // 0)/\(.planned_sessions)" else "\(.finished_sessions // .sessions // 0)" end)
@@ -2164,9 +2175,10 @@ cmd_captures() {
         (.flags // 0),
         (if .eta_at then (.eta_at | ts | floor | strftime("%Y-%m-%d %H:%M UTC"))
          elif .overdue_s then "overdue \((.overdue_s / 3600) | floor) h \(((.overdue_s % 3600) / 60) | floor) min"
-         else "-" end),
-        (.booked_by.name // (if .booked_by.user_id then "user \(.booked_by.user_id)" else "-" end))]]' "$RESP" | table
+         else "-" end)]
+        + ended
+        + [(.booked_by.name // (if .booked_by.user_id then "user \(.booked_by.user_id)" else "-" end))]]' "$RESP" | table
   local next
   next="$(body_field '.next_cursor')"
-  [ -z "$next" ] || printf '\nMore runs: citt captures%s%s%s --cursor %s\n' "${state:+ --state $(shq "$state")}" "${mine:+ --mine}" "$( [ "$limit" = 50 ] || printf ' --limit %s' "$limit")" "$(shq "$next")"
+  [ -z "$next" ] || printf '\nMore runs: citt captures%s%s%s%s --cursor %s\n' "${state:+ --state $(shq "$state")}" "${sort:+ --sort $sort}" "${mine:+ --mine}" "$( [ "$limit" = 50 ] || printf ' --limit %s' "$limit")" "$(shq "$next")"
 }

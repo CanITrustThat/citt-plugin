@@ -151,7 +151,7 @@ cmd_capture_options() {
     jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status, (.active_runs // 0)]]' "$CR_OPTS" | table
   fi
   printf '\n'
-  jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" "$CR_JQ"'
+  jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" --arg note "$CITT_TRACKING_NOTE" "$CR_JQ"'
     "Exit states (servers): " + ([.states[] | "\(.code) \(.servers // "-")"] | join(", ") | if . == "" then "none reported" else . end),
     (if ((.countries // []) | length) > 0 then
        (.regions // ([.countries[].region] | unique)) as $regions
@@ -166,6 +166,7 @@ cmd_capture_options() {
     "Profile: age \(.default_profile.persona_age // "-"), tracking \(.default_profile.tracking // "-") (--age \(.min_persona_age) to \(.max_persona_age), --tracking allow|refuse)"
       + (if .default_exit_state then "; last exit state \(.default_exit_state)" else "" end)
       + (if .default_exit_country then "; last exit country \(.default_exit_country)" else "" end),
+    $note,
     (if .bytes_per_hour == null then "Measured size: none yet; no session of this package has been ingested"
      else "Measured size: BPH:\(.bytes_per_hour) per captured hour over \(n(.measured_sessions // 0; "session"; "sessions"))"
        + (if $dur != "" then "; \($dur) is about EST:\(.bytes_per_hour * ($ds | tonumber) / 3600 | floor)" else "" end) end)' "$CR_OPTS" \
@@ -227,9 +228,59 @@ _cr_split() {
 
 _cr_nonce() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 
+# _cr_host_ok HOST: a lowercased ASCII DNS name (labels of 1 to 63 letters, digits and "-", none starting or ending with "-"; at most
+# 253 characters) or a dotted IPv4 address (four numeric labels, each 0 to 255 without a leading zero; four all-numeric labels are
+# always read as IPv4). No wildcard, port, scheme, path, space, control character, non-ASCII character or IPv6 address. The same
+# grammar as the API and netproof/pins.py.
+_cr_host_ok() {
+  local LC_ALL=C host="$1" label oct
+  local -a parts
+  [[ "$host" =~ ^[a-z0-9.-]+$ ]] || return 1
+  if [[ "$host" =~ ^[0-9]+(\.[0-9]+){3}$ ]]; then
+    IFS=. read -r -a parts <<<"$host"
+    for oct in ${parts[@]+"${parts[@]}"}; do
+      [ "${#oct}" -le 3 ] && [ "$((10#$oct))" -le 255 ] || return 1
+      [ "$oct" = 0 ] || [[ "$oct" != 0* ]] || return 1
+    done
+    return 0
+  fi
+  [ "${#host}" -le 253 ] || return 1
+  [[ "$host" != *. && "$host" != .* && "$host" != *..* ]] || return 1
+  IFS=. read -r -a parts <<<"$host"
+  for label in ${parts[@]+"${parts[@]}"}; do
+    [[ "$label" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  done
+}
+
+# _cr_passthrough LIST: validates the comma-separated LIST of one --passthrough flag (spaces around the commas are trimmed) and
+# appends the lowercased hosts, once each, to CR_PT (a newline-separated list); CR_PT_N counts the raw entries of all flags. A bad
+# entry or more than 20 raw entries exits 2 before any request.
+_cr_passthrough() {
+  local rest="$1," item host
+  while [ -n "$rest" ]; do
+    item="${rest%%,*}"
+    rest="${rest#*,}"
+    CR_PT_N=$((CR_PT_N + 1))
+    host="${item#"${item%%[! ]*}"}"
+    host="${host%"${host##*[! ]}"}"
+    host="$(LC_ALL=C printf '%s' "$host" | LC_ALL=C tr '[:upper:]' '[:lower:]'; printf x)"
+    host="${host%x}"
+    _cr_host_ok "$host" \
+      || usage_error "--passthrough entry '$item' is not a host name or IPv4 address; give a DNS name such as api.example.com or an address such as 1.2.3.4, with no wildcard, port, scheme, path or space"
+    case "
+$CR_PT
+" in *"
+$host
+"*) ;; *) CR_PT="${CR_PT:+$CR_PT
+}$host" ;; esac
+  done
+  [ "$CR_PT_N" -le 20 ] || usage_error "--passthrough takes at most 20 hosts; got $CR_PT_N"
+}
+
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
-  local nav="" help_wait="" nav_mode="" wait_s=""
+  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]"
+  CR_PT="" CR_PT_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
   while [ $# -gt 0 ]; do
@@ -240,9 +291,10 @@ cmd_capture_start() {
       continue
     fi
     case "$1" in
-      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait)
+      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough)
         need_value "$1" $#
         case "$1" in
+          --passthrough) _cr_passthrough "$2" ;;
           --navigator) nav="$2" ;;
           --help-wait) help_wait="$2" ;;
           --duration) dur="$2" ;;
@@ -257,6 +309,7 @@ cmd_capture_start() {
         shift
         ;;
       --wait) wait=1 ;;
+      --state-fallback) fallback=any_state ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -307,6 +360,10 @@ cmd_capture_start() {
     case "$nav_mode" in ask_when_stuck | ask_when_unsure) ;; *) usage_error "--help-wait applies to --navigator stuck or unsure" ;; esac
     wait_s=$((10#$help_wait * 60))
   fi
+  # CF-W3: --state-fallback lets the run be captured in another state when no server of the booked one connects.
+  [ -z "$fallback" ] || [ -n "$state" ] || usage_error "--state-fallback applies to a US exit booked with --state; leave it out for --country"
+  # CF-W11: --passthrough hosts (validated while the flags were read), as the request's passthrough_hosts
+  [ -z "$CR_PT" ] || pt_json="$(printf '%s\n' "$CR_PT" | jq -R . | jq -sc .)"
   need_auth
   _cr_app "$pkg"
 
@@ -316,6 +373,8 @@ cmd_capture_start() {
   dir="$CITT_STATE/capture-start"
   local hin="v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking"
   [ -z "$nav_mode" ] || hin="$hin|nav=$nav_mode|wait=$wait_s"
+  [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
+  [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
   now="$(now_s)"
@@ -347,13 +406,15 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" \
     '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
      + (if $tr == "" then {} else {tracking: $tr} end)
      + (if $nav == "" then {} else {navigator: $nav} end)
-     + (if $ws == "" then {} else {help_wait_s: ($ws | tonumber)} end)' >"$body"
+     + (if $ws == "" then {} else {help_wait_s: ($ws | tonumber)} end)
+     + (if $fb == "" then {} else {exit_fallback: $fb} end)
+     + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
   # With --wait the key is kept until the watch returns, so a re-run after a network or server
@@ -396,7 +457,9 @@ _cr_started() {
     "Run \(.experiment_id) (\(.run_key)): \(.status) on \(.device_name // "phone") (device \(.device_id))"
       + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
       + (if .status_reason then ": \(.status_reason)" else "" end),
-    (if .exit_state then "Exit state \(.exit_state)" else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+    (if .exit_state then "Exit state \(.exit_state)" + (if .exit_fallback == "any_state" then " (another state is allowed when \(.exit_state) connects nothing)" else "" end) else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+      + (if (.passthrough_hosts // []) | length > 0
+         then "; passed through unread, not decrypted and not captured: \(.passthrough_hosts | join(", "))" else "" end)
       + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end)
       + (if .navigator == "ask_when_stuck" or .navigator == "ask_when_unsure"
          then "; navigator asks when \(.navigator | ltrimstr("ask_when_")), waits up to \((.help_wait_s // 0) / 60 | floor)m for a human" else "" end),
@@ -406,17 +469,24 @@ _cr_started() {
 
 # --- capture-watch ---------------------------------------------------------------------
 
+# CF-W6: what follows a pending store, after the progress row's reason (attempt and next attempt time).
+CR_OWED_NEXT="the service retries the store for up to 72 hours after the run ends; a session still not stored then is marked failed and support replays it"
+
 # _cr_watch RUN_ID RUN_ARG TIMEOUT [LAUNCH_FILE]: polls the run until it ends or TIMEOUT passes.
 # One line per state change and per finished session; the printed sessions are kept in the state
 # folder, so a re-run prints only new ones.
+# CF-W13: CR_ZERO_ON_END=1 (capture-watch --zero-on-end) makes every ended state exit 0 after its end record; the timeout (12) and
+# needs_human (16) exits and a server error (8) stay.
 _cr_watch() {
   local rid="$1" arg="$2" timeout="$3" launch="${4:-}" start left polls=0 last="" now_state seen sfile lines line ended=false
-  local hfile hid human=false
+  local hfile hid human=false ofile
   sfile="$CITT_STATE/capture-watch/run-$rid"
   # NP-691: the help requests this run's watch has stopped for, so a re-run does not stop for them again.
   hfile="$sfile.help"
+  ofile="$sfile.owed"
   (umask 077 && mkdir -p "$CITT_STATE/capture-watch")
   [ -f "$sfile" ] || : >"$sfile"
+  [ -f "$ofile" ] || : >"$ofile"
   start="$(now_s)"
   while :; do
     _cr_get_run "$rid"
@@ -434,6 +504,23 @@ _cr_watch() {
       while IFS=$'\t' read -r q line; do
         [ "$CITT_JSON" = 1 ] || printf '%s\n' "$line"
         printf '%s\n' "$q" >>"$sfile"
+      done <<<"$lines"
+    fi
+    # CF-W6: a session uploaded and verified whose store the service retries (status owed) gets one line per seq, kept in
+    # $ofile; its later ingested or failed line still prints.
+    seen="$(jq -R -s -c 'split("\n") | map(select(. != "") | tonumber)' "$ofile")"
+    lines="$(jq -r --argjson seen "$seen" --arg next "$CR_OWED_NEXT" '
+      . as $d | $d.run.planned_sessions as $p
+      | [($d.progress // [])[] | select(.status == "owed" and (.seq as $q | any($seen[]; . == $q) | not))]
+      | sort_by(.seq)[]
+      | "\(.seq)\tSession \(.seq) of \($p // "?"): "
+        + ((.reason // "uploaded and verified, storage pending") | sub("^Session [0-9]+: "; ""))
+        + "; \($next)"' "$RESP" 2>/dev/null)" \
+      || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
+    if [ -n "$lines" ]; then
+      while IFS=$'\t' read -r q line; do
+        [ "$CITT_JSON" = 1 ] || printf '%s\n' "$line"
+        printf '%s\n' "$q" >>"$ofile"
       done <<<"$lines"
     fi
     now_state="$(jq -r '"\(.run.state)|\(.run.status_reason // "")"' "$RESP")"
@@ -514,11 +601,13 @@ _cr_watch() {
       code=8
       ;;
   esac
+  [ "${CR_ZERO_ON_END:-}" != 1 ] || code=0
   return "$code"
 }
 
 cmd_capture_watch() {
   local run="" timeout=540 rid
+  CR_ZERO_ON_END=0
   CITT_CMD="citt capture-watch"
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -527,6 +616,7 @@ cmd_capture_watch() {
         timeout="$2"
         shift
         ;;
+      --zero-on-end) CR_ZERO_ON_END=1 ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_watch

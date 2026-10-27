@@ -230,12 +230,16 @@ EOF
 
 help_captures() {
   cat <<'EOF'
-citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--mine] [--limit N] [--cursor C] [--json]
+citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--mine] [--sort finished] [--limit N] [--cursor C] [--json]
 
 The network capture runs of your projects, newest first: state, app, phone, sessions done of
 planned, flags, the estimated end and who booked the run. States: queued, starting, running,
 stopping, done, done_with_gaps, stopped, failed, imported; active is the first four.
   --mine   only the runs you booked
+  --sort finished   the run that ended last first, then the runs that have not ended (newest id first); adds an Ended column in
+                    your local time, a dash for a run not ended; --cursor takes the value the previous page printed
+                    a run that ends while you page moves to the head and is on no page of that pass; a new listing
+                    from the first page (no --cursor) shows it
 EOF
 }
 
@@ -300,13 +304,16 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--wait [--timeout SECONDS]] [--json]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
 the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --duration   run length, 1m to 7d
-  --state      US exit state code, such as CA (see: citt capture-options)
+  --state      US exit state code, such as CA (see: citt capture-options); the run is captured in it or fails naming it
+  --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it
+  --passthrough  hosts (DNS names or IPv4 addresses, at most 20) the proxy passes through unread: they are not decrypted and their
+                 traffic content is not captured; no wildcard, port, scheme or path; repeatable
   --country    exit country code, such as SG (see: citt capture-options); a US exit needs --state
   --split      session length (default: the options' default, or the longest that fits)
   --phone      phone name or device id; without it the first free phone; a busy phone queues
@@ -318,17 +325,21 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
 A re-run of the same command within 24 hours sends the same idempotency key and returns the
 same run; any other command starts a new run.
 EOF
+  printf '%s\n' "$CITT_TRACKING_NOTE"
 }
 
 help_capture_watch() {
   cat <<'EOF'
-citt capture-watch RUN [--timeout SECONDS] [--json]
+citt capture-watch RUN [--timeout SECONDS] [--zero-on-end] [--json]
 
 Follows a capture run (id or run key) and prints a line per state change and per finished
-session. Exits 0 on done, 13 on done_with_gaps, 14 on stopped, 8 on failed. After --timeout
+session, and one line with the reason for a session whose store the service retries (storage
+pending, up to 72 hours after the run ends). Exits 0 on done, 13 on done_with_gaps, 14 on stopped, 8 on failed. After --timeout
 (default 540) it exits 12 with re-run: citt capture-watch RUN; a re-run prints only sessions
 not printed before. When the run needs a human it prints the reason, the screen, the deadline
 and the Live page link and exits 16; a re-run does not stop again for the same request.
+  --zero-on-end   exit 0 once the run is in any ended state (done, done_with_gaps, stopped, failed, imported) after printing its
+                  end record; 12 after --timeout, 16 on needs_human and 8 on a server error stay
 EOF
 }
 

@@ -47,7 +47,7 @@ cmd_scrutinize() {
   done
   check_project_flags optional
   [ "${#ids[@]}" -gt 0 ] || usage_error "give one or more FINDING_IDs"
-  for id in "${ids[@]}"; do
+  for id in ${ids[@]+"${ids[@]}"}; do
     [[ "$id" =~ ^f_[a-z2-7]{52}$ ]] || usage_error "not a finding id: $id"
   done
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -79,7 +79,7 @@ cmd_scrutinize() {
   else
     local body
     body="$(tmpfile scr_body)"
-    printf '%s\n' "${ids[@]}" | jq -Rn --arg p "$prompt" --argjson pid "$pid" \
+    printf '%s\n' ${ids[@]+"${ids[@]}"} | jq -Rn --arg p "$prompt" --argjson pid "$pid" \
       '{finding_ids: [inputs | select(. != "")]}
        + (if $p == "" then {} else {prompt: $p} end)
        + (if $pid == null then {} else {project_id: $pid} end)' >"$body"
@@ -151,7 +151,7 @@ cmd_scrutinize() {
     jq -c --slurpfile j "$jobs" --slurpfile f "$failed" \
       '{schema: "citt.plugin.scrutinize/1", jobs: $j[0].jobs, findings: [.[]], failed: $f[0]}' "$details"
   elif [ "$done_list" -gt 0 ]; then
-    printf '%s\n' "${ids[@]}" | jq -Rc --slurpfile d "$details" --slurpfile j "$jobs" '
+    printf '%s\n' ${ids[@]+"${ids[@]}"} | jq -Rc --slurpfile d "$details" --slurpfile j "$jobs" '
       [$j[0].jobs[].job_id] as $jids
       | [["FINDING_ID", "VERDICT", "PROPOSED_SEVERITY", "CITATIONS", "RATIONALE"]]
       + [inputs | select(. != "") as $id | $d[0][$id] | select(. != null)

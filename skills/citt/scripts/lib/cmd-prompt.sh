@@ -324,12 +324,20 @@ _prompt_print() {
          "\($u.rejected_findings) finding\(if $u.rejected_findings == 1 then "" else "s" end) failed the citation check and were not stored."
        else empty end),
       (if $u.data != null then "Data:", ($u.data | tojson) else empty end),
-      (if $u.reason == "native_not_decompiled" then
-         "The answer read no native code: the build'"'"'s native binaries are not decompiled."
+      (if $u.reason == "native_not_cited" then
+         "The answer read no native code: Binary Ninja output of \($u.native.binaries_with_output) binar\(if $u.native.binaries_with_output == 1 then "y was" else "ies were" end) available (native run \($u.native.run_id)) and the answer cites none of it."
+       elif $u.reason == "native_not_decompiled" then
+         (if $u.detail.run_id != null and $u.detail.libraries_listed != null then
+            "The answer read no native code: native run \($u.detail.run_id) found none of the build'"'"'s \($u.detail.libraries_listed) librar\(if $u.detail.libraries_listed == 1 then "y" else "ies" end)."
+          else "The answer read no native code: the build'"'"'s native binaries are not decompiled." end)
          + (if $u.next_action then " \($u.next_action | next_line($h))" else "" end)
        elif $u.reason == "native_running" then
          "The answer read no native code: the build'"'"'s native binaries were being decompiled when it was written."
          + (if $u.next_action then " \($u.next_action | next_line($h))" else "" end) + "; ask again once the run ends (citt tasks --running)"
+       else empty end),
+      (if ($u.protection.pairip_vm_classes // 0) > 0 then
+         (if $u.protection.pairip_vm_classes == 1 then "1 class of this build is PairIP-virtualized; its code was not read."
+          else "\($u.protection.pairip_vm_classes) classes of this build are PairIP-virtualized; their code was not read." end)
        else empty end),
       "",
       $label,

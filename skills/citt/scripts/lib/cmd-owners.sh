@@ -30,7 +30,7 @@ cmd_owners() {
   done
   check_project_flags
   if [ "${#ops[@]}" -gt 0 ]; then
-    for op in "${ops[@]}"; do
+    for op in ${ops[@]+"${ops[@]}"}; do
       email="${op#* }"
       case "$email" in
         *@*@* | @* | *@ | *[[:space:]]*) usage_error "not an email address: $email" ;;
@@ -46,7 +46,7 @@ cmd_owners() {
   else
     local body
     body="$(tmpfile owner_body)"
-    for op in "${ops[@]}"; do
+    for op in ${ops[@]+"${ops[@]}"}; do
       email="${op#* }"
       E_EMAIL="$email"
       case "$op" in
