@@ -1,6 +1,6 @@
 ---
 description: Ask a question about an app build file, store link or package id, or run a custom prompt over a project's apps
-argument-hint: (FILE.apk|FILE.ipa|LINK|PACKAGE) "QUESTION" [--wait] | --thread N "QUESTION" | --project NAME --apps all|A,B "QUESTION"
+argument-hint: (FILE.apk|FILE.ipa|LINK|PACKAGE) "QUESTION" [--wait] | --thread N "QUESTION" | --project NAME --apps all|A,B "QUESTION" [--older]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 

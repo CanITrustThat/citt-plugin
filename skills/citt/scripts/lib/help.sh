@@ -158,7 +158,7 @@ citt prompt TARGET "QUESTION" [--platform android|ios] [--schema FILE] [--native
             [--as-typed | --accept-suggested] [--json]
 citt prompt --thread N ["QUESTION"] [--schema FILE] [--native] [--wait] [--timeout SEC]
             [--as-typed | --accept-suggested] [--json]
-citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native]
+citt prompt (--project NAME | --project-id N) --apps all|A[,B...] (TEXT | --file FILE) [--native] [--older]
             [--as-typed | --accept-suggested] [--json]
 
 TARGET is a build file (an existing .apk, .xapk, .apks, .apkm or .ipa), a store link, or a
@@ -173,6 +173,10 @@ findings and data.
   --wait      poll until the turn is answered (default timeout 540 s, then exit 12)
 The project form runs a prompt over a project's decompiled apps; answers become findings with
 source llm_prompt.
+A question reads the captures that are in the database, newest first, and the answer states the
+date range of the sessions it read and how many older sessions it left out. --older (project
+form) first restores the apps' older captures from the archive, which takes longer the first
+time, and then queues the question.
 
 Every question goes to the free check POST /questions/check first, which costs nothing and
 suggests a wording a static reading can answer. A suggested change prints the suggested question
@@ -295,7 +299,8 @@ EOF
 help_capture_start() {
   cat <<'EOF'
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
-                   [--age N] [--tracking allow|refuse] [--wait [--timeout SECONDS]] [--json]
+                   [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
+                   [--wait [--timeout SECONDS]] [--json]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
@@ -307,6 +312,8 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --phone      phone name or device id; without it the first free phone; a busy phone queues
   --age        persona age, 5 to 99 (default: the project's profile)
   --tracking   allow or refuse (default: the project's profile)
+  --navigator  independent (never asks), stuck or unsure: the Visual LLM asks for a human
+  --help-wait  minutes the Visual LLM waits for a human after asking, 0 to 30 (default 10)
   --wait       follow the run as citt capture-watch does, up to --timeout (default 540)
 A re-run of the same command within 24 hours sends the same idempotency key and returns the
 same run; any other command starts a new run.
@@ -320,7 +327,22 @@ citt capture-watch RUN [--timeout SECONDS] [--json]
 Follows a capture run (id or run key) and prints a line per state change and per finished
 session. Exits 0 on done, 13 on done_with_gaps, 14 on stopped, 8 on failed. After --timeout
 (default 540) it exits 12 with re-run: citt capture-watch RUN; a re-run prints only sessions
-not printed before.
+not printed before. When the run needs a human it prints the reason, the screen, the deadline
+and the Live page link and exits 16; a re-run does not stop again for the same request.
+EOF
+}
+
+help_help_requests() {
+  cat <<'EOF'
+citt help-requests [--state LIST] [--limit N] [--json]
+citt help-requests --watch [--timeout SECONDS] [--json]
+
+Lists the help requests of the capture runs you launched, newest first, with their state (open,
+answered, missed, expired), deadline and, for open ones, the Live page link.
+  --state      comma list of open, answered, missed, expired
+  --limit      1 to 200 (default 50)
+  --watch      poll every 15 s; print each new open request once with its link and exit 16;
+               after --timeout (default 540) exit 12 with re-run: citt help-requests --watch
 EOF
 }
 

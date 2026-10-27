@@ -121,6 +121,7 @@ _prompt_target() {
           ;;
         --wait) wait=1 ;;
         --native) native=1 ;;
+        --older) usage_error "--older applies to the project form: citt prompt --project NAME --apps A \"QUESTION\" --older" ;;
         --json) CITT_JSON=1 ;;
         --as-typed | --accept-suggested) take_check_flag "$1" ;;
         --help | -h)
@@ -339,7 +340,7 @@ _prompt_print() {
 # --- the project form ------------------------------------------------------
 
 _prompt_project() {
-  local apps="" file="" text="" have_text=0 native=0 n
+  local apps="" file="" text="" have_text=0 native=0 older=0 n
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
     n=$?
@@ -359,6 +360,7 @@ _prompt_project() {
         shift
         ;;
       --native) native=1 ;;
+      --older) older=1 ;;
       --json) CITT_JSON=1 ;;
       --as-typed | --accept-suggested) take_check_flag "$1" ;;
       --help | -h)
@@ -393,6 +395,7 @@ _prompt_project() {
   CHECK_RERUN="$PROMPT_RERUN"
   check_gate each_app "$text" "$count"
   text="$CHECK_PROMPT"
+  [ "$older" = 0 ] || _prompt_older "$apps"
   local body
   body="$(tmpfile prompt_body)"
   jq -nc --arg apps "$apps" --arg p "$text" --argjson n "$native" --argjson cid "$(check_id_json)" \
@@ -413,4 +416,30 @@ _prompt_project() {
       | (if $w > 0 then "\($w) app\(if $w == 1 then " waits" else "s wait" end) for native code first: each question is answered once the app'"'"'s native binaries are decompiled (follow: citt tasks\(if $ref == "" then "" else " " + $ref end) --kind native_code)." else empty end),
       "Answers appear as findings with source llm_prompt: citt status \($ref) --wait, then citt findings \($ref) --source llm_prompt"' "$RESP" \
     || die 1 "unparseable prompt response"
+}
+
+# _prompt_older APPS: queues the restore of the evicted captures of the apps (POST /project-apps/ID/capture-restore) and waits
+# until their rows are back, so the question reads them. Exit 12 after 1800 s, 8 when a restore stopped after 5 attempts.
+_prompt_older() {
+  local apps="$1" ids id start total done_n
+  call GET "$CITT_V1/projects/$PROJECT_ID/apps"
+  ids="$(jq -r --arg a "$apps" '($a | split(",") | map(select(. != ""))) as $w
+    | .apps[] | select($a == "all" or (.package_id as $p | $w | index($p) != null)) | .project_app_id' "$RESP")"
+  start="$(now_s)"
+  for id in $ids; do
+    call POST "$CITT_V1/project-apps/$id/capture-restore"
+    while [ "$(body_field '.state')" = restoring ]; do
+      total="$(body_field '.sessions_total')"
+      done_n="$(body_field '.sessions_done')"
+      if [ "$(body_field '.sessions_failed')" -gt 0 ] 2>/dev/null; then
+        die 8 "older captures of project app $id stopped restoring: $(body_field '.error'); run the same command again to retry"
+      fi
+      [ "$CITT_JSON" = 1 ] || printf 'Restoring older captures of project app %s: %s of %s sessions\n' "$id" "${done_n:-0}" "${total:-?}"
+      if [ $(($(now_s) - start)) -ge 1800 ]; then
+        die 12 "older captures of project app $id are still restoring after 1800 s; run the same command again"
+      fi
+      poll_sleep 5
+      call GET "$CITT_V1/project-apps/$id/capture-restore"
+    done
+  done
 }

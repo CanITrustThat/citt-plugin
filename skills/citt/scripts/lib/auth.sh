@@ -88,7 +88,7 @@ _trusted_link() {
 _auth_start() {
   local body interval expires deadline link
   body="$(tmpfile dc_body)"
-  jq -nc --arg c "citt-plugin $(plugin_version)" '{client: $c}' >"$body"
+  jq -nc --arg c "citt-plugin $(plugin_version) ($(plugin_host))" '{client: $c}' >"$body"
   HTTP_AUTH=0
   HTTP_RETRY=no
   http POST /api/device/code "$body"

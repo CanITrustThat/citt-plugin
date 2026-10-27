@@ -229,6 +229,7 @@ _cr_nonce() { od -An -N16 -tx1 /dev/urandom | tr -d ' \n'; }
 
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
+  local nav="" help_wait="" nav_mode="" wait_s=""
   CITT_CMD="citt capture-start"
   CR_OPTS=""
   while [ $# -gt 0 ]; do
@@ -239,9 +240,11 @@ cmd_capture_start() {
       continue
     fi
     case "$1" in
-      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout)
+      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait)
         need_value "$1" $#
         case "$1" in
+          --navigator) nav="$2" ;;
+          --help-wait) help_wait="$2" ;;
           --duration) dur="$2" ;;
           --country) country="$2" ;;
           --split) split="$2" ;;
@@ -291,6 +294,19 @@ cmd_capture_start() {
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
+  # NP-691: the navigator mode (NP-677 `navigator`) and the wait for a human in whole minutes (`help_wait_s`).
+  case "$nav" in
+    '') ;;
+    independent) nav_mode=independent ;;
+    stuck) nav_mode=ask_when_stuck ;;
+    unsure) nav_mode=ask_when_unsure ;;
+    *) usage_error "--navigator takes independent, stuck or unsure, got: $nav" ;;
+  esac
+  if [ -n "$help_wait" ]; then
+    { is_uint "$help_wait" && [ "$help_wait" -le 30 ]; } || usage_error "--help-wait takes whole minutes, 0 to 30, got: $help_wait"
+    case "$nav_mode" in ask_when_stuck | ask_when_unsure) ;; *) usage_error "--help-wait applies to --navigator stuck or unsure" ;; esac
+    wait_s=$((10#$help_wait * 60))
+  fi
   need_auth
   _cr_app "$pkg"
 
@@ -298,7 +314,9 @@ cmd_capture_start() {
   # interrupted one, so the API returns the run that call may have created.
   local dir h pend nonce key now
   dir="$CITT_STATE/capture-start"
-  h="$(_cs_str_sha "v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking")"
+  local hin="v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking"
+  [ -z "$nav_mode" ] || hin="$hin|nav=$nav_mode|wait=$wait_s"
+  h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
   now="$(now_s)"
   nonce=""
@@ -329,10 +347,13 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" \
     '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
-     + (if $tr == "" then {} else {tracking: $tr} end)' >"$body"
+     + (if $tr == "" then {} else {tracking: $tr} end)
+     + (if $nav == "" then {} else {navigator: $nav} end)
+     + (if $ws == "" then {} else {help_wait_s: ($ws | tonumber)} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
   # With --wait the key is kept until the watch returns, so a re-run after a network or server
@@ -376,7 +397,9 @@ _cr_started() {
       + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
       + (if .status_reason then ": \(.status_reason)" else "" end),
     (if .exit_state then "Exit state \(.exit_state)" else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
-      + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end),
+      + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end)
+      + (if .navigator == "ask_when_stuck" or .navigator == "ask_when_unsure"
+         then "; navigator asks when \(.navigator | ltrimstr("ask_when_")), waits up to \((.help_wait_s // 0) / 60 | floor)m for a human" else "" end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
 }
@@ -388,7 +411,10 @@ _cr_started() {
 # folder, so a re-run prints only new ones.
 _cr_watch() {
   local rid="$1" arg="$2" timeout="$3" launch="${4:-}" start left polls=0 last="" now_state seen sfile lines line ended=false
+  local hfile hid human=false
   sfile="$CITT_STATE/capture-watch/run-$rid"
+  # NP-691: the help requests this run's watch has stopped for, so a re-run does not stop for them again.
+  hfile="$sfile.help"
   (umask 077 && mkdir -p "$CITT_STATE/capture-watch")
   [ -f "$sfile" ] || : >"$sfile"
   start="$(now_s)"
@@ -421,6 +447,14 @@ _cr_watch() {
           + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)' "$RESP"
     fi
     last="$now_state"
+    if [ "${now_state%%|*}" = needs_human ]; then
+      hid="$(jq -r '.help.open.id // empty' "$RESP")"
+      if [ -n "$hid" ] && ! grep -qx "$hid" "$hfile" 2>/dev/null; then
+        (umask 077 && printf '%s\n' "$hid" >>"$hfile")
+        human=true
+        break
+      fi
+    fi
     case "$CR_TERMINAL" in *" ${now_state%%|*} "*)
       ended=true
       break
@@ -439,14 +473,30 @@ _cr_watch() {
   planned="$(jq -r '.run.planned_sessions // "?"' "$RESP")"
   failed="$(jq -r '.run.failed_sessions // 0' "$RESP")"
   if [ "$CITT_JSON" = 1 ]; then
-    jq -c --argjson polls "$polls" --argjson ended "$ended" --slurpfile l "${launch:-/dev/null}" \
-      '{schema: "citt.plugin.capture-watch/1", polls: $polls, ended: $ended, run: .} + (if ($l | length) > 0 then {started: $l[0]} else {} end)' "$RESP"
+    jq -c --argjson polls "$polls" --argjson ended "$ended" --argjson human "$human" --slurpfile l "${launch:-/dev/null}" \
+      '{schema: "citt.plugin.capture-watch/1", polls: $polls, ended: $ended, needs_human: $human, run: .}
+       + (if .help then {help: .help} else {} end) + (if ($l | length) > 0 then {started: $l[0]} else {} end)' "$RESP"
+  fi
+  if [ "$human" = true ]; then
+    if [ "$CITT_JSON" != 1 ]; then
+      local path link="no live link"
+      path="$(jq -r '.help.open.live_path // empty' "$RESP")"
+      [ -z "$path" ] || link="$(app_url "$path")"
+      jq -r --argjson L "$(local_times "$RESP")" --arg link "$link" "$JQ_LT"' .run as $r | .help.open as $h
+        | "Run \($r.experiment_id) (\($r.run_key)): needs_human: the Visual LLM asks for a human (help request \($h.id), session \($h.seq))",
+          "Reason: \($h.trigger_sentence)",
+          (if $h.screen_line then "Screen: \($h.screen_line)" else empty end),
+          "Waits for you until \($h.deadline_at | lt); then the Visual LLM continues on its own.",
+          "Live page: \($link)"' "$RESP"
+    fi
+    err "$CITT_CMD: run $rid needs a human; give the Live page link to the user, then re-run: citt capture-watch $(shq "$arg")"
+    return 16
   fi
   if [ "$ended" != true ]; then
     err "$CITT_CMD: run $rid is still $st after $timeout s; re-run: citt capture-watch $(shq "$arg")"
     return 12
   fi
-  rm -f "$sfile"
+  rm -f "$sfile" "$hfile"
   if [ "$CITT_JSON" != 1 ] && [ "$(jq '([(.progress // [])[] | select(.status == "ingested")] | length) + ((.sessions // []) | length)' "$RESP")" -gt 0 ]; then
     printf 'Next: citt capture-sync --run %s\n' "$key"
   fi

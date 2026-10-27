@@ -49,9 +49,25 @@ plugin_version() {
   fi
 }
 
+# plugin_host: the agent running the plugin, from the variables it sets for the commands it runs
+# (TASK-583): claude-code when CLAUDECODE is set (Claude Code's Bash tool), codex when a variable
+# Codex sets is (CODEX_THREAD_ID and CODEX_SESSION_ID for every command, CODEX_SANDBOX in its
+# sandbox, CODEX_MANAGED_BY_* from its npm launcher), else unknown. CODEX_HOME is a user setting a
+# shell profile may export, so it names no host.
+plugin_host() {
+  if [ -n "${CLAUDECODE:-}" ]; then
+    printf 'claude-code'
+  elif [ -n "${CODEX_THREAD_ID:-}${CODEX_SESSION_ID:-}${CODEX_SANDBOX:-}${CODEX_MANAGED_BY_NPM:-}${CODEX_MANAGED_BY_BUN:-}${CODEX_MANAGED_BY_PNPM:-}" ]; then
+    printf 'codex'
+  else
+    printf 'unknown'
+  fi
+}
+
 # The X-CITT-Client value on every request: the service records it on the task a submission
-# creates and reads "citt-plugin ..." as the plugin (DESIGN-native-and-tasks B2).
-CITT_CLIENT="citt-plugin $(plugin_version)"
+# creates and reads "citt-plugin ..." as the plugin (DESIGN-native-and-tasks B2), and the host in
+# parentheses as the client of the account's active minutes (TASK-583).
+CITT_CLIENT="citt-plugin $(plugin_version) ($(plugin_host))"
 
 # Removes the temp directories of earlier runs that ended without their EXIT trap (SIGKILL):
 # those whose recorded pid is gone, and pid-less ones older than an hour.

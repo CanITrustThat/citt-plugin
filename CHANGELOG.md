@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.7.1
+
+- Every request names the agent running the plugin: `X-CITT-Client: citt-plugin <version> (claude-code)` under Claude Code, `(codex)` under Codex, `(unknown)` otherwise; the sign-in link page shows the same label. The CITT team sees which agent an account works from (TASK-583).
+- `citt capture-start --navigator independent|stuck|unsure [--help-wait MINUTES]` sets how the Visual LLM that plays the app handles a screen it cannot pass: `stuck` asks a human when it is stuck, `unsure` also when it is not sure; `--help-wait` (0 to 30 minutes, default 10) is how long it waits for the human. `citt capture-watch` stops with exit 16 on a run that asks for a human and prints the reason, the screen, the deadline and the Live page link; `citt help-requests` lists the help requests of the account's capture runs, and `--watch` exits 16 on each new one (NP-691).
+- `citt prompt --project NAME --apps ... --older` first restores the older captures of the apps from the archive, prints the sessions restored of the total, and then queues the question; exit 12 after 1800 s, exit 8 when a restore stopped after 5 attempts (TASK-537).
+
 ## 2.7.0
 
 - `citt capture-sync --verify` checks only the sessions of the runs given with `--run`, and leaves `high_water`, `runs_high_water` and the stored filters in `state.json` as they were, also after a verify that stops early (TASK-544).
