@@ -279,7 +279,7 @@ $host
 
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
-  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]"
+  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid=""
   CR_PT="" CR_PT_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
@@ -310,6 +310,7 @@ cmd_capture_start() {
         ;;
       --wait) wait=1 ;;
       --state-fallback) fallback=any_state ;;
+      --reset-gaid) reset_gaid=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -374,6 +375,7 @@ cmd_capture_start() {
   local hin="v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking"
   [ -z "$nav_mode" ] || hin="$hin|nav=$nav_mode|wait=$wait_s"
   [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
+  [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
@@ -406,7 +408,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" \
     '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
@@ -414,7 +416,8 @@ cmd_capture_start() {
      + (if $nav == "" then {} else {navigator: $nav} end)
      + (if $ws == "" then {} else {help_wait_s: ($ws | tonumber)} end)
      + (if $fb == "" then {} else {exit_fallback: $fb} end)
-     + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)' >"$body"
+     + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)
+     + (if $rg == "" then {} else {reset_gaid: true} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
   # With --wait the key is kept until the watch returns, so a re-run after a network or server

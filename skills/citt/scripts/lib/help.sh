@@ -304,7 +304,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--wait [--timeout SECONDS]] [--json]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
@@ -314,6 +314,7 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it
   --passthrough  hosts (DNS names or IPv4 addresses, at most 20) the proxy passes through unread: they are not decrypted and their
                  traffic content is not captured; no wildcard, port, scheme or path; repeatable
+  --reset-gaid gives the phone a new advertising ID once, before the first session; the run page and run.json show the ID before and after
   --country    exit country code, such as SG (see: citt capture-options); a US exit needs --state
   --split      session length (default: the options' default, or the longest that fits)
   --phone      phone name or device id; without it the first free phone; a busy phone queues

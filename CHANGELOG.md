@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.9.0
+
+- `citt capture-start --reset-gaid` gives the phone a new advertising ID once, before the first session: the request body contains `reset_gaid: true`, and `run.json` `run.ad_id` states `reset`, `before` and `after` (CF-W12).
+
 ## 2.8.0
 
 - `citt capture-start --state XX` captures the run through a NordVPN server in the booked state, or the run fails naming the state. `--state-fallback` allows another state when the booked one connects nothing: the request body contains `exit_fallback: "any_state"` and the start line is `Exit state CA (another state is allowed when CA connects nothing)`. `--state-fallback` with `--country` exits 2. `citt captures` adds `; captured in NE (booked WA: <reason>)` and the states tried to the state column of a run captured in another state than the one booked (CF-W3).
@@ -7,7 +11,7 @@
 - `citt captures --sort finished` lists the run that ended last first, then the runs that have not ended, and adds an `Ended` column in local time. Its `--cursor` has the form `<finished_at>,<id>` or `null,<id>`; a cursor of the other sort is refused. A run that ends while you page moves to the head of the list and is on no page of that pass; a new listing from the first page shows it (CF-W13).
 - `citt capture-watch --zero-on-end` exits 0 on every ended state (`done`, `done_with_gaps`, `stopped`, `failed`, `imported`) after the same end record and stderr line; exit 12 after `--timeout`, exit 16 on `needs_human` and exit 8 on a server error stay (CF-W13).
 - `citt capture-watch` prints one line per session whose store the service retries (progress status `owed`), with the reason, for example `Session 2 of 3: uploaded and verified, storage pending (attempt 2, next attempt at 14:05 CDT); the service retries the store for up to 72 hours after the run ends; a session still not stored then is marked failed and support replays it`. The session's `ingested` or `failed` line follows when the store ends (CF-W6).
-- `citt capture-options`, `citt capture-start --help`, the reference and the skill state what `--tracking` changes: `--tracking` is the answer the bot gives to consent and tracking prompts inside the app; `refuse` taps reject or turns every toggle off, and a prompt with no refusal option is accepted and recorded as `consent_no_refuse_option`. CITT changes no ad setting on the phone (CF-W12).
+- `citt capture-options`, `citt capture-start --help`, the reference and the skill state what `--tracking` changes: `--tracking` is the answer the bot gives to consent and tracking prompts inside the app; `refuse` taps reject or turns every toggle off, and a prompt with no refusal option is accepted and recorded as `consent_no_refuse_option`. Without `--reset-gaid`, CITT changes no ad setting on the phone (CF-W12).
 - `citt prompt` states the limits of native code in an answer: `The answer read no native code: Binary Ninja output of N binaries were available (native run R) and the answer cites none of it.`, and for a native run that found no library `The answer read no native code: native run R found none of the build's N libraries.` (CF-W2). An answer about a build with PairIP code virtualization adds `N classes of this build are PairIP-virtualized; their code was not read.` (`1 class ... is ...` for one) (CF-W14).
 - `citt capture-sync` files `connections.jsonl` and `dns.jsonl` of a layout 1 session under `network/`, with the other network captures (CF-W9, CF-W10).
 - Empty option lists are expanded in the guarded form `${a[@]+"${a[@]}"}`, so a command whose repeatable option is not given no longer stops with `unbound variable` under bash 3.2 (the macOS system bash); the lint test rejects the unguarded form (CF-W15).
