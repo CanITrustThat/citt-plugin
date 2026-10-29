@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.10.0
+
+- `citt capture-start --goal TEXT`, `--bring-me-in TEXT` (repeatable) and `--conclusion TEXT` give the run its session prompts; `--prompts-file FILE` gives the three as JSON (`{"goal": text or null, "bring_me_in": [text], "conclusion": text or null}`) in place of the flags, and both together exit 2. Limits: 4,000 characters for the goal and the conclusion, 20 bullets of at most 300 characters. Any prompt makes the run an orchestrated session: its navigator asks when stuck unless `--navigator` is given, and a goal without `--duration` is one 30-minute session. In this release the service accepts prompts from staff accounts only; another account exits 3 with `Orchestrated sessions are limited to staff in this release` (NP-800).
+- `citt capture-watch` and `citt help-requests --watch` print a bring-me-in request (opened by the session orchestrator when one of the researcher's bullets matches the screen) with its reason, the bullet, the Live page link and the line `Answer by text: citt help-answer ID "<your instruction>"` (NP-803).
+- `citt help-answer REQUEST "TEXT"` sends a typed instruction of 1 to 1000 characters to an open bring-me-in request; the session sends `Researcher instruction: TEXT` to its orchestrator and the request then reads `answered`. Exit 5 when the request has closed, already has an answer, or was opened on a fixed trigger (answered by take-over only, with the Live page link); exit 4 for a request outside the account; exit 2 for a missing id or a bad text (NP-803).
+- `citt help-answer REQUEST --type "TEXT"` sends text for the phone to type into the input field on screen (an email address, a name, a one-time code): the loop types it, the orchestrator receives only the field name and the length, the service clears the text once the phone has it, and the plugin prints the length, never the text. When the phone finds no input field, the request stays open and `citt help-requests` shows the reason (NP-832).
+
 ## 2.9.0
 
 - `citt capture-start --reset-gaid` gives the phone a new advertising ID once, before the first session: the request body contains `reset_gaid: true`, and `run.json` `run.ad_id` states `reset`, `before` and `after` (CF-W12).

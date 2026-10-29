@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop help-requests native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -39,6 +39,7 @@ Commands:
   capture-watch    follow a capture run to its end (--timeout, then re-run)
   capture-stop     stop a capture run
   help-requests    help requests of your capture runs (--watch to be told of new ones)
+  help-answer      answer a bring-me-in request by text (the session orchestrator acts on it)
   native           decompile an app's native binaries with Binary Ninja into its sources (--wait)
   tasks            submissions (scans, questions, captures, exports, native code) with status
   task             one task: status, parts, timeline and result link (--watch)
@@ -142,7 +143,7 @@ main() {
       # shellcheck source=lib/cmd-capture-run.sh
       . "$CITT_LIB/cmd-capture-run.sh"
       ;;
-    help-requests)
+    help-requests | help-answer)
       # shellcheck source=lib/cmd-help-requests.sh
       . "$CITT_LIB/cmd-help-requests.sh"
       ;;
@@ -167,6 +168,7 @@ main() {
     capture-watch) cmd_capture_watch "$@" | clean ;;
     capture-stop) cmd_capture_stop "$@" | clean ;;
     help-requests) cmd_help_requests "$@" | clean ;;
+    help-answer) cmd_help_answer "$@" | clean ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }

@@ -280,6 +280,7 @@ $host
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid=""
+  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}"
   CR_PT="" CR_PT_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
@@ -291,9 +292,14 @@ cmd_capture_start() {
       continue
     fi
     case "$1" in
-      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough)
+      --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
+        | --goal | --bring-me-in | --conclusion | --prompts-file)
         need_value "$1" $#
         case "$1" in
+          --goal) goal="$2" ;;
+          --bring-me-in) bmi_json="$(jq -c --arg b "$2" '. + [$b]' <<<"$bmi_json")" ;;
+          --conclusion) conclusion="$2" ;;
+          --prompts-file) prompts_file="$2" ;;
           --passthrough) _cr_passthrough "$2" ;;
           --navigator) nav="$2" ;;
           --help-wait) help_wait="$2" ;;
@@ -327,6 +333,29 @@ cmd_capture_start() {
   [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
   pkg="$(_cr_package "$app")" || exit $?
   _cr_project_fix
+  # NP-800: the session prompts of an orchestrated run, from the flags or from --prompts-file (JSON {goal, bring_me_in,
+  # conclusion}); blank values and bullets are left out of the request body
+  if [ -n "$prompts_file" ]; then
+    { [ -z "$goal" ] && [ -z "$conclusion" ] && [ "$bmi_json" = "[]" ]; } \
+      || usage_error "--prompts-file replaces --goal, --bring-me-in and --conclusion; give one or the other"
+    { [ -f "$prompts_file" ] && [ -r "$prompts_file" ]; } || usage_error "--prompts-file: cannot read $prompts_file"
+    jq -e 'type == "object"
+        and ((.goal // null) | type | . == "string" or . == "null")
+        and ((.conclusion // null) | type | . == "string" or . == "null")
+        and ((.bring_me_in // []) | type == "array" and all(.[]; type == "string"))' "$prompts_file" >/dev/null 2>&1 \
+      || usage_error "--prompts-file takes a JSON object {\"goal\": text or null, \"bring_me_in\": [text], \"conclusion\": text or null}"
+    prompts_json="$(jq -c '{goal: (.goal // null), bring_me_in: (.bring_me_in // []), conclusion: (.conclusion // null)}' "$prompts_file")"
+  else
+    prompts_json="$(jq -nc --arg g "$goal" --arg c "$conclusion" --argjson b "$bmi_json" '{goal: $g, bring_me_in: $b, conclusion: $c}')"
+  fi
+  prompts_json="$(jq -c 'def blank: . == null or (. | test("^\\s*$"));
+      (if (.goal | blank) then {} else {goal} end)
+      + ([.bring_me_in[] | select(blank | not)] as $b | if ($b | length) == 0 then {} else {bring_me_in: $b} end)
+      + (if (.conclusion | blank) then {} else {conclusion} end)' <<<"$prompts_json")"
+  if [ -z "$dur" ] && [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ]; then
+    dur=30m  # NP-800: a goal without --duration is one session of 30 minutes, as the API's default
+    [ -n "$split" ] || split=30m
+  fi
   [ -n "$dur" ] || usage_error "give --duration, such as 1h, 90m or 2d"
   dur_s="$(_cr_secs --duration "$dur")" || exit $?
   [ -z "$split" ] || split_s="$(_cr_secs --split "$split")" || exit $?
@@ -377,6 +406,7 @@ cmd_capture_start() {
   [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
   [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
+  [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
   now="$(now_s)"
@@ -408,7 +438,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --argjson pr "$prompts_json" \
     '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
@@ -417,7 +447,8 @@ cmd_capture_start() {
      + (if $ws == "" then {} else {help_wait_s: ($ws | tonumber)} end)
      + (if $fb == "" then {} else {exit_fallback: $fb} end)
      + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)
-     + (if $rg == "" then {} else {reset_gaid: true} end)' >"$body"
+     + (if $rg == "" then {} else {reset_gaid: true} end)
+     + $pr' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
   # With --wait the key is kept until the watch returns, so a re-run after a network or server
@@ -465,7 +496,11 @@ _cr_started() {
          then "; passed through unread, not decrypted and not captured: \(.passthrough_hosts | join(", "))" else "" end)
       + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end)
       + (if .navigator == "ask_when_stuck" or .navigator == "ask_when_unsure"
-         then "; navigator asks when \(.navigator | ltrimstr("ask_when_")), waits up to \((.help_wait_s // 0) / 60 | floor)m for a human" else "" end),
+         then "; navigator asks when \(.navigator | ltrimstr("ask_when_")), waits up to \((.help_wait_s // 0) / 60 | floor)m for a human" else "" end)
+      + (if .orchestrated == true
+         then "; orchestrated: yes, " + n((.prompts.bring_me_in // []) | length; "bring-me-in bullet"; "bring-me-in bullets")
+           + (if .prompts.goal then ", goal set" else ", no goal" end)
+           + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
 }
@@ -573,11 +608,14 @@ _cr_watch() {
       path="$(jq -r '.help.open.live_path // empty' "$RESP")"
       [ -z "$path" ] || link="$(app_url "$path")"
       jq -r --argjson L "$(local_times "$RESP")" --arg link "$link" "$JQ_LT"' .run as $r | .help.open as $h
-        | "Run \($r.experiment_id) (\($r.run_key)): needs_human: the Visual LLM asks for a human (help request \($h.id), session \($h.seq))",
+        | (if $h.trigger == "bring_me_in"
+           then "Run \($r.experiment_id) (\($r.run_key)): needs_human: the session brings you in (help request \($h.id), session \($h.seq))"
+           else "Run \($r.experiment_id) (\($r.run_key)): needs_human: the Visual LLM asks for a human (help request \($h.id), session \($h.seq))" end),
           "Reason: \($h.trigger_sentence)",
           (if $h.screen_line then "Screen: \($h.screen_line)" else empty end),
           "Waits for you until \($h.deadline_at | lt); then the Visual LLM continues on its own.",
-          "Live page: \($link)"' "$RESP"
+          "Live page: \($link)",
+          (if $h.answerable == true then "Answer by text: citt help-answer \($h.id) \"<your instruction>\"" else empty end)' "$RESP"
     fi
     err "$CITT_CMD: run $rid needs a human; give the Live page link to the user, then re-run: citt capture-watch $(shq "$arg")"
     return 16

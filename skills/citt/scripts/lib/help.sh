@@ -305,6 +305,7 @@ help_capture_start() {
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--wait [--timeout SECONDS]] [--json]
+                   [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
@@ -323,6 +324,15 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --navigator  independent (never asks), stuck or unsure: the Visual LLM asks for a human
   --help-wait  minutes the Visual LLM waits for a human after asking, 0 to 30 (default 10)
   --wait       follow the run as citt capture-watch does, up to --timeout (default 540)
+  --goal TEXT  orchestrated session: what the session is to reach, at most 4,000 characters; without --duration the run is one
+               30-minute session
+  --bring-me-in TEXT  orchestrated session: a situation in which the navigator stops and asks you, at most 300 characters;
+               repeatable, at most 20
+  --conclusion TEXT  orchestrated session: what the session conclusion is to answer, at most 4,000 characters
+  --prompts-file FILE  the three prompts as JSON {"goal": text or null, "bring_me_in": [text], "conclusion": text or null},
+               in place of --goal, --bring-me-in and --conclusion
+  Any prompt makes the run an orchestrated session (staff accounts only in this release); its navigator asks when stuck
+  unless --navigator is given, and the start line says "orchestrated: yes" with the number of bring-me-in bullets.
 A re-run of the same command within 24 hours sends the same idempotency key and returns the
 same run; any other command starts a new run.
 EOF
@@ -355,6 +365,22 @@ answered, missed, expired), deadline and, for open ones, the Live page link.
   --limit      1 to 200 (default 50)
   --watch      poll every 15 s; print each new open request once with its link and exit 16;
                after --timeout (default 540) exit 12 with re-run: citt help-requests --watch
+EOF
+}
+
+help_help_answer() {
+  cat <<'EOF'
+citt help-answer REQUEST "TEXT" [--json]
+citt help-answer REQUEST --type "TEXT" [--json]
+
+Sends a typed answer to an open bring-me-in help request (REQUEST is the Id from citt help-requests
+or capture-watch): the session's orchestrator receives "Researcher instruction: TEXT" and acts on
+it, for example "use the monthly plan", "skip this step" or "continue". 1 to 1000 characters.
+With --type the phone types TEXT into the input field on screen (an email address, a name, a
+code); no model receives it and the output prints only its length.
+A request the Visual LLM opened on a fixed trigger is answered by take-over on the Live page.
+Exit 5 when the request is closed, answered already or takes no typed answer; 4 when it is not
+among your requests.
 EOF
 }
 
