@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.11.0
+
+- `citt capture-start --proxy-file PATH|-` makes the run exit through the customer's own proxies in place of a NordVPN state or country: up to 100 entries, one per line, as `http://user:pass@host:port`, `socks5://user:pass@host:port` or `host:port:user:pass` (http), with `#` comments and blank lines skipped and a literal `{session}` in the user replaced with a new id each session. A bad line exits 2 before any request with `--proxy-file line <n>: <what is wrong>`, never printing the line, the user or the password; a host given as a private, loopback, link-local, CGNAT, multicast, documentation, reserved or unspecified IP address is refused; `--proxy-file` with `--state`, `--country` or `--state-fallback` exits 2. The request body contains `proxy_entries` and `proxy_file_name`, assembled from files so no entry is on a command line or in the `bash -x` trace; the idempotency key covers the SHA-256 of the file. The start line is `Exit: your proxies from proxy_ca.txt, 10 entries, first entry first each session`, and a service without the proxy exit refuses with exit 7 `request rejected: the proxy exit is not available on this service yet` (NP-874).
+- `citt capture-watch` prints, before each ended session of a proxy run, one line per skipped entry (`  #2 skipped: 407 proxy auth (line 4)`) and the exit of the session (`  exit: proxy_ca.txt #1, 203.0.113.7, Denver, Colorado, US, AS7922 Comcast Cable Communications, LLC (ipinfo.io), registry US; 1.4 GB through your proxy`) (NP-874).
+- `citt capture-options` prints `Proxy exit: available` or `Proxy exit: not available` (NP-874).
+
 ## 2.10.0
 
 - `citt capture-start --goal TEXT`, `--bring-me-in TEXT` (repeatable) and `--conclusion TEXT` give the run its session prompts; `--prompts-file FILE` gives the three as JSON (`{"goal": text or null, "bring_me_in": [text], "conclusion": text or null}`) in place of the flags, and both together exit 2. Limits: 4,000 characters for the goal and the conclusion, 20 bullets of at most 300 characters. Any prompt makes the run an orchestrated session: its navigator asks when stuck unless `--navigator` is given, and a goal without `--duration` is one 30-minute session. In this release the service accepts prompts from staff accounts only; another account exits 3 with `Orchestrated sessions are limited to staff in this release` (NP-800).

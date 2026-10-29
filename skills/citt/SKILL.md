@@ -298,12 +298,12 @@ The timer reads the token where the plugin stores it, the system keyring or `~/.
 citt capture-options APP --project NAME|ID [--duration D] [--json]
 ```
 
-What a capture run of one app can use (`GET /project-apps/{id}/ad-sessions/options`). APP is an Android package id or Google Play link of an app in the project; `--project` takes the name or the numeric id (`--project-id` also works). The output: whether the package is allowed for capture runs, whether the lab launcher is online, a table of the lab phones (name, device id, status `free`, `busy` or `offline`, active runs), the exit states with their server counts, the exit countries with their server counts on one line per NordVPN region (Europe, The Americas, Asia Pacific, and Africa, the Middle East and India), the session lengths `--split` takes with the default, the duration range, the default profile (persona age, tracking) with the last exit state and the last exit country, and the measured size per captured hour with the number of sessions it was measured over. `--duration` adds the estimated download size of a run that long. An app missing from the project exits 4 with the `citt submit` command that adds it. A country count of `?` is a country no phone worker has reported a server count for yet; `--country` takes it all the same. `--json` prints the API body.
+What a capture run of one app can use (`GET /project-apps/{id}/ad-sessions/options`). APP is an Android package id or Google Play link of an app in the project; `--project` takes the name or the numeric id (`--project-id` also works). The output: whether the package is allowed for capture runs, whether the lab launcher is online, a table of the lab phones (name, device id, status `free`, `busy` or `offline`, active runs), the exit states with their server counts, the exit countries with their server counts on one line per NordVPN region (Europe, The Americas, Asia Pacific, and Africa, the Middle East and India), the session lengths `--split` takes with the default, the duration range, the default profile (persona age, tracking) with the last exit state and the last exit country, and the measured size per captured hour with the number of sessions it was measured over, and `Proxy exit: available` or `Proxy exit: not available` (whether the service takes `citt capture-start --proxy-file`). `--duration` adds the estimated download size of a run that long. An app missing from the project exits 4 with the `citt submit` command that adds it. A country count of `?` is a country no phone worker has reported a server count for yet; `--country` takes it all the same. `--json` prints the API body.
 
 ### citt capture-start
 
 ```
-citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
+citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--wait [--timeout SECONDS]] [--json]
 ```
@@ -320,6 +320,55 @@ Next: citt capture-watch 15 to follow it; citt capture-stop 15 to stop it; citt 
 ```
 
 Every start request has an `idempotency_key` derived from the arguments and a random value saved in `~/.config/citt/capture-start/` until the API answers, or with `--wait` until the watch ends or reaches its timeout. A re-run of the same command within 24 hours after a network failure or a server error (exit 9, or 8 with a `server error` line) sends the same key, and the API returns the run the first call created instead of starting a second one; with `--wait` the re-run follows that run again. Any other command, or the same command after an answer, starts a new run. A key reused with a different request is 409 `idempotency_conflict` (exit 5). `--wait` follows the run as `citt capture-watch` does, with the same `--timeout` and exit codes. `--json` prints the API body, or with `--wait` the `capture-watch` document with the start response under `started`.
+
+#### Your own proxies as the exit
+
+`--proxy-file PATH` (or `-` for stdin) makes the run exit through the customer's own proxies in place of a NordVPN state or country; it replaces `--state`, `--country` and `--state-fallback`, and giving it with any of them exits 2 (`--proxy-file replaces --state, --country and --state-fallback; give one or the other`). The file holds one entry per line, in file order, in one of three forms:
+
+- `http://user:pass@host:port`
+- `socks5://user:pass@host:port`
+- `host:port:user:pass`, taken as `http`; it is split at the first three colons, so the password may contain `:` and the user may not; an IPv6 host needs the URL form (`http://user:pass@[2606:4700::1111]:8080`).
+
+In the URL forms the user and the password are percent-decoded (`%40` for `@`, `%3A` for `:`). Blank lines and lines whose first non-blank character is `#` are skipped; spaces around a line and a trailing carriage return are trimmed. The file holds at most 100 entries. A literal `{session}` in a user is replaced with a new 6-character id each time a session tries the entry, for providers that give a sticky address per user name (Geonode: `...-session-{session}`); a user without it is used as given.
+
+An example file, `proxy_ca.txt`:
+
+```
+# Geonode residential, Canada, from the provider dashboard
+premium-residential.geonode.com:9000:geonode_abc-type-residential-country-ca-session-{session}:s3cret
+premium-residential.geonode.com:9001:geonode_abc-type-residential-country-ca:s3cret
+
+# a SOCKS5 entry in the URL form, with an IPv6 host in brackets
+socks5://user:pass@[2606:4700::1111]:1080
+```
+
+A bad file exits 2 before any request, with one line on stderr, `citt capture-start: --proxy-file line <n>: <what is wrong>`; the line, the user and the password are never printed. The refusals: a line in none of the three forms; a scheme other than `http` or `socks5` (`https` included); a port outside 1 to 65535; an empty host, user or password; a user or password over 256 bytes; a control character in the user or password; a host that is an IP address in a private, loopback, link-local, CGNAT, multicast, documentation, reserved or unspecified range (`the host is a private address; a proxy needs a public address`; a host name is checked by the phone's worker after it resolves it); a file with no entries (`--proxy-file holds no entries`) or more than 100 (`--proxy-file holds 101 entries; at most 100`); a file that cannot be read (`--proxy-file: cannot read ./proxy_ca.txt`). A service that has no proxy exit yet refuses the run with exit 7: `request rejected: the proxy exit is not available on this service yet`.
+
+The entries go in the start request only, read from files: no user, password or host is on a command line, in the `bash -x` trace or in `~/.config/citt/`. The idempotency key covers the SHA-256 of the file content and the file name, so a re-run with the same file after a network failure returns the same run, and an edited file starts a new one. The start line:
+
+```
+Exit: your proxies from proxy_ca.txt, 3 entries, first entry first each session; 3 sessions of 1h over 3h; persona age 30, tracking allow
+```
+
+Each session tries entry 1 first: the phone's worker resolves the host, refuses a non-public address, starts the exit through the entry, checks the exit address and runs the leak test. When either fails, the entry is skipped with its reason and the next one is tried; when none passes, the session fails `exit_unavailable` with the count of each reason (`exit_unavailable: none of the 10 proxy entries passed (407 proxy auth 3, timeout 7)`). The next session starts again from entry 1. No location check is made: every entry is used as given, and an address change during a session is recorded in the session. `citt capture-watch` prints, before each ended session's line, one line per skipped entry and the exit that carried the session:
+
+```
+  #2 skipped: 407 proxy auth (line 4)
+  exit: proxy_ca.txt #1, 203.0.113.7, Denver, Colorado, US, AS7922 Comcast Cable Communications, LLC (ipinfo.io), registry US; 1.4 GB through your proxy
+Session 1 of 3: ingested, 2 flags
+```
+
+The skip reasons: `host did not resolve`, `non-public address (<class>)`, `proxy exit did not start`, `407 proxy auth`, `socks5 auth refused`, `connect refused`, `timeout`, `exit check failed`, `leak test failed`, `not tried: selection time ran out`. A part of the exit line that was not measured is left out; `bytes not measured` replaces the byte count when the session's exit counters were not read.
+
+The customer workflow: generate the proxy lists by region in the provider's dashboard and save each as a file (`proxy_ca.txt`, `proxy_cn.txt`), then start the run with `--proxy-file ./proxy_ca.txt`. The Geonode MCP server for Claude Code has the tools `extract`, `crawl`, `batch` and `statistics` (Scraper API) and no tool that creates or lists proxy credentials (read 2026-10-29), so the list comes from the provider's dashboard. A stale list shows at the first session as skipped entries with their reasons; regenerate the file and start a new run.
+
+What the customer is told:
+
+- Their proxy sees the destination host of every connection the phone makes (CONNECT host or SNI), timing and volume, and the content of plain HTTP; HTTPS content stays encrypted between CITT's proxy and the destination.
+- The exit location in the run record is the one CITT measured (ipinfo.io and the registry), whatever the file name or the provider's label says.
+- Data through their proxy, from CITT's usage report of 2026-10-29: about 0.48 GB per session-hour, 0.59 GB per hour on heavy-ad apps, up to 24 GB per hour on live video apps. The customer pays the provider for this traffic; the run's plan and price are those of any capture run.
+- UDP (QUIC) is blocked and apps fall back to TCP, as on every exit.
+- The entries are kept only for the run, encrypted, and deleted when it ends. Google sign-ins of the phone use CITT's own exit, not the customer's proxies.
 
 ### citt capture-watch
 
@@ -338,6 +387,8 @@ Next: citt capture-sync --run ui-3950-20261014T120000Z-abcd1234
 ```
 
 A session uploaded and verified whose store the service retries (progress status `owed`) gets one line with the progress row's reason, for example `Session 2 of 3: uploaded and verified, storage pending (attempt 2, next attempt at 14:05 CDT); the service retries the store for up to 72 hours after the run ends; a session still not stored then is marked failed and support replays it`. Its `ingested` or `failed` line is printed when the store ends.
+
+A run started with `--proxy-file` gets, before each ended session's line, one line per skipped proxy entry and the exit line of the entry that carried the session (see "Your own proxies as the exit" above); a session no entry carried has its skipped lines and its `failed: exit_unavailable: ...` line.
 
 Exit codes: 0 when the run ends `done` (or is `imported`), 13 on `done_with_gaps`, 14 on `stopped`, 8 on `failed`, each nonzero end with a stderr line. After `--timeout` seconds (default 540) it exits 12 with `re-run: citt capture-watch RUN` on stderr; the wait before the last poll is cut to the time left, so the command ends within the timeout plus one request. The sessions already printed are kept in `~/.config/citt/capture-watch/`, so the re-run prints only new ones. `--zero-on-end` makes every ended state (`done`, `done_with_gaps`, `stopped`, `failed`, `imported`) exit 0 after the same end record and stderr line is printed; exit 12 after `--timeout`, exit 16 on `needs_human` and exit 8 on a server error stay. `--json` prints one document at the end: `schema` `citt.plugin.capture-watch/1`, `polls`, `ended`, `needs_human`, `run`, the last `GET /capture-runs/{id}` body, and `help`, that body's help requests (`open` and `closed`).
 

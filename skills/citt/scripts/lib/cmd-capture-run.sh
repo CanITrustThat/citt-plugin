@@ -161,6 +161,7 @@ cmd_capture_options() {
          (if any(.countries[]; .servers == null) then
             "? is a country no phone worker has reported a server count for yet; --country CC takes any code listed" else empty end)
      else empty end),
+    "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
     "Profile: age \(.default_profile.persona_age // "-"), tracking \(.default_profile.tracking // "-") (--age \(.min_persona_age) to \(.max_persona_age), --tracking allow|refuse)"
@@ -277,11 +278,162 @@ $host
   [ "$CR_PT_N" -le 20 ] || usage_error "--passthrough takes at most 20 hosts; got $CR_PT_N"
 }
 
+# NP-874: the --proxy-file parser, a jq program over the file as one raw string. It prints {"entries": [NP-873 C1 objects]} or
+# {"error": "<message>"}; a message names the line number and what is wrong, never the line, the user or the password. The
+# entries go from the file to a file: no user, password or host is on a command line or in a shell variable.
+# Line forms: http://user:pass@host:port, socks5://user:pass@host:port (user and password percent-decoded; an IPv6 host in
+# brackets), host:port:user:pass (http; split at the first three colons). Blank lines and lines starting with # are skipped.
+# The address classes are NP-873 C2, the table the API (citt-api) and the runner (netproof/e2e/residential.py) also apply.
+CR_PROXY_FORMS="not an entry; give http://user:pass@host:port, socks5://user:pass@host:port or host:port:user:pass"
+CR_PROXY_JQ='
+def trim: sub("^[ \t\r]+"; "") | sub("[ \t\r]+$"; "");
+def hexnum: ascii_downcase | explode | reduce .[] as $c (0; . * 16 + (if $c >= 97 then $c - 87 else $c - 48 end));
+def utf8dec:
+  reduce .[] as $c ({o: [], n: 0, cp: 0, bad: false};
+    if .bad then .
+    elif .n == 0 then
+      if $c < 128 then .o += [$c]
+      elif $c >= 194 and $c < 224 then .n = 1 | .cp = $c - 192
+      elif $c >= 224 and $c < 240 then .n = 2 | .cp = $c - 224
+      elif $c >= 240 and $c < 245 then .n = 3 | .cp = $c - 240
+      else .bad = true end
+    elif $c >= 128 and $c < 192 then .cp = .cp * 64 + $c - 128 | .n -= 1 | (if .n == 0 then .o += [.cp] else . end)
+    else .bad = true end)
+  | if .bad or .n != 0 or any(.o[]; . >= 55296 and . < 57344) then error("pct") else .o | implode end;
+def pctdec:
+  if test("%(?![0-9A-Fa-f]{2})") then error("pct")
+  else [scan("(?:%[0-9A-Fa-f]{2})+|[^%]+")] | map(if startswith("%") then [scan("%([0-9A-Fa-f]{2})") | .[0] | hexnum] | utf8dec else . end) | join("")
+  end;
+def v4nums:
+  if test("^[0-9]{1,3}(\\.[0-9]{1,3}){3}$") then split(".")
+    | if all(.[]; (tonumber <= 255) and (. == "0" or (startswith("0") | not))) then map(tonumber) else null end
+  else null end;
+def v6groups:
+  (if test("\\.") then
+     ((capture("^(?<h>.*:)(?<v>[^:]+)$") // null) as $m
+      | if $m == null then null
+        else ($m.v | v4nums) as $q | if $q == null then null else {h: $m.h, t: [$q[0] * 256 + $q[1], $q[2] * 256 + $q[3]]} end end)
+   else {h: ., t: []} end) as $p
+  | if $p == null or ($p.h | test("^[0-9A-Fa-f:]+$") | not) then null
+    else ($p.h | if ($p.t | length) > 0 and (endswith("::") | not) then .[:-1] else . end) as $h
+      | [$h | splits("::")] as $halves
+      | if ($halves | length) > 2 then null
+        else ($halves | map(if . == "" then [] else split(":") end)) as $hs
+          | if any($hs[][]; test("^[0-9A-Fa-f]{1,4}$") | not) then null
+            else ($hs | map(map(hexnum))) as $g
+              | (($g | map(length) | add) + ($p.t | length)) as $n
+              | if ($halves | length) == 2 then (if $n > 7 then null else $g[0] + [range(8 - $n) | 0] + $g[1] + $p.t end)
+                elif $n != 8 then null
+                else $g[0] + $p.t end
+            end
+        end
+    end;
+def v4class:
+  .[0] as $a | .[1] as $b | .[2] as $c
+  | if $a == 0 then "unspecified"
+    elif $a == 127 then "loopback"
+    elif $a == 10 or ($a == 172 and $b >= 16 and $b <= 31) or ($a == 192 and $b == 168) then "private"
+    elif $a == 100 and $b >= 64 and $b <= 127 then "cgnat"
+    elif $a == 169 and $b == 254 then "link-local"
+    elif $a >= 224 and $a <= 239 then "multicast"
+    elif ($a == 192 and $b == 0 and $c == 2) or ($a == 198 and $b == 51 and $c == 100) or ($a == 203 and $b == 0 and $c == 113) then "documentation"
+    elif ($a == 192 and $b == 0 and $c == 0) or ($a == 198 and ($b == 18 or $b == 19)) or $a >= 240 then "reserved"
+    else null end;
+def v6class:
+  .[0] as $a | .[1] as $b
+  | if all(.[]; . == 0) then "unspecified"
+    elif all(.[0:7][]; . == 0) and .[7] == 1 then "loopback"
+    elif $a >= 64512 and $a <= 65023 then "private"
+    elif $a >= 65152 and $a <= 65215 then "link-local"
+    elif $a >= 65280 then "multicast"
+    elif ($a == 8193 and $b == 3512) or ($a == 16383 and $b < 4096) then "documentation"
+    elif $a < 8192 or $a >= 16384 or ($a == 8193 and $b < 512) or $a == 8194 then "reserved"
+    else null end;
+def badhost: "the host is not a DNS name, an IPv4 address or an IPv6 address";
+def hostcheck($v6):
+  if $v6 then (v6groups as $g | if $g == null then badhost else ($g | v6class) end)
+  elif test("^[0-9]+(\\.[0-9]+){3}$") then (v4nums as $q | if $q == null then badhost else ($q | v4class) end)
+  elif (utf8bytelength <= 253) and test("^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$") then null
+  else badhost end
+  | if . == null or . == badhost then .
+    else "the host is \(if . == "unspecified" then "an" else "a" end) \(.) address; a proxy needs a public address" end;
+def ctl: any(explode[]; . < 32 or (. >= 127 and . < 160));
+def entry($s; $h; $v6; $p; $u; $pw):
+  if $h == "" then {err: "empty host"}
+  elif ($p | test("^[0-9]{1,5}$") | not) or ($p | tonumber) < 1 or ($p | tonumber) > 65535 then {err: "port must be 1 to 65535"}
+  elif ($h | hostcheck($v6)) != null then {err: ($h | hostcheck($v6))}
+  elif $u == "" then {err: "empty user"}
+  elif $pw == "" then {err: "empty password"}
+  elif ($u | ctl) or ($pw | ctl) then {err: "control character in the user or password"}
+  elif ($u | utf8bytelength) > 256 then {err: "user over 256 bytes"}
+  elif ($pw | utf8bytelength) > 256 then {err: "password over 256 bytes"}
+  else {e: {scheme: $s, host: $h, port: ($p | tonumber), username: $u, password: $pw}} end;
+def parse_line:
+  if test("^[A-Za-z][A-Za-z0-9+.-]*://") then
+    capture("^(?<s>[^:]*)://(?<r>.*)$") as $m
+    | ($m.s | ascii_downcase) as $s
+    | if $s != "http" and $s != "socks5" then {err: "scheme must be http or socks5"}
+      else ($m.r | sub("/$"; "")) as $r
+        | (if ($r | test("@")) then ($r | capture("^(?<ui>.*)@(?<hp>[^@]*)$")) else {ui: "", hp: $r} end) as $a
+        | (($a.hp | capture("^\\[(?<h>[^\\]]*)\\]:(?<p>[^:/?#]*)$") | . + {v6: true})
+           // ($a.hp | capture("^(?<h>[^:/?#\\[\\]]*):(?<p>[^:/?#]*)$") | . + {v6: false})
+           // null) as $hp
+        | if $hp == null then {err: $forms}
+          else ($a.ui | if test(":") then capture("^(?<u>[^:]*):(?<pw>.*)$") else {u: ., pw: ""} end) as $ui
+            | ((try {u: ($ui.u | pctdec), pw: ($ui.pw | pctdec)} catch null)) as $d
+            | if $d == null then {err: "bad percent-encoding in the user or password"}
+              else entry($s; $hp.h; $hp.v6; $hp.p; $d.u; $d.pw) end
+          end
+      end
+  elif test("^[^:]*:[^:]*:[^:]*:") then
+    capture("^(?<h>[^:]*):(?<p>[^:]*):(?<u>[^:]*):(?<pw>.*)$") as $m
+    | entry("http"; $m.h; false; $m.p; $m.u; $m.pw)
+  else {err: $forms} end;
+split("\n") | to_entries
+| map({line: (.key + 1), text: (.value | trim)} | select(.text != "" and (.text | startswith("#") | not)))
+| map(.line as $n | ((.text | try parse_line catch {err: $forms}) + {line: $n}))
+| (map(select(has("err"))) | first) as $bad
+| if $bad != null then {error: "--proxy-file line \($bad.line): \($bad.err)"}
+  elif length == 0 then {error: "--proxy-file holds no entries"}
+  elif length > 100 then {error: "--proxy-file holds \(length) entries; at most 100"}
+  else {entries: map(.e + {line})} end'
+
+# _cr_proxy_file PATH|-: reads the proxy file once into a 0600 tmpfile (stdin for -), parses it with xtrace off and sets
+# CR_PX_ENTRIES (a tmpfile holding the C1 array), CR_PX_N (the entry count), CR_PX_NAME (the base name, stdin for -) and CR_PX_SHA
+# (the SHA-256 of the content as read). A bad file exits 2 before any request.
+_cr_proxy_file() {
+  { _cr_x="$-"; set +x; } 2>/dev/null
+  local src res msg
+  src="$(tmpfile proxy-src.txt)"
+  if [ "$1" = - ]; then
+    CR_PX_NAME=stdin
+    cat >"$src" 2>/dev/null || usage_error "--proxy-file: cannot read stdin"
+  else
+    CR_PX_NAME="${1##*/}"
+    { [ -r "$1" ] && [ ! -d "$1" ] && cat -- "$1" >"$src" 2>/dev/null; } || usage_error "--proxy-file: cannot read $1"
+    case "$CR_PX_NAME" in '' | *[[:cntrl:]]*) usage_error "--proxy-file: the file name must be 1 to 255 bytes without control characters" ;; esac
+    [ "$(printf '%s' "$CR_PX_NAME" | LC_ALL=C wc -c | tr -d ' ')" -le 255 ] \
+      || usage_error "--proxy-file: the file name must be 1 to 255 bytes without control characters"
+  fi
+  res="$(tmpfile proxy-parse.json)"
+  jq -R -s -c --arg forms "$CR_PROXY_FORMS" "$CR_PROXY_JQ" "$src" >"$res" 2>/dev/null || die 1 "--proxy-file could not be parsed"
+  msg="$(jq -r '.error // empty' "$res")"
+  [ -z "$msg" ] || usage_error "$msg"
+  CR_PX_ENTRIES="$(tmpfile proxy-entries.json)"
+  jq -c '.entries' "$res" >"$CR_PX_ENTRIES"
+  CR_PX_N="$(jq 'length' "$CR_PX_ENTRIES")"
+  CR_PX_SHA="$(sha256_of "$src")"
+  rm -f "$res"
+  case "$_cr_x" in *x*) set -x ;; esac
+}
+
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
+  local proxy_file=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}"
   CR_PT="" CR_PT_N=0
+  CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
   while [ $# -gt 0 ]; do
@@ -293,9 +445,10 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --proxy-file)
         need_value "$1" $#
         case "$1" in
+          --proxy-file) proxy_file="$2" ;;
           --goal) goal="$2" ;;
           --bring-me-in) bmi_json="$(jq -c --arg b "$2" '. + [$b]' <<<"$bmi_json")" ;;
           --conclusion) conclusion="$2" ;;
@@ -359,13 +512,22 @@ cmd_capture_start() {
   [ -n "$dur" ] || usage_error "give --duration, such as 1h, 90m or 2d"
   dur_s="$(_cr_secs --duration "$dur")" || exit $?
   [ -z "$split" ] || split_s="$(_cr_secs --split "$split")" || exit $?
+  # NP-874: --proxy-file names the customer's proxies as the exit, in place of a NordVPN state or country; the file is read
+  # and checked here, before any request, and its SHA-256 and name take the place of the exit key in the idempotency input.
+  if [ -n "$proxy_file" ]; then
+    { [ -z "$state" ] && [ -z "$country" ] && [ -z "$fallback" ]; } \
+      || usage_error "--proxy-file replaces --state, --country and --state-fallback; give one or the other"
+    _cr_proxy_file "$proxy_file"
+    exit_key="proxy=$CR_PX_SHA|$CR_PX_NAME"
   # NP-503: --country CC exits through a NordVPN server in that country; a US exit (no --country, or --country US) needs
   # --state, and its request body is the one of before NP-503 (exit_state only).
-  if [ -n "$country" ]; then
+  elif [ -n "$country" ]; then
     [[ "$country" =~ ^[A-Za-z]{2}$ ]] || usage_error "--country takes a two-letter country code, such as SG (see: citt capture-options)"
     country="$(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')"
   fi
-  if [ -n "$country" ] && [ "$country" != US ]; then
+  if [ -n "$proxy_file" ]; then
+    : # the exit key is the file's (above)
+  elif [ -n "$country" ] && [ "$country" != US ]; then
     [ -z "$state" ] || usage_error "--state applies to US exits only; leave it out for --country $country"
     exit_key="country:$country"
   else
@@ -435,11 +597,13 @@ cmd_capture_start() {
   fi
   key="plugin-$(_cs_str_sha "$h:$nonce" | cut -c1-32)"
 
+  # NP-874: the proxy entries reach the body from their tmpfile (--slurpfile), never from a command line.
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
     --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --argjson pr "$prompts_json" \
-    '{device_id: $d} + (if $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
+    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
+    '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
      + (if $tr == "" then {} else {tracking: $tr} end)
@@ -448,7 +612,8 @@ cmd_capture_start() {
      + (if $fb == "" then {} else {exit_fallback: $fb} end)
      + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)
      + (if $rg == "" then {} else {reset_gaid: true} end)
-     + $pr' >"$body"
+     + $pr
+     + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
   # With --wait the key is kept until the watch returns, so a re-run after a network or server
@@ -457,6 +622,11 @@ cmd_capture_start() {
     2??) [ "$wait" = 1 ] || rm -f "$pend" ;;
     400 | 402 | 403 | 404 | 409 | 422) rm -f "$pend" ;;
   esac
+  # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
+  if [ "$CODE" = 503 ] && [ "$(body_field '.error')" = proxy_exit_unavailable ]; then
+    rm -f "$pend"
+    fail_out 7 "request rejected: the proxy exit is not available on this service yet"
+  fi
   ok || fail_http
   local launch rid
   launch="$(tmpfile launch.json)"
@@ -491,7 +661,8 @@ _cr_started() {
     "Run \(.experiment_id) (\(.run_key)): \(.status) on \(.device_name // "phone") (device \(.device_id))"
       + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
       + (if .status_reason then ": \(.status_reason)" else "" end),
-    (if .exit_state then "Exit state \(.exit_state)" + (if .exit_fallback == "any_state" then " (another state is allowed when \(.exit_state) connects nothing)" else "" end) else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+    (if .proxy then "Exit: your proxies from \(.proxy.file_name // "your file"), \(n(.proxy.entries // 0; "entry"; "entries")), first entry first each session"
+     elif .exit_state then "Exit state \(.exit_state)" + (if .exit_fallback == "any_state" then " (another state is allowed when \(.exit_state) connects nothing)" else "" end) else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
       + (if (.passthrough_hosts // []) | length > 0
          then "; passed through unread, not decrypted and not captured: \(.passthrough_hosts | join(", "))" else "" end)
       + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end)
@@ -535,7 +706,20 @@ _cr_watch() {
       | [($d.progress // [])[] | select((.status == "ingested" or .status == "failed") and (.seq as $q | any($seen[]; . == $q) | not))]
       | sort_by(.seq)[] | . as $g
       | (([($d.sessions // [])[] | select(.seq == $g.seq)] | first | .flags) // 0) as $f
-      | "\($g.seq)\tSession \($g.seq) of \($p // "?"): "
+      | (if ($g.exit.proxy | type) == "object" then $g.exit as $x | $x.proxy as $px
+          | (($px.skipped // [])[] | "\($g.seq)\t  #\(.entry) skipped: \(.text // .reason)" + (if .line then " (line \(.line))" else "" end)),
+            (if $px.entry == null then empty
+             else ([$x.exit_ip, $x.city, $x.region, $x.country, $x.org] | map(select(. != null and . != ""))) as $ip
+               | ((["\($d.launch.proxy.file_name // "your proxy") #\($px.entry)"]
+                   + (if ($ip | length) > 0 then [($ip | join(", ")) + " (ipinfo.io)"] else [] end)
+                   + (if $x.registry_country then ["registry \($x.registry_country)"] else [] end)) | join(", ")) as $where
+               | "\($g.seq)\t  exit: \($where); "
+                 + (if $px.bytes == null then "bytes not measured"
+                    elif $px.bytes > 0 and $px.bytes < 50000000 then "under 0.1 GB through your proxy"
+                    else ($px.bytes / 100000000 | floor + (if ($px.bytes / 100000000) - floor >= 0.5 then 1 else 0 end)) as $t
+                      | "\($t / 10 | floor).\($t % 10) GB through your proxy" end) end)
+         else empty end),
+        "\($g.seq)\tSession \($g.seq) of \($p // "?"): "
         + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)' "$RESP" 2>/dev/null)" \
       || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
     if [ -n "$lines" ]; then

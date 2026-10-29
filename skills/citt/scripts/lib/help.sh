@@ -294,15 +294,15 @@ citt capture-options APP --project NAME|ID [--duration D] [--json]
 
 What a capture run of APP (an Android package id or Google Play link in the project) can use:
 whether the package is allowed, the lab phones with their device id, status and active runs,
-the exit states and the exit countries (per NordVPN region) with their server counts, the
-session lengths, the duration range, the default profile, whether the lab launcher is online, and the measured size per captured hour.
+the exit states and the exit countries (per NordVPN region) with their server counts, whether
+the service takes --proxy-file (Proxy exit: available), the session lengths, the duration range, the default profile, whether the lab launcher is online, and the measured size per captured hour.
   --duration   also print the estimated download size of a run this long (90m, 3h, 2d)
 EOF
 }
 
 help_capture_start() {
   cat <<'EOF'
-citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC) [--split S] [--phone NAME|ID]
+citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE]
@@ -317,6 +317,10 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                  traffic content is not captured; no wildcard, port, scheme or path; repeatable
   --reset-gaid gives the phone a new advertising ID once, before the first session; the run page and run.json show the ID before and after
   --country    exit country code, such as SG (see: citt capture-options); a US exit needs --state
+  --proxy-file your own proxies as the exit, one per line: http://user:pass@host:port, socks5://user:pass@host:port or
+               host:port:user:pass (http); - reads stdin; # comments and blank lines skipped; at most 100 entries; a literal
+               {session} in the user is replaced with a new id each session. Each session tries the entries first to last and
+               uses the first that passes the exit check and the leak test. Replaces --state, --country and --state-fallback
   --split      session length (default: the options' default, or the longest that fits)
   --phone      phone name or device id; without it the first free phone; a busy phone queues
   --age        persona age, 5 to 99 (default: the project's profile)
@@ -349,6 +353,9 @@ pending, up to 72 hours after the run ends). Exits 0 on done, 13 on done_with_ga
 (default 540) it exits 12 with re-run: citt capture-watch RUN; a re-run prints only sessions
 not printed before. When the run needs a human it prints the reason, the screen, the deadline
 and the Live page link and exits 16; a re-run does not stop again for the same request.
+For a run started with --proxy-file, each ended session is preceded by one line per skipped
+entry (  #2 skipped: 407 proxy auth (line 4)) and the exit line (  exit: proxy_ca.txt #1,
+203.0.113.7, Denver, Colorado, US, AS7922 ... (ipinfo.io), registry US; 1.4 GB through your proxy).
   --zero-on-end   exit 0 once the run is in any ended state (done, done_with_gaps, stopped, failed, imported) after printing its
                   end record; 12 after --timeout, 16 on needs_human and 8 on a server error stay
 EOF
