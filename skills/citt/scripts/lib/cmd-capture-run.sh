@@ -161,6 +161,8 @@ cmd_capture_options() {
          (if any(.countries[]; .servers == null) then
             "? is a country no phone worker has reported a server count for yet; --country CC takes any code listed" else empty end)
      else empty end),
+    (if ((.device_locales // []) | length) > 0 then
+       "Device languages (--language, default the exit'"'"'s language): " + ([.device_locales[].tag] | join(", ")) else empty end),
     "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
@@ -430,7 +432,7 @@ _cr_proxy_file() {
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file=""
-  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid=""
+  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}"
   CR_PT="" CR_PT_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
@@ -445,9 +447,10 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file | --proxy-file)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --proxy-file)
         need_value "$1" $#
         case "$1" in
+          --language) language="$2" ;;
           --proxy-file) proxy_file="$2" ;;
           --goal) goal="$2" ;;
           --bring-me-in) bmi_json="$(jq -c --arg b "$2" '. + [$b]' <<<"$bmi_json")" ;;
@@ -536,6 +539,10 @@ cmd_capture_start() {
     state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
     exit_key="$state"
   fi
+  # NP-878: the device language of every session of the run, independent of the exit; the service checks the tag against its
+  # list (the options' device_locales), the plugin checks the form only
+  [ -z "$language" ] || [[ "$language" =~ ^[a-z]{2,3}(-[A-Z][a-z]{3})?-[A-Z]{2}$ ]] \
+    || usage_error "--language takes a device language tag of the form ll-CC or ll-Ssss-CC, such as zh-Hans-CN or es-US (the options list device_locales: citt capture-options)"
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -567,6 +574,7 @@ cmd_capture_start() {
   [ -z "$nav_mode" ] || hin="$hin|nav=$nav_mode|wait=$wait_s"
   [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
   [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
+  [ -z "$language" ] || hin="$hin|device_locale=$language"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   h="$(_cs_str_sha "$hin")"
@@ -601,7 +609,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --argjson pr "$prompts_json" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --argjson pr "$prompts_json" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -612,6 +620,7 @@ cmd_capture_start() {
      + (if $fb == "" then {} else {exit_fallback: $fb} end)
      + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)
      + (if $rg == "" then {} else {reset_gaid: true} end)
+     + (if $dl == "" then {} else {device_locale: $dl} end)
      + $pr
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
   HTTP_RETRY=yes
@@ -663,6 +672,7 @@ _cr_started() {
       + (if .status_reason then ": \(.status_reason)" else "" end),
     (if .proxy then "Exit: your proxies from \(.proxy.file_name // "your file"), \(n(.proxy.entries // 0; "entry"; "entries")), first entry first each session"
      elif .exit_state then "Exit state \(.exit_state)" + (if .exit_fallback == "any_state" then " (another state is allowed when \(.exit_state) connects nothing)" else "" end) else "Exit country \(.exit_country // "-")" end) + "; \(n(.planned_sessions // 0; "session"; "sessions")) of \(.split_s | short) over \(.duration_s | short)"
+      + (if .device_locale then "; device language \(.device_locale)" else "" end)
       + (if (.passthrough_hosts // []) | length > 0
          then "; passed through unread, not decrypted and not captured: \(.passthrough_hosts | join(", "))" else "" end)
       + (if .persona_age then "; persona age \(.persona_age), tracking \(.tracking // "-")" else "" end)
@@ -705,7 +715,8 @@ _cr_watch() {
       . as $d | $d.run.planned_sessions as $p
       | [($d.progress // [])[] | select((.status == "ingested" or .status == "failed") and (.seq as $q | any($seen[]; . == $q) | not))]
       | sort_by(.seq)[] | . as $g
-      | (([($d.sessions // [])[] | select(.seq == $g.seq)] | first | .flags) // 0) as $f
+      | ([($d.sessions // [])[] | select(.seq == $g.seq)] | first) as $s
+      | (($s | .flags) // 0) as $f
       | (if ($g.exit.proxy | type) == "object" then $g.exit as $x | $x.proxy as $px
           | (($px.skipped // [])[] | "\($g.seq)\t  #\(.entry) skipped: \(.text // .reason)" + (if .line then " (line \(.line))" else "" end)),
             (if $px.entry == null then empty
@@ -720,7 +731,10 @@ _cr_watch() {
                       | "\($t / 10 | floor).\($t % 10) GB through your proxy" end) end)
          else empty end),
         "\($g.seq)\tSession \($g.seq) of \($p // "?"): "
-        + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)' "$RESP" 2>/dev/null)" \
+        + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)
+        + (($s | .persona) // {} | if .locale then "; Phone locale \(.locale)"
+             + (if .locale_source == "run" then " (set by the run)" elif .locale_source == "exit" then " (set by the exit)" else "" end)
+             + (if .time_zone then " · time zone \(.time_zone)" else "" end) else "" end)' "$RESP" 2>/dev/null)" \
       || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -753,7 +767,8 @@ _cr_watch() {
                     else n($r.finished_sessions // 0; "session"; "sessions") end)
           + (if ($r.failed_sessions // 0) > 0 then ", \($r.failed_sessions) failed" else "" end)
           + (if ($r.flags // 0) > 0 then ", " + n($r.flags; "flag"; "flags") else "" end)
-          + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)' "$RESP"
+          + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)
+          + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then

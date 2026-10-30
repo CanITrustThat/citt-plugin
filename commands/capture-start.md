@@ -1,6 +1,6 @@
 ---
 description: Start a network capture run of an Android app on a lab phone
-argument-hint: APP --project NAME|ID --duration 3h --state CA [--phone NAME|ID] [--wait]
+argument-hint: APP --project NAME|ID --duration 3h --state CA [--language TAG] [--phone NAME|ID] [--wait]
 allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/skills/citt/scripts/citt:*), Read
 ---
 

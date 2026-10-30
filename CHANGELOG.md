@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.12.0
+
+- `citt capture-start --language TAG` sets the phone's device language for every session of the run, independent of the exit, for example a Colorado exit with the phone in Mandarin (`--state CO --language zh-Hans-CN`); the time zone stays the exit's. The request body contains `device_locale`; a tag outside the form `ll-CC` or `ll-Ssss-CC` exits 2 with no request, and the service refuses a tag outside the options' `device_locales` with 422. The start line ends `; device language zh-Hans-CN`, `citt captures` and the `citt capture-watch` run line show the language, each `citt capture-watch` session line states `Phone locale zh-Hans-CN (set by the run) · time zone America/Denver` (or `(set by the exit)`), and `citt capture-options` lists the device languages (NP-878).
+
 ## 2.11.0
 
 - `citt capture-start --proxy-file PATH|-` makes the run exit through the customer's own proxies in place of a NordVPN state or country: up to 100 entries, one per line, as `http://user:pass@host:port`, `socks5://user:pass@host:port` or `host:port:user:pass` (http), with `#` comments and blank lines skipped and a literal `{session}` in the user replaced with a new id each session. A bad line exits 2 before any request with `--proxy-file line <n>: <what is wrong>`, never printing the line, the user or the password; a host given as a private, loopback, link-local, CGNAT, multicast, documentation, reserved or unspecified IP address is refused; `--proxy-file` with `--state`, `--country` or `--state-fallback` exits 2. The request body contains `proxy_entries` and `proxy_file_name`, assembled from files so no entry is on a command line or in the `bash -x` trace; the idempotency key covers the SHA-256 of the file. The start line is `Exit: your proxies from proxy_ca.txt, 10 entries, first entry first each session`, and a service without the proxy exit refuses with exit 7 `request rejected: the proxy exit is not available on this service yet` (NP-874).

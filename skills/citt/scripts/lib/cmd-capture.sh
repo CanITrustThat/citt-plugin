@@ -2165,6 +2165,7 @@ cmd_captures() {
     [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
         (.state // "-") + (if .status_reason then ": " + .status_reason else "" end)
+          + (if .device_locale then "; device language \(.device_locale)" else "" end)
           + (if .exit_redirected == true
              then "; captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
              else "" end),
