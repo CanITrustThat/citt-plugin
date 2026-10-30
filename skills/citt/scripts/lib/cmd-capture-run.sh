@@ -149,6 +149,7 @@ cmd_capture_options() {
     printf 'Phones: none registered\n'
   else
     jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status, (.active_runs // 0)]]' "$CR_OPTS" | table
+    jq -r '.devices[] | select(.unavailable) | "\(.device_name): \(.unavailable)"' "$CR_OPTS"
   fi
   printf '\n'
   jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" --arg note "$CITT_TRACKING_NOTE" "$CR_JQ"'
@@ -203,16 +204,20 @@ _cr_pick() {
          + [$d[] | select(.device_name == $p)]
          + [$d[] | select((.device_name // "" | ascii_downcase) == ($p | ascii_downcase))]) | first // empty' "$CR_OPTS")"
     [ -n "$sel" ] || die 4 "no phone \"$1\"; phones: $(jq -r '[.devices[] | "\(.device_name) (device \(.device_id))"] | join(", ") | if . == "" then "none registered" else . end' "$CR_OPTS")"
-    case "$(jq -r '.status' <<<"$sel")" in
+    # NP-890: a phone whose worker refused its model settings is `unavailable` with one sentence; the run queues until it is fixed
+    if [ -n "$(jq -r '.unavailable // empty' <<<"$sel")" ]; then
+      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r '.unavailable' <<<"$sel"); the run queues until it is fixed"
+    else case "$(jq -r '.status' <<<"$sel")" in
       busy) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is busy ($(jq -r '.active_runs // 0' <<<"$sel") active runs); the run queues behind them" ;;
       offline) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is offline; the run queues until it reports" ;;
-    esac
+    esac; fi
   else
     sel="$(jq -c '[.devices[] | select(.status == "free")] | first // empty' "$CR_OPTS")"
     if [ -z "$sel" ]; then
       [ "$(jq '.devices | length' "$CR_OPTS")" != 0 ] || die 5 "no lab phone is registered"
       die 5 "no free phone: $(jq -r 'def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
         [.devices[] | "\(.device_name) (device \(.device_id)) \(.status)"
+          + (if .unavailable then ": " + .unavailable else "" end)
           + (if (.active_runs // 0) > 0 then ", " + n(.active_runs; "active run"; "active runs") else "" end)] | join("; ")' "$CR_OPTS"); give one with --phone NAME|ID to queue the run on it"
     fi
   fi

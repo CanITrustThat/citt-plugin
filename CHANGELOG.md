@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.13.1
+
+- `citt capture-options` prints one line per phone whose worker refused its model settings, `<phone>: This phone is unavailable: its model settings are being fixed by the CITT team`; `citt capture-start --phone` on such a phone prints the same sentence with `; the run queues until it is fixed`, and the no-free-phone listing names it (NP-890).
+
 ## 2.13.0
 
 - `citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--session ID] [--note TEXT] [--password-stdin | --no-password]` makes a lab mail address on `pinegrovemail.com` by hand (`POST /lab-mail/addresses`): a generated `first.last[n]` name without `--local`, links to a run, session, project or app, and a generated 16-character password stored sealed (or your own from stdin, or none). It prints the address and its credential id, never the password (NP-867).
