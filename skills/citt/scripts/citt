@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # citt: the citt plugin. Projects of Android apps scanned by the CITT research
 # service: submit, status, apps, findings, scrutiny, Researcher verdicts, feedback, custom prompts, exports, owners, usage,
-# network capture runs (start, watch, stop), the capture sync of their sessions, native code runs
-# and tasks.
+# network capture runs (start, watch, stop), the capture sync of their sessions, lab mail addresses,
+# native code runs and tasks.
 # shellcheck source-path=SCRIPTDIR
 set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -40,6 +40,7 @@ Commands:
   capture-stop     stop a capture run
   help-requests    help requests of your capture runs (--watch to be told of new ones)
   help-answer      answer a bring-me-in request by text (the session orchestrator acts on it)
+  mailbox          lab mail addresses: create one by hand, list them, show one with its emails
   native           decompile an app's native binaries with Binary Ninja into its sources (--wait)
   tasks            submissions (scans, questions, captures, exports, native code) with status
   task             one task: status, parts, timeline and result link (--watch)
@@ -146,6 +147,10 @@ main() {
     help-requests | help-answer)
       # shellcheck source=lib/cmd-help-requests.sh
       . "$CITT_LIB/cmd-help-requests.sh"
+      ;;
+    mailbox)
+      # shellcheck source=lib/cmd-mailbox.sh
+      . "$CITT_LIB/cmd-mailbox.sh"
       ;;
     native)
       # shellcheck source=lib/cmd-native.sh

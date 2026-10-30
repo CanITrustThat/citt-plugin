@@ -433,7 +433,7 @@ cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language=""
-  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}"
+  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup=""
   CR_PT="" CR_PT_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
@@ -473,6 +473,7 @@ cmd_capture_start() {
       --wait) wait=1 ;;
       --state-fallback) fallback=any_state ;;
       --reset-gaid) reset_gaid=true ;;
+      --allow-signup) allow_signup=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -508,6 +509,9 @@ cmd_capture_start() {
       (if (.goal | blank) then {} else {goal} end)
       + ([.bring_me_in[] | select(blank | not)] as $b | if ($b | length) == 0 then {} else {bring_me_in: $b} end)
       + (if (.conclusion | blank) then {} else {conclusion} end)' <<<"$prompts_json")"
+  # NP-862: a sign-up session is an orchestrated session with a goal (the orchestrator decides the account steps)
+  [ -z "$allow_signup" ] || [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ] \
+    || usage_error "--allow-signup needs a goal: give --goal TEXT, or a --prompts-file with a goal"
   if [ -z "$dur" ] && [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ]; then
     dur=30m  # NP-800: a goal without --duration is one session of 30 minutes, as the API's default
     [ -n "$split" ] || split=30m
@@ -577,6 +581,7 @@ cmd_capture_start() {
   [ -z "$language" ] || hin="$hin|device_locale=$language"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
+  [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
   h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
   now="$(now_s)"
@@ -609,7 +614,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --argjson pr "$prompts_json" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --argjson pr "$prompts_json" --arg su "$allow_signup" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -622,6 +627,7 @@ cmd_capture_start() {
      + (if $rg == "" then {} else {reset_gaid: true} end)
      + (if $dl == "" then {} else {device_locale: $dl} end)
      + $pr
+     + (if $su == "" then {} else {allow_signup: true} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
@@ -681,7 +687,8 @@ _cr_started() {
       + (if .orchestrated == true
          then "; orchestrated: yes, " + n((.prompts.bring_me_in // []) | length; "bring-me-in bullet"; "bring-me-in bullets")
            + (if .prompts.goal then ", goal set" else ", no goal" end)
-           + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end),
+           + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end)
+      + (if .allow_signup == true then "; sign-up allowed" else "" end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
 }

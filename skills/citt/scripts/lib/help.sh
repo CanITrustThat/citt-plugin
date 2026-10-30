@@ -305,7 +305,7 @@ help_capture_start() {
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--wait [--timeout SECONDS]] [--json]
-                   [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE]
+                   [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id or Google Play link in the project)
 on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
@@ -337,8 +337,10 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --conclusion TEXT  orchestrated session: what the session conclusion is to answer, at most 4,000 characters
   --prompts-file FILE  the three prompts as JSON {"goal": text or null, "bring_me_in": [text], "conclusion": text or null},
                in place of --goal, --bring-me-in and --conclusion
-  Any prompt makes the run an orchestrated session (staff accounts only in this release); its navigator asks when stuck
+  Any prompt makes the run an orchestrated session; its navigator asks when stuck
   unless --navigator is given, and the start line says "orchestrated: yes" with the number of bring-me-in bullets.
+  --allow-signup  orchestrated session with a goal: the session may create an account on the app with a generated lab address
+               and password; payment stays off; the start line ends "sign-up allowed"
 A re-run of the same command within 24 hours sends the same idempotency key and returns the
 same run; any other command starts a new run.
 EOF
@@ -390,6 +392,30 @@ code); no model receives it and the output prints only its length.
 A request the Visual LLM opened on a fixed trigger is answered by take-over on the Live page.
 Exit 5 when the request is closed, answered already or takes no typed answer; 4 when it is not
 among your requests.
+EOF
+}
+
+help_mailbox() {
+  cat <<'EOF'
+citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--session ID] [--note TEXT]
+                    [--password-stdin | --no-password] [--json]
+citt mailbox list [--json]
+citt mailbox show ADDRESS|CREDENTIAL_ID [--reveal] [--json]
+
+Lab mail addresses on pinegrovemail.com (Mailboxes on the dashboard). create makes an address
+by hand: a generated first.last name, or --local PART; optional links to a project and app, or
+to a run (its project and app follow) and one of its sessions; a note. A 16-character password
+is generated and stored for the account; --password-stdin stores your own (first line of
+stdin), --no-password none. Mail to the address shows at once, and mail to an address of a
+session stays linked to that session with no time limit.
+list prints every address of your account. show prints one address, its links and each email
+with the time after the session, the code and the link; --reveal puts the password on the
+clipboard (pbcopy, wl-copy or xclip) or else in a mode-600 file under ~/.config/citt/revealed
+and prints only "copied" or the file path, never the password (each reveal is recorded).
+Never pass a password to a model or a prompt.
+Exit 5 when the address is taken or received mail before it was created here (choose another
+address, or contact support to link that mail to a session); 4 when the run, project or address
+is not among yours; 3 when Mailboxes are not available on this account (contact support).
 EOF
 }
 

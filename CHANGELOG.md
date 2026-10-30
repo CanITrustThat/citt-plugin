@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.13.0
+
+- `citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--session ID] [--note TEXT] [--password-stdin | --no-password]` makes a lab mail address on `pinegrovemail.com` by hand (`POST /lab-mail/addresses`): a generated `first.last[n]` name without `--local`, links to a run, session, project or app, and a generated 16-character password stored sealed (or your own from stdin, or none). It prints the address and its credential id, never the password (NP-867).
+- `citt mailbox list` prints every lab address of the account with its kind, app, run, session, email count and last email time; `citt mailbox show ADDRESS|CREDENTIAL_ID` prints one address with its links and its emails (received time, time after the session, sender, subject, code, verification link) (NP-865, NP-867).
+- `citt mailbox show ... --reveal` reads the address's password for this request and copies it to the clipboard (`pbcopy`, `wl-copy`, `xclip`) or writes it to the mode-600 file `~/.config/citt/revealed/CREDENTIAL_ID.txt`; the password is never printed, and each reveal is recorded with the account's user id (NP-867).
+- `citt capture-start --allow-signup` lets an orchestrated session with a goal create an account on the app with a generated lab address and password; payment stays off. The request body contains `allow_signup: true` and the start line ends `; sign-up allowed`; without a goal it exits 2, and an account the service has not turned sign-up sessions on for exits 3 with `Sign-up sessions are not available on this account; contact support to turn them on` (NP-862).
+- Orchestrated sessions (`--goal`, `--bring-me-in`, `--conclusion`, `--prompts-file`), sign-up sessions (`--allow-signup`) and `citt mailbox` are open to every account; the refusals read `... are not available on this account; contact support to turn them on`.
+
 ## 2.12.0
 
 - `citt capture-start --language TAG` sets the phone's device language for every session of the run, independent of the exit, for example a Colorado exit with the phone in Mandarin (`--state CO --language zh-Hans-CN`); the time zone stays the exit's. The request body contains `device_locale`; a tag outside the form `ll-CC` or `ll-Ssss-CC` exits 2 with no request, and the service refuses a tag outside the options' `device_locales` with 422. The start line ends `; device language zh-Hans-CN`, `citt captures` and the `citt capture-watch` run line show the language, each `citt capture-watch` session line states `Phone locale zh-Hans-CN (set by the run) · time zone America/Denver` (or `(set by the exit)`), and `citt capture-options` lists the device languages (NP-878).
