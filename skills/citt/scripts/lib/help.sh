@@ -272,6 +272,9 @@ or several words match as written. Use citt capture-sync instead to keep whole s
   --json          one citt.plugin.search/1 document: rows, next, total, older, restoring
 Exit 12: --inside-words or --load-older still running after --timeout; the hits found so far are
 printed and the stderr line gives the re-run command.
+The CSV is read in pages of 50 rows; a page that passes the server's time limit is asked again once.
+Exit 13: a later page passed it twice; the CSV keeps the rows written, and the Stopped early line
+gives the command for the next rows.
 EOF
 }
 

@@ -12,6 +12,8 @@ SEARCH_MAX_ROWS_DEFAULT=5000
 SEARCH_URL_WIDTH=100
 SEARCH_PREVIEW_ROWS=5
 SEARCH_PAGE_MAX=200
+# The pages of a CSV walk (TASK-598: a page of 200 rows of a common text over 30 days can pass the server's time limit).
+SEARCH_WALK_PAGE=50
 # A 503 capture_tables_busy (TASK-590 capture_lock.rs, with Retry-After) is asked again this many times.
 SEARCH_BUSY_RETRIES=3
 
@@ -110,7 +112,7 @@ _s_fail() {
           max="$(body_field '.limit_days')"
           sessions="$(body_field '.range_sessions')"
           requests="$(body_field '.range_requests')"
-          _s_out 2 "the inside-words search covers at most ${max:-?} days; the asked range holds ${sessions:-?} sessions and ${requests:-?} requests; narrow it, for example: citt search $(shq "$S_Q") --days ${max:-1} --inside-words$(_s_project_words)"
+          _s_out 2 "the inside-words search covers at most $(_s_counted "$max" day); the asked range holds $(_s_counted "$sessions" session) and $(_s_counted "$requests" request); narrow it, for example: citt search $(shq "$S_Q") --days ${max:-1} --inside-words$(_s_project_words)"
           ;;
         invalid_from | invalid_to)
           case "$message" in
@@ -162,6 +164,15 @@ _s_fail() {
   esac
 }
 
+# _s_counted N NOUN: "1 day", "1,356 sessions"; "? days" when N is not a number.
+_s_counted() {
+  if is_uint "$1"; then
+    printf '%s %s%s' "$(awk -v s="$1" 'BEGIN { o = ""; while (length(s) > 3) { o = "," substr(s, length(s) - 2) o; s = substr(s, 1, length(s) - 3) } print s o }')" "$2" "$([ "$1" = 1 ] || printf s)"
+  else
+    printf '? %ss' "$2"
+  fi
+}
+
 # _s_busy_line: a 503 capture_tables_busy in plain words, for the route of the last request (Filip, 2026-10-30:
 # the TASK-592 page's sentence; no tables, maintenance or error code).
 _s_busy_line() {
@@ -181,9 +192,10 @@ _s_busy_line() {
 # capture_tables_busy after its Retry-After seconds (30 when absent), and, on a GET (or with HTTP_RETRY=yes), a network
 # failure or another 5xx as http() would (Retry-After, else 1, 2, 4 s); at most SEARCH_BUSY_RETRIES times in all.
 # While S_DEADLINE is set (the polls of --load-older and --inside-words), no wait passes it (F19): the wait is cut to the
-# time left, and an answer after it is final.
+# time left, and an answer after it is final. A 503 search_timed_out is asked again once (TASK-598); with S_SOFT_TIMEOUT=1
+# the second one returns 75 to the caller in place of _s_fail.
 _s_call() {
-  local method="$1" again=no tries=0 wait left busy
+  local method="$1" again=no tries=0 timed=0 wait left busy error
   case "$HTTP_RETRY" in
     yes) again=yes ;;
     auto) [ "$method" != GET ] || again=yes ;;
@@ -193,8 +205,13 @@ _s_call() {
     http "$@"
     ok && return 0
     busy=no
-    if [ "$CODE" = 503 ] && [ "$(body_field '.error')" = capture_tables_busy ]; then
+    error="$(body_field '.error')"
+    if [ "$CODE" = 503 ] && [ "$error" = capture_tables_busy ]; then
       busy=yes
+    elif [ "$CODE" = 503 ] && [ "$error" = search_timed_out ]; then
+      [ "$timed" = 0 ] || break
+      timed=1
+      busy=timed
     elif [ "$again" = yes ]; then
       case "$CODE" in 000 | 5??) ;; *) break ;; esac
     else
@@ -205,6 +222,8 @@ _s_call() {
     if [ "$busy" = yes ]; then
       wait="$(hdr Retry-After)"
       is_uint "$wait" || wait=30
+    elif [ "$busy" = timed ]; then
+      wait="$(_retry_delay 1)"
     else
       wait="$(_retry_delay "$tries")"
     fi
@@ -217,9 +236,13 @@ _s_call() {
       err "$CITT_CMD: $(_s_busy_line); trying again in $wait s"
       poll_sleep "$wait"
     else
+      [ "$busy" = no ] || err "$CITT_CMD: the search passed the server's time limit; trying once more"
       sleep "$wait"
     fi
   done
+  if [ "${S_SOFT_TIMEOUT:-0}" = 1 ] && [ "$CODE" = 503 ] && [ "$(body_field '.error')" = search_timed_out ]; then
+    return 75
+  fi
   _s_fail
 }
 
@@ -233,10 +256,10 @@ _s_project_words() {
 _s_page() {
   local limit="$1" after="$2"
   if [ "$S_DEEP" = 1 ]; then
-    _s_call GET "$CITT_V1/capture-search/deep/$S_JOB$(query after "$after" limit "$limit")"
+    _s_call GET "$CITT_V1/capture-search/deep/$S_JOB$(query after "$after" limit "$limit")" || return $?
   else
     HTTP_RETRY=no
-    _s_call GET "$CITT_V1/capture-search$(_s_query limit "$limit" after "$after")"
+    _s_call GET "$CITT_V1/capture-search$(_s_query limit "$limit" after "$after")" || return $?
   fi
   jq -e '.items | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   # A running inside-words job (TASK-591) answers has_more true and next set (to the given after when no new hit
@@ -341,8 +364,10 @@ JQ_SCSV='def open($h): "\($h)/capture-sessions/\(.session_id)?t=\(.offset_ms)&re
 # GET /capture-search sends total on the first page only (null on every page with after), so the left-out count
 # is taken from the last page that sent one; an inside-words page sends the job's growing count on every page.
 # That total counts the whole result, so a walk from a cursor prints "more matches" (F14).
+# A page after rows were written that passes the server's time limit twice ends the walk with the rows written, the
+# stopped-early line and S_PARTIAL=1 (TASK-598).
 _s_csv() {
-  local out="$1" max="$2" first="$3" after="$4" n=0 got lim preview left prev total=null
+  local out="$1" max="$2" first="$3" after="$4" n=0 got lim preview left prev total=null stopped=0 rc
   local from_cursor=0
   [ -z "$after" ] || from_cursor=1
   preview="$(tmpfile preview)"
@@ -355,8 +380,15 @@ _s_csv() {
       [ "$(jq '.items | length' "$S_PAGE")" -le "$max" ] || _s_page "$max" "$after"
     else
       lim=$((max - n))
-      [ "$lim" -le "$SEARCH_PAGE_MAX" ] || lim="$SEARCH_PAGE_MAX"
-      _s_page "$lim" "$after"
+      [ "$lim" -le "$SEARCH_WALK_PAGE" ] || lim="$SEARCH_WALK_PAGE"
+      rc=0
+      [ "$n" = 0 ] || S_SOFT_TIMEOUT=1
+      _s_page "$lim" "$after" || rc=$?
+      S_SOFT_TIMEOUT=0
+      if [ "$rc" != 0 ]; then
+        stopped=1
+        break
+      fi
     fi
     got="$(jq '.items | length' "$S_PAGE")"
     # A walk from a cursor has no count of the rows before it (written to earlier files), so it keeps no total.
@@ -381,7 +413,11 @@ _s_csv() {
   printf 'Wrote %s rows to %s.\n' "$n" "$out"
   printf 'Columns: %s\n' "$(printf '%s' "$SEARCH_COLUMNS" | sed -e 's/ /, /g' \
     -e 's/matched/matched (url, headers or body, when the API reports it)/' -e 's/open_url/open_url (the request in its session video)/')"
-  if [ -z "$after" ] && [ "$from_cursor" = 1 ]; then
+  if [ "$stopped" = 1 ]; then
+    S_PARTIAL=1
+    printf "Stopped early after %s %s: the search of the next rows passed the server's time limit twice. The next rows: %s --cursor %s --out %s; or narrow the range or the projects.\n" \
+      "$n" "$([ "$n" = 1 ] && printf row || printf rows)" "$S_BASE" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")"
+  elif [ -z "$after" ] && [ "$from_cursor" = 1 ]; then
     # A walk from a cursor holds the rest of the result only: its row count is not the count of the search.
     printf 'The rest of the result: %s %s, the last rows of the search.\n' "$n" "$([ "$n" = 1 ] && printf row || printf rows)"
   elif [ -z "$after" ]; then
@@ -646,6 +682,7 @@ cmd_search() {
   if [ -n "$out" ]; then
     case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
     _s_csv "$out" "$cap" 0 "$cursor"
+    [ "$code" != 0 ] || [ "${S_PARTIAL:-0}" = 0 ] || code=13
     _s_deep_end "$code"
     return "$code"
   fi
@@ -664,6 +701,7 @@ cmd_search() {
   if [ "$inline" = 0 ] && [ "$(jq -r '.has_more' "$S_PAGE")" = true ]; then
     # Over the inline page: the whole result goes to a CSV file in the working directory.
     _s_csv "$PWD/$(_s_csv_name)" "$cap" 1 "$cursor"
+    [ "$code" != 0 ] || [ "${S_PARTIAL:-0}" = 0 ] || code=13
     _s_deep_end "$code"
     return "$code"
   fi
