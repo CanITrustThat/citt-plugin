@@ -140,7 +140,7 @@ _mb_list() {
   printf '[]' >"$all"
   while :; do
     call GET "$CITT_V1/lab-mail/addresses$(query cursor "$cursor")"
-    jq -e '.addresses | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/lab-mail/addresses"
+    jq -e '.addresses | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     jq -c --slurpfile p "$RESP" '. + $p[0].addresses' "$all" >"$all.n" && mv "$all.n" "$all"
     cursor="$(jq -r '.next_cursor // empty' "$RESP")"
     pages=$((pages + 1))
@@ -229,7 +229,7 @@ _mb_show() {
     [ "$CODE:$(body_field '.error')" != 404:not_found ] || die 4 "$ref is not among your lab addresses; list them: citt mailbox list"
     fail_http
   fi
-  jq -e '.credential.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/lab-mail/addresses"
+  jq -e '.credential.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   local cred shown=""
   cred="$(jq -r .credential.credential_id "$RESP")"
   if [ "$reveal" = 1 ]; then

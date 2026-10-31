@@ -439,7 +439,7 @@ _cs_resolve_projects() {
       listed=1
     fi
     ids="$(jq -r --arg n "$p" '[.projects[] | select(.name == $n) | .project_id] | map(tostring) | join(" ")' "$list")" \
-      || die 1 "unparseable response from GET $CITT_V1/projects"
+      || die 1 "unexpected response from the server"
     case "$ids" in
       '') die 4 "no project named \"$p\" among your projects" ;;
       *' '*) die 5 "several projects named \"$p\": ids $(printf '%s' "$ids" | sed 's/ /, /g'); give the id with --project" ;;
@@ -469,7 +469,7 @@ _cs_resolve_runs() {
     while :; do
       call GET "$CITT_V1/capture-runs?limit=200$(_cs_pid_query)${cursor:+&cursor=$(urlenc "$cursor")}"
       jq -c '.runs[] | {experiment_id, run_key}' "$RESP" >>"$all" 2>/dev/null \
-        || die 1 "unparseable response from GET $CITT_V1/capture-runs"
+        || die 1 "unexpected response from the server"
       cursor="$(body_field '.next_cursor')"
       [ -n "$cursor" ] || break
     done
@@ -1628,7 +1628,7 @@ _cs_sync() {
   call GET "$CITT_V1/me"
   local account
   account="$(body_field '.email')"
-  [ -n "$account" ] || die 1 "unparseable response from GET $CITT_V1/me"
+  [ -n "$account" ] || die 1 "unexpected response from the server"
   CS_ST=""
   _cs_state_load
   old="$(jq -r '.account // empty' "$CS_ST")"
@@ -1670,7 +1670,7 @@ _cs_sync() {
     else
       call GET "$CITT_V1/capture-sessions?changed_after=$(urlenc "$after")&limit=200$CS_FILTER_Q"
     fi
-    jq -c '.sessions[]' "$RESP" >>"$feed" 2>/dev/null || die 1 "unparseable response from GET $CITT_V1/capture-sessions"
+    jq -c '.sessions[]' "$RESP" >>"$feed" 2>/dev/null || die 1 "unexpected response from the server"
     cursor="$(body_field '.next_cursor')"
     [ -n "$cursor" ] || break
   done
@@ -2151,7 +2151,7 @@ cmd_captures() {
     return 0
   fi
   local n
-  n="$(jq '.runs | length' "$RESP" 2>/dev/null)" || die 1 "unparseable response from GET $CITT_V1/capture-runs"
+  n="$(jq '.runs | length' "$RESP" 2>/dev/null)" || die 1 "unexpected response from the server"
   if [ "$n" = 0 ]; then
     if [ -n "$state" ] || [ -n "$CS_PIDS" ] || [ -n "$mine" ]; then
       printf 'No capture runs match these filters; all runs: citt captures\n'

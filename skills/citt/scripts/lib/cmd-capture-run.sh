@@ -60,7 +60,7 @@ _cr_app() {
   resolve_project
   call GET "$CITT_V1/projects/$PROJECT_ID/apps$(query q "$1")"
   CR_PAPP="$(jq -r --arg p "$1" '[.apps[] | select(.platform == "android" and .package_id == $p) | .project_app_id] | first // empty' "$RESP" 2>/dev/null)" \
-    || die 1 "unparseable response from GET $CITT_V1/projects/$PROJECT_ID/apps"
+    || die 1 "unexpected response from the server"
   [ -n "$CR_PAPP" ] || die 4 "$1 is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $1"
   E_KIND=app
   E_PACKAGE="$1"
@@ -71,7 +71,7 @@ _cr_options() {
   call GET "$CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
   CR_OPTS="$(tmpfile options.json)"
   cp "$RESP" "$CR_OPTS"
-  jq -e 'type == "object"' "$CR_OPTS" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
+  jq -e 'type == "object"' "$CR_OPTS" >/dev/null 2>&1 || die 1 "unexpected response from the server"
 }
 
 # _cr_run_id RUN: the experiment id of a run id or key.
@@ -652,7 +652,7 @@ cmd_capture_start() {
   launch="$(tmpfile launch.json)"
   cp "$RESP" "$launch"
   rid="$(jq -r '.experiment_id // empty' "$launch" 2>/dev/null)"
-  [ -n "$rid" ] || die 1 "unparseable response from POST $CITT_V1/project-apps/$CR_PAPP/ad-sessions"
+  [ -n "$rid" ] || die 1 "unexpected response from the server"
   if [ "$wait" = 1 ]; then
     if [ "$CITT_JSON" != 1 ]; then
       _cr_started "$launch" "$rid"
@@ -747,7 +747,7 @@ _cr_watch() {
         + (($s | .persona) // {} | if .locale then "; Phone locale \(.locale)"
              + (if .locale_source == "run" then " (set by the run)" elif .locale_source == "exit" then " (set by the exit)" else "" end)
              + (if .time_zone then " · time zone \(.time_zone)" else "" end) else "" end)' "$RESP" 2>/dev/null)" \
-      || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
+      || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
         [ "$CITT_JSON" = 1 ] || printf '%s\n' "$line"
@@ -764,7 +764,7 @@ _cr_watch() {
       | "\(.seq)\tSession \(.seq) of \($p // "?"): "
         + ((.reason // "uploaded and verified, storage pending") | sub("^Session [0-9]+: "; ""))
         + "; \($next)"' "$RESP" 2>/dev/null)" \
-      || die 1 "unparseable response from GET $CITT_V1/capture-runs/$rid"
+      || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
         [ "$CITT_JSON" = 1 ] || printf '%s\n' "$line"

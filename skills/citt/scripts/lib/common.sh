@@ -695,7 +695,7 @@ free_account() {
     usage_error "give --project NAME or --project-id N"
   fi
   FREE_PROJECT_ID="$(jq -r '.free_scans_project_id // empty' "$RESP" 2>/dev/null)" \
-    || die 1 "unparseable response from GET $CITT_V1/me"
+    || die 1 "unexpected response from the server"
 }
 
 # resolve_project: sets PROJECT_ID and PROJECT_NAME (empty with --project-id). Without a flag,
@@ -720,7 +720,7 @@ resolve_project() {
     local ids n
     call GET "$CITT_V1/projects"
     ids="$(jq -r --arg n "$OPT_PROJECT" '[.projects[] | select(.name == $n) | .project_id] | sort | map(tostring) | join(", ")' "$RESP")" \
-      || die 1 "unparseable response from GET $CITT_V1/projects"
+      || die 1 "unexpected response from the server"
     n="$(printf '%s' "$ids" | awk -F', ' 'NF { print NF }')"
     case "${n:-0}" in
       0) die 4 "no project named \"$OPT_PROJECT\" among your projects" ;;
@@ -820,7 +820,7 @@ resolve_app() {
   rows="$(jq -c --arg p "$pkg" --arg pl "$platform" \
     '[.apps[]? | select(.package_id == $p and ($pl == "" or .platform == $pl)) | {project_app_id, platform, added_at: (.added_at // "")}]
      | sort_by([.added_at, .project_app_id]) | reverse' "$RESP" 2>/dev/null)" \
-    || die 1 "unparseable response from GET $CITT_V1/projects/$PROJECT_ID/apps"
+    || die 1 "unexpected response from the server"
   n="$(jq 'length' <<<"$rows")"
   case "$n" in
     0) die 4 "$pkg${platform:+ ($platform)} is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $pkg" ;;

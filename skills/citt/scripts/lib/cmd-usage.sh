@@ -21,7 +21,7 @@ cmd_usage() {
     printf '\n'
     return 0
   fi
-  jq -r '"Usage for \(.month) (UTC):"' "$RESP" || die 1 "unparseable response from GET $CITT_V1/usage"
+  jq -r '"Usage for \(.month) (UTC):"' "$RESP" || die 1 "unexpected response from the server"
   # The allowances /pricing names, as the dashboard's Usage page lists them; other meters are left out.
   jq -c '{"rule_scan": "Rule scans", "deep_scan": "Deep scans", "llm_prompt": "Questions"} as $name
     | [["ACTION", "USED", "LIMIT", "REMAINING"]]

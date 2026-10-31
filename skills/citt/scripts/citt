@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -33,6 +33,7 @@ Commands:
   owners           list, add or remove project owners
   usage            this month's usage and limits
   captures         network capture runs across your projects
+  search           find captured requests across the sessions of a date range (--days N)
   capture-sync     download completed capture sessions into a folder (--install-timer to repeat)
   capture-options  the phones, exit states and session lengths a capture run of an app can use
   capture-start    start a network capture run of an app on a lab phone
@@ -137,6 +138,10 @@ main() {
     captures | capture-sync)
       # shellcheck source=lib/cmd-capture.sh
       . "$CITT_LIB/cmd-capture.sh"
+      ;;
+    search)
+      # shellcheck source=lib/cmd-search.sh
+      . "$CITT_LIB/cmd-search.sh"
       ;;
     capture-options | capture-start | capture-watch | capture-stop)
       # shellcheck source=lib/cmd-capture.sh

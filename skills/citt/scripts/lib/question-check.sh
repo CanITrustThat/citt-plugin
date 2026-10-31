@@ -159,7 +159,7 @@ check_question() {
   CHECK_PROOF="$(jq -r 'if .proof_note == true then "true" else "false" end' "$out" 2>/dev/null)"
   if [ -z "$CHECK_SUGGESTED" ] || [ -z "$CHECK_CHANGES" ]; then
     CHECK_STATUS=unavailable
-    CHECK_REASON="unparseable response from POST $CITT_V1/questions/check"
+    CHECK_REASON="unexpected response from the server"
     CHECK_SUGGESTED="$p"
     CHECK_CHANGES="[]"
     CHECK_ID=""

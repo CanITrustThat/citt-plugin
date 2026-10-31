@@ -243,6 +243,38 @@ stopping, done, done_with_gaps, stopped, failed, imported; active is the first f
 EOF
 }
 
+help_search() {
+  cat <<'EOF'
+citt search TEXT (--days N | --from DATE [--to DATE]) [--project NAME|ID]... [--inside-words]
+            [--limit N] [--cursor C] [--inline | --out FILE.csv [--max-rows N]] [--load-older] [--timeout S] [--json]
+
+Finds captured requests (url, headers, body) across every capture session of your projects whose
+capture started in the range, newest session first. The range has no default: --days 30 is the
+usual search. Words and camelCase parts match (AppLovinSdk finds applovin and sdk); a quoted text
+or several words match as written. Use citt capture-sync instead to keep whole sessions on disk.
+  --days N        the last N days, ending now; printed commands carry the resulting --from and --to
+  --from, --to    a date (2026-10-20, the whole day in UTC) or an RFC 3339 time; --to defaults to now
+  --project       a project name or id, repeatable; default every project you can read
+  --inside-words  also find the text inside longer words (sdk in appsflyersdk): much slower, a search
+                  that reports progress every 15 s; start with --days 1, then 3, then 7; the
+                  service states its longest range and refuses a wider one with exit 2
+  --limit N       the inline page, 1 to 200 (default 50)
+  --inline        always print one page inline, with the next-page command
+  --out FILE.csv  write the whole result from --cursor on to FILE.csv (default when the result is
+                  over one page: a citt-search-*.csv file in the working directory); prints the path,
+                  the row count, the columns and the first 5 rows. Pick the CSV to count, group
+                  or filter many rows (by app, host, run) with a tool rather than read them.
+  --max-rows N    the row cap of the CSV (default 5000); the rows past it are counted with the
+                  command that writes them
+  --load-older    restore the sessions of the range whose requests are in the archive (the stderr
+                  notice gives their count and the estimated time), follow the restore every 15 s,
+                  then search; exit 12 after --timeout (default 540 s) with the re-run command
+  --json          one citt.plugin.search/1 document: rows, next, total, older, restoring
+Exit 12: --inside-words or --load-older still running after --timeout; the hits found so far are
+printed and the stderr line gives the re-run command.
+EOF
+}
+
 help_capture_sync() {
   cat <<'EOF'
 citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--session ID]... [--groups LIST]

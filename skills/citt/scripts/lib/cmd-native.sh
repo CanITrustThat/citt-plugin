@@ -104,7 +104,7 @@ cmd_native() {
   ok || _native_fail
   started="$(tmpfile native_started)"
   cp "$RESP" "$started"
-  jq -e '.project_app_id' "$started" >/dev/null 2>&1 || die 1 "unparseable response from POST $CITT_V1/project-apps/$APP_ID/native-code"
+  jq -e '.project_app_id' "$started" >/dev/null 2>&1 || die 1 "unexpected response from the server"
 
   if [ "$CITT_JSON" != 1 ]; then
     _native_summary "$started" "$wait"
@@ -208,7 +208,7 @@ _native_watch() {
     cp "$RESP" "$state"
     L="$(local_times "$state")"
     line="$(jq -r --argjson L "$L" "$JQ_NATIVE"' progress_line' "$state")" \
-      || die 1 "unparseable response from GET $CITT_V1/project-apps/$APP_ID/native-code"
+      || die 1 "unexpected response from the server"
     if [ "$CITT_JSON" != 1 ] && [ "$listed" = 0 ] && [ "$(jq '(.run.binaries // []) | length' "$state")" -gt 0 ]; then
       # The service lists the binaries when the run starts: the count the first summary could not give.
       listed=1

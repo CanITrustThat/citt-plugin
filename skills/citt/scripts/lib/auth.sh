@@ -259,13 +259,13 @@ cmd_whoami() {
   cp "$RESP" "$me"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --slurpfile me "$me" '. + {research: $me[0]}' "$account" \
-      || die 1 "unparseable response from GET /api/me"
+      || die 1 "unexpected response from the server"
     return 0
   fi
   jq -r '"email: \(.email // "-")",
     "user_type: \(.user_type // "-")",
     "analysis_track: \(.analysis_track // "-")"' "$account" \
-    || die 1 "unparseable response from GET /api/me"
+    || die 1 "unexpected response from the server"
   # The service's plan (GET /me .plan) first: an account can hold a plan without a legacy subscription.
   printf 'plan: %s\n' "$(_plan_name "$(jq -rn --slurpfile a "$account" --slurpfile m "$me" \
     '$m[0].plan // $a[0].subscription.plan_id // $a[0].subscription.plan // $a[0].plan // empty')")"
@@ -274,7 +274,7 @@ cmd_whoami() {
     | "entitlements: \(if $e == [] then "none" else ($e | join(",")) end)",
     "owned_projects: \(.owned_project_count // 0)",
     "free_scans_project: \(.free_scans_project_id // "none")"' "$me" \
-    || die 1 "unparseable response from GET $CITT_V1/me"
+    || die 1 "unexpected response from the server"
   if ! jq -e '(.entitlements // []) | index("research")' "$me" >/dev/null; then
     err "$CITT_CMD: Pay as you go: Android rule scans (citt submit PACKAGE) and questions (citt prompt); projects, CSV, findings across a project, scrutiny and exports: $CITT_PRICING_URL"
   fi

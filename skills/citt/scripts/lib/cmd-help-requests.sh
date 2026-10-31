@@ -70,7 +70,7 @@ cmd_help_requests() {
     printf '\n'
     return 0
   fi
-  jq -e '.requests | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/capture-help-requests"
+  jq -e '.requests | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   printf 'Open help requests: %s\n' "$(jq -r '.open_count // 0' "$RESP")"
   if [ "$(jq '.requests | length' "$RESP")" = 0 ]; then
     printf 'No help requests.\n'
@@ -91,7 +91,7 @@ _hr_watch() {
   start="$(now_s)"
   while :; do
     call GET "$CITT_V1/capture-help-requests?state=open&limit=200"
-    jq -e '.requests | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/capture-help-requests"
+    jq -e '.requests | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     seen='[]'
     [ ! -f "$seen_file" ] || seen="$(jq -R -s -c 'split("\n") | map(select(test("^[0-9]+$")) | tonumber)' "$seen_file")"
     new="$(jq -c --argjson seen "$seen" '[.requests[] | select(.state == "open") | select(.id as $i | $seen | index($i) | not)]' "$RESP")"

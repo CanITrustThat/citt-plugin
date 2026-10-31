@@ -241,7 +241,7 @@ _prompt_target() {
     HTTP_RETRY=yes
     call_prompt POST "$CITT_V1/prompts" "$body"
     tid="$(body_field '.thread_id')"
-    is_uint "$tid" || die 1 "unparseable response from POST $CITT_V1/prompts"
+    is_uint "$tid" || die 1 "unexpected response from the server"
     seq="$(body_field '.turns | last | .seq')"
     E_KIND=thread
     E_THREAD="$tid"

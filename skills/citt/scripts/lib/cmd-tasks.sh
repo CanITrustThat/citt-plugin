@@ -113,7 +113,7 @@ cmd_tasks() {
   E_KIND=project
   q="$(query kind "$kinds" status "$status" mine "$([ "$mine" = 1 ] && printf true)" limit "$limit" cursor "$cursor")"
   call GET "$path$q"
-  jq -e '.tasks | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $path"
+  jq -e '.tasks | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
 
   if [ "$watch" = 1 ]; then
     _tasks_watch "$path$q" "$timeout" "$rerun --watch"
@@ -176,7 +176,7 @@ _tasks_watch() {
     call GET "$pq"
     polls=$((polls + 1))
     cp "$RESP" "$cur"
-    jq -e '.tasks | type == "array"' "$cur" >/dev/null 2>&1 || die 1 "unparseable response from GET ${pq%%\?*}"
+    jq -e '.tasks | type == "array"' "$cur" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     [ "$CITT_JSON" != 1 ] || continue
     L="$(local_times "$cur")"
     # Changed and new rows.
@@ -326,7 +326,7 @@ _task_get() {
     404) [ -z "$(body_field '.error')" ] && fail_http; die 4 "no task $id in your projects (see: citt tasks)" ;;
     *) fail_http ;;
   esac
-  jq -e '.task_id' "$RESP" >/dev/null 2>&1 || die 1 "unparseable response from GET $CITT_V1/tasks/$id"
+  jq -e '.task_id' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   cp "$RESP" "$out"
   events="$(tmpfile task_events)"
   more="$(jq -r '.events_cursor // empty' "$out")"

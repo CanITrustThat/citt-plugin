@@ -154,7 +154,7 @@ cmd_export() {
       '{kind: $k, apps: (if $apps == "all" then "all" else ($apps | split(",") | map(select(. != ""))) end)}' >"$body"
     call POST "$CITT_V1/projects/$PROJECT_ID/exports" "$body"
     export_id="$(body_field '.export_id')"
-    is_uint "$export_id" || die 1 "unparseable response from POST $CITT_V1/projects/$PROJECT_ID/exports"
+    is_uint "$export_id" || die 1 "unexpected response from the server"
   fi
   E_KIND="export"
   E_EXPORT="$export_id"

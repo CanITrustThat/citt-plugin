@@ -32,7 +32,7 @@ _submit_free_text() {
       elif .outcome == "existing" and (.up_to_date == true) then "Free scan: \(.package_id) is up to date with the current rule pack in \"\($p)\" (project id \($id))."
       elif .outcome == "existing" then "Free scan: \(.package_id) is already in \"\($p)\" (project id \($id)), status \(.status)."
       else "Free scan: \(.package_id) queued in \"\($p)\" (project id \($id))." end' "$RESP" \
-    || die 1 "unparseable response from POST $CITT_V1/submit"
+    || die 1 "unexpected response from the server"
   printf 'Next: citt status --wait, then citt app PACKAGE\n'
 }
 
@@ -172,7 +172,7 @@ cmd_submit() {
      | ([.jobs[] | select(.outcome != "created")] | length) as $e
      | ($c | reduce .[] as $j ([]; if any(.[]; .[0] == $j.kind) then map(if .[0] == $j.kind then [.[0], .[1] + 1] else . end) else . + [[$j.kind, 1]] end)) as $k
      | "Jobs: \($c | length) created\(if ($c | length) > 0 then " (" + ($k | map("\(.[0]) \(.[1])") | join(", ")) + ")" else "" end), \($e) existing.")' "$RESP" \
-    || die 1 "unparseable response from POST $CITT_V1/submit"
+    || die 1 "unexpected response from the server"
   # A deep request is up to date when the decompiled code is already prepared with the current rule pack.
   local current="Up to date with the current rule pack"
   [ "$deep" = true ] && current="Decompiled code already prepared with the current rule pack"
