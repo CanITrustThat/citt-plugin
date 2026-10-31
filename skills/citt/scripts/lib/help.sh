@@ -401,6 +401,7 @@ citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--
                     [--password-stdin | --no-password] [--json]
 citt mailbox list [--json]
 citt mailbox show ADDRESS|CREDENTIAL_ID [--reveal] [--json]
+citt mailbox email EMAIL_ID --html FILE
 
 Lab mail addresses on pinegrovemail.com (Mailboxes on the dashboard). create makes an address
 by hand: a generated first.last name, or --local PART; optional links to a project and app, or
@@ -413,6 +414,8 @@ with the time after the session, the code and the link; --reveal puts the passwo
 clipboard (pbcopy, wl-copy or xclip) or else in a mode-600 file under ~/.config/citt/revealed
 and prints only "copied" or the file path, never the password (each reveal is recorded).
 Never pass a password to a model or a prompt.
+email --html saves an email's HTML part (else its text part as HTML) to a new mode-600 FILE; the
+file's Content-Security-Policy blocks remote images and tracking pixels when it is opened.
 Exit 5 when the address is taken or received mail before it was created here (choose another
 address, or contact support to link that mail to a session); 4 when the run, project or address
 is not among yours; 3 when Mailboxes are not available on this account (contact support).

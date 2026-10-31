@@ -467,6 +467,7 @@ citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--
                     [--password-stdin | --no-password] [--json]
 citt mailbox list [--json]
 citt mailbox show ADDRESS|CREDENTIAL_ID [--reveal] [--json]
+citt mailbox email EMAIL_ID --html FILE
 ```
 
 Lab mail addresses on the lab domain `pinegrovemail.com`, the addresses the Mailboxes page of the dashboard lists. Mail to an address is received and stored at once; the raw message is kept in the mail store with no deletion.
@@ -476,6 +477,8 @@ Lab mail addresses on the lab domain `pinegrovemail.com`, the addresses the Mail
 `list` prints every address of the account (`GET /lab-mail/addresses`, every page), newest first: address, kind (`by hand` or `sign-up`), app, run, session, emails and the time of the last email. `--json` prints `{addresses}`.
 
 `show` prints one address (`GET /lab-mail/addresses/{address}`): its credential id and kind, the note, the links with the time the session ended, the Mailbox page link, then one row per email (newest 100) with the received time, the time after the session (`61d 0h after`, `during the session`), the sender, the subject and the code, and one line `Email N link: URL` per email with a verification link. Mail to an address of a session stays linked to that run and session with no time limit, so renewal notices and receipts weeks after a sign-up session show here with their time after the session. `--reveal` reads the password from the service for this request (`GET /lab-mail/addresses/{id}/password`; each reveal is recorded with the account's user id) and never prints it: with a clipboard (`pbcopy` on macOS, `wl-copy` under Wayland, `xclip` under X) it copies the password there and prints `Password: copied to the clipboard`; otherwise it writes the password to the mode-600 file `~/.config/citt/revealed/CREDENTIAL_ID.txt` (one file per address, replaced on each reveal) and prints `Password: written to PATH (mode 600)`. `CITT_CLIPBOARD=off` skips the clipboard. It works for a sign-up session's credential too, for the account that launched the session. `--json` prints the API body with `password_copied: true` or `password_file`, never the password. A password is for the user to sign in by hand: tell the user where it is (the clipboard, the file path, or the eye button on the address's Mailbox page on the dashboard) and never open the file, print it, or pass it to a model, a prompt or a session instruction. `create --password-stdin` reads the user's password from stdin: run it only when the user pipes the password in themselves.
+
+`email EMAIL_ID --html FILE` saves the email's HTML part (`GET /lab-mail/emails/{id}/html`, decoded to UTF-8; a message without one is its text part in a minimal HTML document) to the new file FILE, mode 600, and prints `Wrote the HTML of email N to FILE`; the body is never printed. The first element of the file's head is a Content-Security-Policy meta tag that blocks remote images and tracking pixels when the file is opened in a browser. `show` prints the command with the newest email's id. A message with neither part exits 4 with `This email has no HTML or text part.`; download the raw message from the Mailboxes page. An email that is not among the account's exits 4; an existing FILE exits 2. Never open the file or pass its contents to a model.
 
 ### citt native
 

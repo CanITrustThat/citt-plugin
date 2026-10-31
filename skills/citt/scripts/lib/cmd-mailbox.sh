@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/cmd-mailbox.sh: citt mailbox create|list|show (NP-867). Lab addresses on the lab mail domain: one made by hand
+# lib/cmd-mailbox.sh: citt mailbox create|list|show (NP-867) and email ID --html FILE (NP-903). Lab addresses on the lab mail domain: one made by hand
 # (POST /lab-mail/addresses, a manual credential with no password; the researcher signs up with a password of their own), the
 # account's addresses (GET /lab-mail/addresses, every page), and one address with its emails, codes and links
 # (GET /lab-mail/addresses/{address or credential id}). Mail to an address stays linked to its run and session with no time limit.
@@ -27,9 +27,9 @@ cmd_mailbox() {
       help_mailbox
       exit 0
       ;;
-    create | list | show) shift ;;
-    '') usage_error "a subcommand is required: citt mailbox create|list|show" ;;
-    *) usage_error "unknown subcommand $sub: citt mailbox create|list|show" ;;
+    create | list | show | email) shift ;;
+    '') usage_error "a subcommand is required: citt mailbox create|list|show|email" ;;
+    *) usage_error "unknown subcommand $sub: citt mailbox create|list|show|email" ;;
   esac
   # shellcheck disable=SC2034  # read by err and fail_out in lib/common.sh
   CITT_CMD="citt mailbox $sub"
@@ -271,5 +271,52 @@ _mb_show() {
         (if $end == 0 then "-" elif (.received_at | ts) < $end then "during the session" else "\((.received_at | ts) - $end | dur) after" end),
         .sender, (.subject // "(no subject)"), .code]]' "$RESP" | table
   jq -r '.emails[] | select(.link) | "Email \(.id) link: \(.link)"' "$RESP"
+  jq -r '.emails[0].id | "Save an email'"'"'s HTML: citt mailbox email \(.) --html \(.).html"' "$RESP"
   [ -z "$(jq -r '.next_cursor // empty' "$RESP")" ] || printf 'Older emails are on the Mailbox page: %s\n' "$page"
+}
+
+# _mb_email ID --html FILE (NP-903): GET /lab-mail/emails/{id}/html (the HTML part decoded to UTF-8, its head starting with a CSP
+# meta tag so a browser opening the file loads no remote image or tracking pixel) written to FILE, mode 600. The body is never
+# printed: stdout is a model's input when an agent runs the plugin.
+_mb_email() {
+  local id="" file=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --html)
+        need_value "$1" $#
+        file="$2"
+        shift
+        ;;
+      --help | -h)
+        help_mailbox
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$id" ] || usage_error "one email id"
+        id="$1"
+        ;;
+    esac
+    shift
+  done
+  case "$id" in '' | *[!0-9]* | 0*) usage_error "an email id is required: citt mailbox email ID --html FILE (the ids are in citt mailbox show)" ;; esac
+  [ -n "$file" ] || usage_error "--html FILE is required: citt mailbox email $id --html $id.html"
+  [ ! -e "$file" ] || usage_error "$file exists; give a new file"
+  need_auth
+  local out
+  out="$(tmpfile mailbox_html)"
+  HTTP_OUT="$out" http GET "$CITT_V1/lab-mail/emails/$id/html"
+  if ! ok; then
+    cp "$out" "$RESP"
+    case "$CODE:$(body_field '.error')" in
+      404:not_found) die 4 "email $id is not among the emails you can read; list an address's emails: citt mailbox show ADDRESS" ;;
+      404:no_html_part) die 4 "$(body_field '.message') Download the raw message from the Mailboxes page, or list the address's emails: citt mailbox show ADDRESS" ;;
+    esac
+    fail_http
+  fi
+  (
+    umask 077
+    cp "$out" "$file" && chmod 600 "$file"
+  ) || die 1 "could not write $file"
+  printf 'Wrote the HTML of email %s to %s (mode 600). Remote images and tracking pixels are blocked when you open it.\n' "$id" "$file"
 }

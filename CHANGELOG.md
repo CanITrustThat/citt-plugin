@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.14.0
+
+- `citt mailbox email EMAIL_ID --html FILE` saves an email's HTML part (`GET /lab-mail/emails/{id}/html`; a message without one is its text part in a minimal HTML document) to the new file FILE, mode 600, with a Content-Security-Policy meta tag first in its head that blocks remote images and tracking pixels when the file is opened; the body is never printed. `citt mailbox show` prints the command with the newest email's id (NP-903).
+
 ## 2.13.1
 
 - `citt capture-options` prints one line per phone whose worker refused its model settings, `<phone>: This phone is unavailable: its model settings are being fixed by the CITT team`; `citt capture-start --phone` on such a phone prints the same sentence with `; the run queues until it is fixed`, and the no-free-phone listing names it (NP-890).
