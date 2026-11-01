@@ -382,6 +382,7 @@ EOF
     break
   done
   RETRIED=$((attempt - 1))
+  _app_host_from_answer
   HTTP_AUTH=1
   HTTP_CLIENT_HDR=1
   HTTP_RETRY=auto
@@ -390,6 +391,19 @@ EOF
   HTTP_HEADERS=""
   HTTP_CHUNK=""
   HTTP_MAX_TIME=""
+}
+
+# _app_host_from_answer: under an honoured CITT_API_OVERRIDE only, the dashboard host that a local gateway names in
+# X-CITT-App-Host (plugin/local/gateway.py --app, TASK-602) becomes CITT_APP_HOST; a value other than
+# http[s]://host[:port] is ignored. A production run never reads the header.
+_app_host_from_answer() {
+  [ "$CITT_OVERRIDDEN" = 1 ] || return 0
+  local v
+  v="$(hdr X-CITT-App-Host)"
+  if printf '%s' "$v" | grep -Eq '^https?://[A-Za-z0-9.-]+(:[0-9]{1,5})?$'; then
+    CITT_APP_HOST="$v"
+  fi
+  return 0
 }
 
 ok() { case "$CODE" in 2??) return 0 ;; esac; return 1; }
@@ -444,6 +458,23 @@ _limit_line() {
   printf '%s; see: citt usage' "$line"
 }
 
+# The sentences of a failed answer that has none of its own (TASK-597, Filip 2026-10-30: no host, API path, HTTP status,
+# API error code or API version in a human line).
+CITT_NET_LINE="the service could not be reached; check the network connection and try again"
+CITT_SERVER_LINE="the server could not answer this request; try again shortly"
+CITT_NO_ROUTE_LINE="this server does not offer this command yet; update the plugin, or try again later"
+
+# plain_message TEXT [CODE]: TEXT when it names no internal (the answer's error CODE, an API path, a host or port, an
+# HTTP status, a setting in capitals, a disk path, a database error), else nothing; for the reason of a refusal.
+plain_message() {
+  local code="${2:-$(body_field '.error')}"
+  if [ -n "$code" ] && printf '%s' "$1" | grep -Fq -- "$code"; then
+    return 0
+  fi
+  printf '%s' "$1" | grep -Eq '/api/|https?://[^ ]*(loc[a]lhost|127\.0\.0\.1|:[0-9])|loc[a]lhost|127\.0\.0\.1|HTTP ?[1-5][0-9][0-9]|status [1-5][0-9][0-9]|\([1-5][0-9][0-9]\)|server error|[A-Z][A-Z0-9]+_[A-Z0-9_]+|(^|[ (:])/(data|srv|var|tmp|home|etc|usr|opt|root)/|sqlx|postgres|SQLSTATE|relation "|panicked' \
+    || printf '%s' "$1"
+}
+
 # _balance_line: the 402 `insufficient_balance` line with the top-up link on the dashboard host.
 _balance_line() {
   local url
@@ -454,7 +485,9 @@ _balance_line() {
     "$CITT_APP_HOST"/*) ;;
     *) url="$CITT_APP_HOST/settings/billing" ;;
   esac
-  printf '%s; top up: %s; see: citt usage' "$(body_field '.message')" "$url"
+  local m
+  m="$(plain_message "$(body_field '.message')")"
+  printf '%s; top up: %s; see: citt usage' "${m:-the prepaid balance does not cover this request}" "$url"
 }
 
 # fail_http: the stderr line and exit code for a failed request (DESIGN-11 "HTTP error handling").
@@ -464,18 +497,26 @@ fail_http() {
   message="$(body_field '.message')"
   case "$CODE" in
     000)
-      msg="cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix)"
+      msg="$CITT_NET_LINE"
       code=9
       ;;
     400)
       if [ "$error" = csv_invalid ]; then
-        msg="CSV rejected: $message; the file needs a package_id, play_store_url or app_store_url column (Google Play and Apple App Store headers are accepted)"
+        message="$(plain_message "$message")"
+        msg="CSV rejected${message:+: $message}; the file needs a package_id, play_store_url or app_store_url column (Google Play and Apple App Store headers are accepted)"
       else
         local unknown
         unknown="$(body_field '(.unknown_apps // []) | join(", ") | select(. != "")')"
         # EPIC-18: a 400 `invalid_feedback` holds its reason in `detail`.
         [ -n "$message" ] || message="$(body_field '.detail | strings')"
-        msg="request rejected: ${message:-$error}${unknown:+: $unknown}"
+        message="$(plain_message "$message")"
+        if [ -n "$message" ]; then
+          msg="request rejected: $message${unknown:+: $unknown}"
+        elif [ -n "$unknown" ]; then
+          msg="request rejected: unknown apps: $unknown"
+        else
+          msg="the server refused this request; check the arguments of the command"
+        fi
       fi
       code=7
       ;;
@@ -493,14 +534,15 @@ fail_http() {
       elif [ "$error" = not_entitled ]; then
         msg="$CITT_NOT_ENTITLED_LINE"
       else
-        msg="${message:-$error}"
+        msg="$(plain_message "$message")"
+        msg="${msg:-this account cannot do this}"
         [ -z "$(body_field '.upgrade_plan')" ] || msg="$msg; plans: $CITT_PRICING_URL"
       fi
       code=3
       ;;
     404 | 405)
       if [ -z "$error" ]; then
-        msg="this server does not provide $REQ_METHOD $REQ_PATH yet"
+        msg="$CITT_NO_ROUTE_LINE"
         code=10
       else
         case "$E_KIND" in
@@ -532,12 +574,16 @@ fail_http() {
         not_ready)
           msg="$E_PACKAGE has no finished scan yet (status: $(body_field '.app_status')); run: citt status${E_PROJECT_REF:+ $E_PROJECT_REF} --wait"
           ;;
-        *) msg="conflict: ${message:-$error}" ;;
+        *)
+          msg="$(plain_message "$message")"
+          msg="${msg:+conflict: $msg}"
+          msg="${msg:-the request conflicts with the current state on the server; check it and try again}"
+          ;;
       esac
       code=5
       ;;
     422)
-      msg="$(body_field '.action // "this action"') is not available in v1"
+      msg="this action is not available on this server"
       code=7
       ;;
     429)
@@ -550,18 +596,18 @@ fail_http() {
       ;;
     502)
       if [ "$error" = legacy_unavailable ]; then
-        msg="the sign-in service is unavailable (502); try again shortly$(_retried_suffix)"
+        msg="the sign-in service is unavailable; try again shortly"
       else
-        msg="server error 502${error:+ $error}$(_retried_suffix)"
+        msg="$CITT_SERVER_LINE"
       fi
       code=8
       ;;
     5??)
-      msg="server error $CODE${error:+ $error}$(_retried_suffix)"
+      msg="$CITT_SERVER_LINE"
       code=8
       ;;
     *)
-      msg="unexpected HTTP $CODE from $REQ_METHOD $REQ_PATH"
+      msg="$CITT_SERVER_LINE"
       code=1
       ;;
   esac
@@ -569,14 +615,14 @@ fail_http() {
 }
 
 # fail_out CODE MESSAGE: the stderr line and, with --json, the response body (or a built error
-# document) with http_status, then exit CODE.
+# document) with http_status and MESSAGE as its message (the API code stays in error), then exit CODE.
 fail_out() {
   local code="$1" msg="$2"
   err "$CITT_CMD: $msg"
   if [ "$CITT_JSON" = 1 ]; then
     if jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
-        '. + {http_status: (if $s == 0 then null else $s end)} | .message = (.message // $m) | .error = (.error // "http_error")' "$RESP"
+        '. + {http_status: (if $s == 0 then null else $s end)} | .message = $m | .error = (.error // "http_error")' "$RESP"
     else
       jq -nc --arg m "$msg" --arg c "$CODE" \
         '{error: (if $c == "000" then "network" else "http_error" end), message: $m,

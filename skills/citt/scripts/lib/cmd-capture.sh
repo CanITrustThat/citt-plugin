@@ -573,11 +573,11 @@ _cs_dlist_get() {
         sleep "$(_cs_retry_after)"
         ;;
       000)
-        CS_DL_MSG="had no answer ($NET_REASON)"
+        CS_DL_MSG="had no answer"
         return 1
         ;;
       *)
-        CS_DL_MSG="answered $CODE"
+        CS_DL_MSG="could not answer"
         return 1
         ;;
     esac
@@ -733,7 +733,7 @@ _cs_fetch() {
               continue
             fi
           fi
-          _cs_s3_down "$sid" "the storage host refused the presigned download ($CODE) after a fresh list"
+          _cs_s3_down "$sid" "the storage refused the download after a fresh list"
           s3url=""
           tries=0
           continue
@@ -741,14 +741,14 @@ _cs_fetch() {
         000 | 5??)
           s3fail=$((s3fail + 1))
           if [ "$s3fail" -ge 5 ]; then
-            _cs_s3_down "$sid" "the storage host failed 5 times, the last with HTTP $CODE"
+            _cs_s3_down "$sid" "the storage could not answer 5 times"
             s3url=""
             tries=0
           fi
           continue
           ;;
         *)
-          err "$CITT_CMD: session $sid: $rel downloaded through the API (the storage host answered $CODE)"
+          err "$CITT_CMD: session $sid: $rel downloaded through the service (the storage could not answer)"
           s3url=""
           tries=0
           continue
@@ -797,7 +797,7 @@ _cs_fetch() {
           ;;
         000)
           CS_FCODE=9
-          CS_FMSG="cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix); the next sync resumes $rel from $(_cs_bytes "$(_cs_size "$part")")"
+          CS_FMSG="the service could not be reached; the next sync resumes $rel from $(_cs_bytes "$(_cs_size "$part")")"
           return 1
           ;;
         404)
@@ -807,7 +807,7 @@ _cs_fetch() {
           ;;
         *)
           CS_FCODE=8
-          CS_FMSG="$rel: server error $CODE$(_retried_suffix)"
+          CS_FMSG="$rel: the server could not answer"
           return 1
           ;;
       esac
@@ -1078,7 +1078,7 @@ _cs_session() {
     2??) ;;
     401) fail_http ;;
     000)
-      _cs_abort 9 "cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix)"
+      _cs_abort 9 "$CITT_NET_LINE"
       return
       ;;
     429)
@@ -1086,15 +1086,15 @@ _cs_session() {
       return
       ;;
     403 | 404)
-      _cs_fail "$sid" 8 "the session is no longer among your projects' captures ($CODE)" "$feed_etag" "$run_id" "" ""
+      _cs_fail "$sid" 8 "the session is no longer among your projects' captures" "$feed_etag" "$run_id" "" ""
       return
       ;;
     409)
-      _cs_fail "$sid" 8 "the file list answered 409 $(jq -r '.error // empty' "$list" 2>/dev/null): $(jq -r '.message // empty' "$list" 2>/dev/null)" "$feed_etag" "$run_id" "" ""
+      _cs_fail "$sid" 8 "the file list of the session is not ready on the server; the next sync fetches it again" "$feed_etag" "$run_id" "" ""
       return
       ;;
     *)
-      _cs_fail "$sid" 8 "the file list failed: server error $CODE$(_retried_suffix)" "$feed_etag" "$run_id" "" ""
+      _cs_fail "$sid" 8 "the server could not answer for the file list of the session" "$feed_etag" "$run_id" "" ""
       return
       ;;
   esac
@@ -1513,11 +1513,11 @@ _cs_run_files() {
       ok) [ "$n" != README.md ] || readme=changed ;;
       same | absent) ;;
       net)
-        _cs_abort 9 "cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix)"
+        _cs_abort 9 "$CITT_NET_LINE"
         return
         ;;
       *)
-        err "$CITT_CMD: run $rk: $n failed: server error $CODE$(_retried_suffix); the next sync fetches it again"
+        err "$CITT_CMD: run $rk: $n failed: the server could not answer; the next sync fetches it again"
         errs=$((errs + 1))
         ;;
     esac
@@ -1532,7 +1532,7 @@ _cs_run_files() {
       case "$CS_RG" in
         ok | same | absent) ;;
         net)
-          _cs_abort 9 "cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix)"
+          _cs_abort 9 "$CITT_NET_LINE"
           return
           ;;
         *) errs=$((errs + 1)) ;;
@@ -1570,11 +1570,11 @@ _cs_runs() {
       2??) ;;
       401) fail_http ;;
       000)
-        _cs_abort 9 "cannot reach $CITT_HOST ($NET_REASON)$(_retried_suffix)"
+        _cs_abort 9 "$CITT_NET_LINE"
         return
         ;;
       *)
-        err "$CITT_CMD: the run list failed: HTTP $CODE; run files are refreshed on the next sync"
+        err "$CITT_CMD: the server could not answer for the run list; run files are refreshed on the next sync"
         CS_SERVER_ERR=$((CS_SERVER_ERR + 1))
         break
         ;;
@@ -1637,7 +1637,7 @@ _cs_sync() {
   fi
   old="$(jq -r '.host // empty' "$CS_ST")"
   if [ -n "$old" ] && [ "$old" != "$CITT_HOST" ]; then
-    die 2 "$CS_DIR holds captures from $old, not $CITT_HOST; sync into another --dir"
+    die 2 "$CS_DIR holds captures from another server; sync into another --dir"
   fi
   E_KIND=project
   E_PROJECT_ID="$(printf '%s' "$CS_PROJECTS" | tr '\n' ' ' | sed 's/ *$//')"

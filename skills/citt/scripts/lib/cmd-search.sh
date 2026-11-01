@@ -88,8 +88,13 @@ _s_feature() {
 }
 
 # _s_out CODE MESSAGE: the plain line and exit CODE; with --json, the answer's document with MESSAGE as its message.
+# With S_PEEK=1 (in a subshell), prints "CODE<tab>MESSAGE" and exits 0 in place (the stopped-early line of a walk).
 _s_out() {
   local tmp
+  if [ "${S_PEEK:-0}" = 1 ]; then
+    printf '%s\t%s' "$1" "$2"
+    exit 0
+  fi
   if [ "$CITT_JSON" = 1 ] && jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
     tmp="$(tmpfile errdoc)"
     jq -c --arg m "$2" '.message = $m' "$RESP" >"$tmp" 2>/dev/null && cp "$tmp" "$RESP"
@@ -173,6 +178,42 @@ _s_counted() {
   fi
 }
 
+# JQ_COUNTED: `grp`, a whole number grouped by thousands ("4,724,516"); `counted($noun)`, "1 request", "48,210 requests".
+# shellcheck disable=SC2016
+JQ_COUNTED='def grp: tostring | if test("^[0-9]+$") then (length as $n | [range(0; $n) as $i | .[$i:$i + 1]
+    + (if $i < $n - 1 and (($n - 1 - $i) % 3) == 0 then "," else "" end)] | join("")) else . end;
+  def counted($noun): "\(grp) \($noun)\(if . == 1 then "" else "s" end)";'
+
+# JQ_NUM: `num`, true for null or a whole number of at least 0 (the counts of an answer).
+JQ_NUM='def num: . == null or (type == "number" and . >= 0 and floor == .);'
+
+# _s_shape FILTER: exits 1 with the plain line unless the answer in $RESP passes FILTER (F20: a field the command reads
+# with another type would print a jq or bash error).
+_s_shape() {
+  jq -e "$JQ_NUM $1" "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+}
+
+# The shapes of the answers: a page of the search or of an inside-words search, an inside-words search, a restore,
+# the project list.
+# shellcheck disable=SC2016
+SHAPE_JOB='type == "object" and (.id | num) and (.sessions_done | num) and (.sessions_total | num) and (.requests_scanned | num)
+  and (.state == null or (.state | type == "string")) and (.error == null or (.error | type == "string"))
+  and (.finished == null or (.finished | type == "boolean"))'
+# shellcheck disable=SC2016
+SHAPE_PAGE='type == "object" and (.items | type == "array" and all(.[]; type == "object"))
+  and (.next == null or (.next | type == "string")) and (.has_more == null or (.has_more | type == "boolean"))
+  and (.total | num) and (.sessions_searched | num)
+  and (.older == null or (.older | type == "object" and (.sessions | num) and (.requests | num)
+    and (.estimated_seconds == null or (.estimated_seconds | type == "number"))))
+  and (.restoring == null or (.restoring | type == "object" and (.sessions_total | num) and (.sessions_done | num)))
+  and (.job == null or (.job | '"$SHAPE_JOB"'))'
+# shellcheck disable=SC2016
+SHAPE_RESTORE='type == "object" and (.sessions_total | num) and (.sessions_done | num) and (.sessions_failed | num)
+  and (.state == null or (.state | type == "string")) and (.error == null or (.error | type == "string"))
+  and (.left_out == null or (.left_out | type == "object" and (.sessions | num) and (.needs_bytes | num) and (.room_bytes | num)))'
+SHAPE_PROJECTS='type == "object" and (.projects | type == "array" and all(.[]; type == "object"
+  and (.project_id | type == "number" and num) and (.name == null or (.name | type == "string"))))'
+
 # _s_busy_line: a 503 capture_tables_busy in plain words, for the route of the last request (Filip, 2026-10-30:
 # the TASK-592 page's sentence; no tables, maintenance or error code).
 _s_busy_line() {
@@ -192,8 +233,9 @@ _s_busy_line() {
 # capture_tables_busy after its Retry-After seconds (30 when absent), and, on a GET (or with HTTP_RETRY=yes), a network
 # failure or another 5xx as http() would (Retry-After, else 1, 2, 4 s); at most SEARCH_BUSY_RETRIES times in all.
 # While S_DEADLINE is set (the polls of --load-older and --inside-words), no wait passes it (F19): the wait is cut to the
-# time left, and an answer after it is final. A 503 search_timed_out is asked again once (TASK-598); with S_SOFT_TIMEOUT=1
-# the second one returns 75 to the caller in place of _s_fail.
+# time left, and an answer after it is final. A 503 search_timed_out is asked again once (TASK-598). With S_SOFT=1 (a
+# walk page after rows were written), a failed answer returns 75 in place of _s_fail, with S_STOP_CODE and S_STOP_LINE
+# (the exit code and line _s_fail would give) and S_STOP_KIND (timed, busy, net, server or other) set (TASK-602).
 _s_call() {
   local method="$1" again=no tries=0 timed=0 wait left busy error
   case "$HTTP_RETRY" in
@@ -240,7 +282,24 @@ _s_call() {
       sleep "$wait"
     fi
   done
-  if [ "${S_SOFT_TIMEOUT:-0}" = 1 ] && [ "$CODE" = 503 ] && [ "$(body_field '.error')" = search_timed_out ]; then
+  if [ "${S_SOFT:-0}" = 1 ]; then
+    local peek
+    peek="$(S_PEEK=1 _s_fail)"
+    S_STOP_CODE="${peek%%$'\t'*}"
+    S_STOP_LINE="${peek#*$'\t'}"
+    error="$(body_field '.error')"
+    case "$CODE" in
+      000) S_STOP_KIND=net ;;
+      503)
+        case "$error" in
+          search_timed_out) S_STOP_KIND=timed ;;
+          capture_tables_busy) S_STOP_KIND=busy ;;
+          *) S_STOP_KIND=server ;;
+        esac
+        ;;
+      5??) S_STOP_KIND=server ;;
+      *) case "$S_STOP_CODE" in 1 | 8 | 9) S_STOP_KIND=server ;; *) S_STOP_KIND=other ;; esac ;;
+    esac
     return 75
   fi
   _s_fail
@@ -261,7 +320,7 @@ _s_page() {
     HTTP_RETRY=no
     _s_call GET "$CITT_V1/capture-search$(_s_query limit "$limit" after "$after")" || return $?
   fi
-  jq -e '.items | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+  _s_shape "$SHAPE_PAGE"
   # A running inside-words job (TASK-591) answers has_more true and next set (to the given after when no new hit
   # was found) until it ends: a page shorter than the limit holds every hit found so far, so it is the last page.
   jq -c --argjson lim "$limit" '
@@ -270,7 +329,8 @@ _s_page() {
     | {items, next: (if $short then null else .next end), has_more: (if $short then false else (.has_more // false) end),
       total, total_estimated: (.total_estimated // false),
       sessions_searched: (.sessions_searched // .job.sessions_total // null),
-      older: (.older // null), restoring: (.restoring // null), job: (.job // null)}' "$RESP" >"$S_PAGE"
+      older: (.older // null), restoring: (.restoring // null), job: (.job // null)}' "$RESP" >"$S_PAGE" 2>/dev/null \
+    || die 1 "unexpected response from the server"
 }
 
 # _s_zones FILE: {iso: {o: utc offset in seconds, z: zone abbreviation}} for every session start of the page,
@@ -299,10 +359,12 @@ def srow: [when, .project_name, .package_id, .run_key, .session_id, .method, .st
 
 # _s_table FILE N: the inline table of the first N items of a normalized page (or of a JSON array of items).
 _s_table() {
-  local zones
+  local zones rows
   zones="$(_s_zones "$1")"
-  jq -c --argjson Z "$zones" --argjson W "$SEARCH_URL_WIDTH" --argjson n "$2" "$JQ_SROW"'
-    [["Time", "Project", "App", "Run", "Session", "Method", "Status", "Host", "URL"]] + [.items[0:$n][] | srow]' "$1" | table
+  rows="$(jq -c --argjson Z "$zones" --argjson W "$SEARCH_URL_WIDTH" --argjson n "$2" "$JQ_SROW"'
+    [["Time", "Project", "App", "Run", "Session", "Method", "Status", "Host", "URL"]] + [.items[0:$n][] | srow]' "$1" 2>/dev/null)" \
+    || die 1 "unexpected response from the server"
+  printf '%s\n' "$rows" | table
 }
 
 # _s_count_line FILE SHOWN AFTER: the total line of a page.
@@ -325,13 +387,13 @@ _s_older_notice() {
   local line
   [ "${S_NOTICE_DONE:-0}" = 0 ] || return 0
   S_NOTICE_DONE=1
-  line="$(jq -r '.older | select(. != null and (.sessions // 0) > 0)
-    | (.estimated_seconds // 0) as $e
+  line="$(jq -r "$JQ_COUNTED"'.older | select(. != null and (.sessions // 0) > 0)
+    | (.estimated_seconds // 0) as $e | (.sessions == 1) as $one
     | (if $e < 60 then "under a minute" elif $e < 7200 then "about \(($e / 60) | ceil) min" else "about \(($e / 3600) | ceil) h" end) as $t
-    | "\(.sessions) older sessions (\(.requests) requests, captured \((.oldest_started_at // .captured_from // "?")[0:10]) to \((.newest_started_at // .captured_to // "?")[0:10])) were not searched: their requests are in the archive; restoring them takes \($t)"' \
+    | "\(.sessions | counted("older session")) (\(.requests // 0 | counted("request")), captured \((.oldest_started_at // .captured_from // "?")[0:10]) to \((.newest_started_at // .captured_to // "?")[0:10])) \(if $one then "was" else "were" end) not searched: \(if $one then "its" else "their" end) requests are in the archive; restoring \(if $one then "it" else "them" end) takes \($t)"' \
     "$S_PAGE" 2>/dev/null)"
   [ -z "$line" ] || err "$CITT_CMD: $line; run: $S_BASE --load-older"
-  line="$(jq -r '.restoring | select(. != null) | "\(.sessions_total) older sessions are being restored: \(.sessions_done) of \(.sessions_total) done"' "$S_PAGE" 2>/dev/null)"
+  line="$(jq -r "$JQ_COUNTED"'.restoring | select(. != null) | "\(.sessions_total // 0 | counted("older session")) \(if .sessions_total == 1 then "is" else "are" end) being restored: \(.sessions_done // 0 | grp) of \(.sessions_total // 0 | grp) done"' "$S_PAGE" 2>/dev/null)"
   [ -z "$line" ] || err "$CITT_CMD: $line; search again when it ends, or follow it: $S_BASE --load-older"
 }
 
@@ -364,14 +426,15 @@ JQ_SCSV='def open($h): "\($h)/capture-sessions/\(.session_id)?t=\(.offset_ms)&re
 # GET /capture-search sends total on the first page only (null on every page with after), so the left-out count
 # is taken from the last page that sent one; an inside-words page sends the job's growing count on every page.
 # That total counts the whole result, so a walk from a cursor prints "more matches" (F14).
-# A page after rows were written that passes the server's time limit twice ends the walk with the rows written, the
-# stopped-early line and S_PARTIAL=1 (TASK-598).
+# A page after rows were written that fails (TASK-598: the time limit twice; TASK-602: any failed answer) ends the walk
+# with the rows written, the stopped-early line and S_PARTIAL_CODE (13, or the code of an answer that needs the user).
+# OUT is created with the first rows, or at the end of a walk with none: a walk that fails before any row leaves no file.
 _s_csv() {
-  local out="$1" max="$2" first="$3" after="$4" n=0 got lim preview left prev total=null stopped=0 rc
+  local out="$1" max="$2" first="$3" after="$4" n=0 got lim preview left prev total=null stopped=0 rc rowsf made=0
   local from_cursor=0
   [ -z "$after" ] || from_cursor=1
   preview="$(tmpfile preview)"
-  ( umask 022; printf '%s\n' "$(printf '%s' "$SEARCH_COLUMNS" | tr ' ' ',')" >"$out" ) || die 1 "cannot write $out"
+  rowsf="$(tmpfile csvrows)"
   while :; do
     if [ "$first" = 1 ]; then
       first=0
@@ -382,13 +445,17 @@ _s_csv() {
       lim=$((max - n))
       [ "$lim" -le "$SEARCH_WALK_PAGE" ] || lim="$SEARCH_WALK_PAGE"
       rc=0
-      [ "$n" = 0 ] || S_SOFT_TIMEOUT=1
+      [ "$n" = 0 ] || S_SOFT=1
       _s_page "$lim" "$after" || rc=$?
-      S_SOFT_TIMEOUT=0
-      if [ "$rc" != 0 ]; then
-        stopped=1
-        break
-      fi
+      S_SOFT=0
+      case "$rc" in
+        0) ;;
+        75)
+          stopped=1
+          break
+          ;;
+        *) die 1 "unexpected response from the server" ;;
+      esac
     fi
     got="$(jq '.items | length' "$S_PAGE")"
     # A walk from a cursor has no count of the rows before it (written to earlier files), so it keeps no total.
@@ -398,7 +465,10 @@ _s_csv() {
       cp "$S_PAGE" "$preview"
       _s_older_notice
     fi
-    jq -r --arg h "$CITT_APP_HOST" "$JQ_CSV$JQ_SCSV" "$S_PAGE" | head -n $((max - n)) >>"$out"
+    jq -r --arg h "$CITT_APP_HOST" "$JQ_CSV$JQ_SCSV" "$S_PAGE" >"$rowsf" 2>/dev/null || die 1 "unexpected response from the server"
+    [ "$made" = 1 ] || _s_csv_head "$out"
+    made=1
+    head -n $((max - n)) "$rowsf" >>"$out"
     n=$((n + got))
     [ "$n" -le "$max" ] || n="$max"
     prev="$after"
@@ -410,13 +480,31 @@ _s_csv() {
     fi
     [ "$n" -lt "$max" ] || break
   done
+  [ "$made" = 1 ] || _s_csv_head "$out"
   printf 'Wrote %s rows to %s.\n' "$n" "$out"
   printf 'Columns: %s\n' "$(printf '%s' "$SEARCH_COLUMNS" | sed -e 's/ /, /g' \
     -e 's/matched/matched (url, headers or body, when the API reports it)/' -e 's/open_url/open_url (the request in its session video)/')"
   if [ "$stopped" = 1 ]; then
-    S_PARTIAL=1
-    printf "Stopped early after %s %s: the search of the next rows passed the server's time limit twice. The next rows: %s --cursor %s --out %s; or narrow the range or the projects.\n" \
-      "$n" "$([ "$n" = 1 ] && printf row || printf rows)" "$S_BASE" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")"
+    local why tail
+    # Asking again gets past these answers (exit 13); a sign-in, a usage limit or a refusal keeps the code of its line.
+    S_PARTIAL_CODE=13
+    tail="; try it again shortly"
+    case "$S_STOP_KIND" in
+      timed)
+        why="the search of the next rows passed the server's time limit twice"
+        tail="; or narrow the range or the projects"
+        ;;
+      busy) why="$(_s_busy_line)" ;;
+      net) why="the service could not be reached" ;;
+      server) why="the server could not answer the search of the next rows" ;;
+      *)
+        why="$S_STOP_LINE"
+        tail=""
+        S_PARTIAL_CODE="$S_STOP_CODE"
+        ;;
+    esac
+    printf 'Stopped early after %s %s: %s. The next rows: %s --cursor %s --out %s%s.\n' \
+      "$n" "$([ "$n" = 1 ] && printf row || printf rows)" "$why" "$S_BASE" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")" "$tail"
   elif [ -z "$after" ] && [ "$from_cursor" = 1 ]; then
     # A walk from a cursor holds the rest of the result only: its row count is not the count of the search.
     printf 'The rest of the result: %s %s, the last rows of the search.\n' "$n" "$([ "$n" = 1 ] && printf row || printf rows)"
@@ -436,6 +524,11 @@ _s_csv() {
     printf 'First %s rows:\n' "$([ "$n" -lt "$SEARCH_PREVIEW_ROWS" ] && printf '%s' "$n" || printf '%s' "$SEARCH_PREVIEW_ROWS")"
     _s_table "$preview" "$SEARCH_PREVIEW_ROWS"
   fi
+}
+
+# _s_csv_head OUT: creates OUT with the header line.
+_s_csv_head() {
+  ( umask 022; printf '%s\n' "$(printf '%s' "$SEARCH_COLUMNS" | tr ' ' ',')" >"$1" ) || die 1 "cannot write $1"
 }
 
 # Filip, 2026-10-30: user-facing copy never exposes internals. The API's left_out.reason, a restore's error and an
@@ -479,7 +572,7 @@ _s_restore() {
   local timeout="$1" start total line done_n failed left
   HTTP_RETRY=no
   _s_call POST "$CITT_V1/capture-search/restore$(_s_range_query)"
-  jq -e 'type == "object"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+  _s_shape "$SHAPE_RESTORE"
   line="$(jq -r '.left_out | select(. != null and (.sessions // 0) > 0) | "\(.sessions)\t\(.needs_bytes // 0)\t\(.room_bytes // 0)"' "$RESP")"
   if [ -n "$line" ]; then
     local lo_n lo_need lo_room
@@ -496,7 +589,7 @@ _s_restore() {
     # GET /capture-search/restore: the progress of the range's open restores (a RestoreAnswer); it queues nothing
     # and searches nothing, so a poll costs no search of the range.
     _s_call GET "$CITT_V1/capture-search/restore$(_s_range_query)"
-    jq -e 'type == "object"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+    _s_shape "$SHAPE_RESTORE"
     if [ "$(jq -r '.state // empty' "$RESP")" != restoring ]; then
       err "$CITT_CMD: restoring $total older sessions: done"
       return 0
@@ -527,18 +620,20 @@ _s_deep() {
   local timeout="$1" start left st
   HTTP_RETRY=no
   _s_call POST "$CITT_V1/capture-search/deep$(_s_query)"
+  _s_shape '(.job // .) | '"$SHAPE_JOB"
   S_JOB="$(jq -r '.job.id // .id // empty' "$RESP" 2>/dev/null)"
   is_uint "$S_JOB" || die 1 "unexpected response from the server"
   start="$(now_s)"
   S_DEADLINE=$((start + timeout))
   while ! _s_deep_finished; do
     _s_call GET "$CITT_V1/capture-search/deep/$S_JOB$(query limit 1)"
-    err "$CITT_CMD: $(jq -r '(.job // .) as $j | (.total // 0) as $h
-      | "inside words: \($j.sessions_done // 0) of \($j.sessions_total // "?") sessions searched, \($j.requests_scanned // 0) requests, \($h) \(if $h == 1 then "hit" else "hits" end) so far"' "$RESP")"
+    _s_shape '((.job // .) | '"$SHAPE_JOB"') and (.total | num)'
+    err "$CITT_CMD: $(jq -r "$JQ_COUNTED"'(.job // .) as $j
+      | "inside words: \($j.sessions_done // 0 | grp) of \($j.sessions_total // "?" | grp) sessions searched, \($j.requests_scanned // 0 | counted("request")), \(.total // 0 | counted("hit")) so far"' "$RESP")"
     _s_deep_finished && break
     left=$((timeout - ($(now_s) - start)))
     if [ "$left" -le 0 ]; then
-      S_DEEP_LATE="$(jq -r '(.job // .) | "has \(.sessions_done // 0) of \(.sessions_total // "?") sessions searched"' "$RESP")"
+      S_DEEP_LATE="$(jq -r "$JQ_COUNTED"'(.job // .) | "has \(.sessions_done // 0 | grp) of \(.sessions_total // "?" | grp) sessions searched"' "$RESP")"
       return 12
     fi
     poll_sleep "" "$left"
@@ -633,10 +728,11 @@ cmd_search() {
     fi
     [ -n "${_S_PROJECTS:-}" ] || {
       _s_call GET "$CITT_V1/projects"
+      _s_shape "$SHAPE_PROJECTS"
       _S_PROJECTS="$(tmpfile projects)"
       cp "$RESP" "$_S_PROJECTS"
     }
-    ids="$(jq -r --arg n "$ref" '[.projects[] | select(.name == $n) | .project_id] | sort | map(tostring) | join(" ")' "$_S_PROJECTS")" \
+    ids="$(jq -r --arg n "$ref" '[.projects[] | select(.name == $n) | .project_id] | sort | map(tostring) | join(" ")' "$_S_PROJECTS" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     c="$(printf '%s' "$ids" | wc -w | tr -d ' ')"
     case "$c" in
@@ -682,7 +778,7 @@ cmd_search() {
   if [ -n "$out" ]; then
     case "$out" in /*) ;; *) out="$PWD/$out" ;; esac
     _s_csv "$out" "$cap" 0 "$cursor"
-    [ "$code" != 0 ] || [ "${S_PARTIAL:-0}" = 0 ] || code=13
+    [ "$code" != 0 ] || [ -z "${S_PARTIAL_CODE:-}" ] || code="$S_PARTIAL_CODE"
     _s_deep_end "$code"
     return "$code"
   fi
@@ -701,7 +797,7 @@ cmd_search() {
   if [ "$inline" = 0 ] && [ "$(jq -r '.has_more' "$S_PAGE")" = true ]; then
     # Over the inline page: the whole result goes to a CSV file in the working directory.
     _s_csv "$PWD/$(_s_csv_name)" "$cap" 1 "$cursor"
-    [ "$code" != 0 ] || [ "${S_PARTIAL:-0}" = 0 ] || code=13
+    [ "$code" != 0 ] || [ -z "${S_PARTIAL_CODE:-}" ] || code="$S_PARTIAL_CODE"
     _s_deep_end "$code"
     return "$code"
   fi

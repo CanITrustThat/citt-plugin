@@ -1,5 +1,16 @@
 # Changelog
 
+## 2.15.2
+
+- `citt capture-options` and `citt capture-start` take an iOS app: APP is an Android package id, an iOS bundle id or a Google Play link, and `--platform android|ios` picks the app of an id the project holds for both platforms; an iOS run goes to an iOS lab device with the same exit, language, proxy file and navigator options, and `--reset-gaid` is refused for it. An App Store link exits 2 with the line naming the bundle id to give instead (NP-634).
+- A capture run of an app no lab device takes names the platform and the reason: every device of that platform reserved for other accounts, captures on that platform not open yet, or no device of that platform registered; exit 7 (NP-951).
+- `citt search` keeps the rows of a CSV walk whose later page fails in any way after its retries (a server error, a busy server, no connection, the time limit twice): the CSV holds the rows written, and `Stopped early after N rows: <reason>. The next rows: <command> --cursor C --out FILE-2.csv; try it again shortly.` gives the reason in plain words; exit 13. A page refused for a sign-in or a usage limit keeps the rows too, prints its own sentence in that line and exits 3 or 6 (TASK-602).
+- `citt search` creates no CSV file when it fails before any row was fetched, and leaves an existing file as it was (TASK-602).
+- An answer `citt search` cannot read (a body that is not JSON, a field of another type) prints `unexpected response from the server` once and exits 1, also while it follows an inside-words search; before, each poll printed a parser error line (TASK-602).
+- The older-sessions notice, the restoring notice and the inside-words progress lines group their counts by thousands, with the singular for 1 (`1,200 older sessions (48,210 requests, ...)`, `1 older session (1 request, ...) was not searched`) (TASK-602).
+- Every command prints a failed answer as one plain sentence, with no host, API path, HTTP status, API error code or API version: `the service could not be reached; check the network connection and try again` (exit 9), `the server could not answer this request; try again shortly` (exit 8), `this server does not offer this command yet; update the plugin, or try again later` (exit 10); a refusal keeps the service's reason when it names no internal. With `--json`, `error` and `http_status` keep the API code and the status, and `message` is the plain sentence (TASK-597).
+- With the plugin pointed at a local gateway in test mode, the dashboard links (the CSV `open_url` column, billing and task links) go to the dashboard the gateway names (`gateway.py --app`); production links are unchanged (TASK-602).
+
 ## 2.15.1
 
 - `citt search` reads the CSV of a result in pages of 50 rows (200 before): a page of 200 rows of a common text over 30 days could pass the server's time limit (TASK-598).

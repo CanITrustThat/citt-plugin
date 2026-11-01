@@ -54,7 +54,7 @@ _tus_offset() {
     *) prompt_fail ;;
   esac
   TUS_OFF="$(hdr Upload-Offset)"
-  is_uint "$TUS_OFF" || die 1 "HEAD $REQ_PATH answered without an Upload-Offset"
+  is_uint "$TUS_OFF" || die 1 "unexpected response from the server during the upload"
 }
 
 # _tus_create SIZE NAME: POST /uploads; sets UPLOAD_URL.
@@ -68,7 +68,7 @@ Upload-Metadata: $meta"
   [ "$CODE" = 201 ] || prompt_fail
   loc="$(hdr Location)"
   case "$loc" in /*) loc="$CITT_HOST$loc" ;; esac
-  _tus_url_ok "$loc" || die 1 "POST $CITT_V1/uploads answered with an unexpected Location: $loc"
+  _tus_url_ok "$loc" || die 1 "unexpected response from the server during the upload"
   UPLOAD_URL="$loc"
 }
 

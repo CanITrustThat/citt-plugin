@@ -93,7 +93,7 @@ cmd_verdict() {
   call POST "$CITT_V1/findings/$id/verdicts" "$body"
   # Project and event ids go into the printed line: numbers only.
   jq -e '(.project_id | type) == "number" and (.event_id | type) == "number" and (.unchanged | type) == "boolean"' \
-    "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from POST $CITT_V1/findings/$id/verdicts"
+    "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c . "$RESP"
     return 0

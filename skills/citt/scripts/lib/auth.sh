@@ -95,7 +95,7 @@ _auth_start() {
   ok || fail_http
   link="$(body_field '.verification_uri_complete')"
   if [ -z "$(body_field '.device_code')" ] || [ -z "$link" ]; then
-    die 1 "unexpected response from /api/device/code"
+    die 1 "unexpected response from the server"
   fi
   _trusted_link "$link" || die 1 "the sign-in link is not on canitrustthat.com; not shown"
   interval="$(body_field '.interval')"
@@ -152,7 +152,9 @@ _auth_wait() {
       slow_down) interval=$((interval + 5)) ;;
       access_denied)
         rm -f "$CITT_FLOW_FILE"
-        err "$(body_field '.message // "access denied for this plan; see canitrustthat.com/pricing"')"
+        local denied
+        denied="$(plain_message "$(body_field '.message')")"
+        err "${denied:-access denied for this plan; see canitrustthat.com/pricing}"
         exit 3
         ;;
       expired_token)

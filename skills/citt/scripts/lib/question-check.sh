@@ -142,9 +142,9 @@ check_question() {
     CHECK_STATUS=unavailable
     error="$(jq -r '.error // empty' "$out" 2>/dev/null)"
     if [ "$CODE" = 000 ]; then
-      CHECK_REASON="no response from $CITT_HOST: $NET_REASON"
+      CHECK_REASON="the service could not be reached"
     else
-      CHECK_REASON="HTTP $CODE${error:+ $error}"
+      CHECK_REASON="the server could not answer"
     fi
     return 0
   fi

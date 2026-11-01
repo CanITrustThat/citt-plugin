@@ -273,8 +273,9 @@ or several words match as written. Use citt capture-sync instead to keep whole s
 Exit 12: --inside-words or --load-older still running after --timeout; the hits found so far are
 printed and the stderr line gives the re-run command.
 The CSV is read in pages of 50 rows; a page that passes the server's time limit is asked again once.
-Exit 13: a later page passed it twice; the CSV keeps the rows written, and the Stopped early line
-gives the command for the next rows.
+Exit 13: a later page passed it twice or failed after its retries; the CSV keeps the rows written,
+and the Stopped early line gives the reason and the command for the next rows (a page refused for
+a sign-in or a usage limit keeps the rows too and exits 3 or 6).
 EOF
 }
 
@@ -325,32 +326,36 @@ EOF
 
 help_capture_options() {
   cat <<'EOF'
-citt capture-options APP --project NAME|ID [--duration D] [--json]
+citt capture-options APP --project NAME|ID [--platform android|ios] [--duration D] [--json]
 
-What a capture run of APP (an Android package id or Google Play link in the project) can use:
-whether the package is allowed, the lab phones with their device id, status and active runs,
+What a capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project) can use:
+whether the package is allowed, the lab devices of its platform with their device id, status and active runs, the stated
+limits of its captures (iOS: Apple's own hosts are not decrypted; a device in proxy mode misses connections that ignore the proxy),
 the exit states and the exit countries (per NordVPN region) with their server counts, whether
 the service takes --proxy-file (Proxy exit: available), the session lengths, the duration range, the default profile, whether the lab launcher is online, and the measured size per captured hour.
   --duration   also print the estimated download size of a run this long (90m, 3h, 2d)
+  --platform   android or ios: the app of that platform when the project holds the id for both (default: the Android app)
 EOF
 }
 
 help_capture_start() {
   cat <<'EOF'
-citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--split S] [--phone NAME|ID]
+citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
-Starts a network capture run of APP (an Android package id or Google Play link in the project)
-on a lab phone and prints the run id, run key, phone, state, planned sessions, estimated end and
+Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
+on a lab device of its platform and prints the run id, run key, phone, state, planned sessions, estimated end and
 the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --duration   run length, 1m to 7d
   --state      US exit state code, such as CA (see: citt capture-options); the run is captured in it or fails naming it
   --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it
   --passthrough  hosts (DNS names or IPv4 addresses, at most 20) the proxy passes through unread: they are not decrypted and their
                  traffic content is not captured; no wildcard, port, scheme or path; repeatable
-  --reset-gaid gives the phone a new advertising ID once, before the first session; the run page and run.json show the ID before and after
+  --reset-gaid gives the phone a new advertising ID once, before the first session; the run page and run.json show the ID before and after;
+               Android phones only (an iOS device has no advertising ID reset)
+  --platform   android or ios: the app of that platform when the project holds the id for both (default: the Android app)
   --country    exit country code, such as SG (see: citt capture-options); a US exit needs --state
   --language   device language of the phone for every session, a tag such as zh-Hans-CN or es-US from the options'
                device_locales; independent of the exit, whose time zone stays (default: the exit's language)

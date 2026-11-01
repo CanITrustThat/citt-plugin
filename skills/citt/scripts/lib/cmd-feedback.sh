@@ -81,7 +81,7 @@ cmd_feedback() {
   HTTP_RETRY=no
   call POST "$CITT_V1/feedback" "$body"
   # The id goes into the printed line: a number only.
-  jq -e '(.id | type) == "number"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from POST $CITT_V1/feedback"
+  jq -e '(.id | type) == "number"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c . "$RESP"
     return 0

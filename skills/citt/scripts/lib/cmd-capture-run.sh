@@ -30,18 +30,19 @@ _cr_secs() {
   printf '%s' "$n"
 }
 
-# _cr_package APP: the package id of a package id or a Google Play link.
+# _cr_package APP: the package id of a package id, an iOS bundle id or a Google Play link. An App Store link holds the store's
+# number, not the bundle id the project lists (NP-634).
 _cr_package() {
   local a="$1" p
   case "$a" in
-    *apps.apple.com* | *itunes.apple.com*) usage_error "capture runs take an Android app: a package id or a Google Play link" ;;
+    *apps.apple.com* | *itunes.apple.com*) usage_error "an App Store link holds no bundle id; give the app's bundle id with --platform ios (citt apps lists it)" ;;
     http://* | https://*)
       case "$a" in *play.google.com*) ;; *) usage_error "not a Google Play link: $a" ;; esac
       p="$(printf '%s' "$a" | sed -n 's/.*[?&]id=\([^&#]*\).*/\1/p')"
       ;;
     *) p="$a" ;;
   esac
-  [[ "$p" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+$ ]] || usage_error "not an Android package id or Google Play link: $a"
+  [[ "$p" =~ ^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$ ]] || usage_error "not a package id, bundle id or Google Play link: $a"
   printf '%s' "$p"
 }
 
@@ -54,16 +55,40 @@ _cr_project_fix() {
   check_project_flags
 }
 
-# _cr_app PACKAGE: resolves the project and sets CR_PAPP, the project app id of PACKAGE.
+# _cr_platform VALUE: checks --platform (android or ios, or empty).
+_cr_platform() {
+  case "$1" in '' | android | ios) ;; *) usage_error "--platform is android or ios, got: $1" ;; esac
+}
+
+# _cr_app PACKAGE [PLATFORM]: resolves the project and sets CR_PAPP, the project app id of PACKAGE. NP-634: PLATFORM empty takes
+# the Android app of PACKAGE, else its iOS app (an id the project holds for both platforms is the Android app, as before NP-634);
+# --platform ios or android takes that platform's app only.
 _cr_app() {
   E_KIND=project
   resolve_project
   call GET "$CITT_V1/projects/$PROJECT_ID/apps$(query q "$1")"
-  CR_PAPP="$(jq -r --arg p "$1" '[.apps[] | select(.platform == "android" and .package_id == $p) | .project_app_id] | first // empty' "$RESP" 2>/dev/null)" \
+  CR_PAPP="$(jq -r --arg p "$1" --arg pl "${2:-}" '[.apps[] | select(.package_id == $p and ($pl == "" or .platform == $pl))]
+      | (map(select(.platform == "android")) + map(select(.platform != "android"))) | first | .project_app_id // empty' "$RESP" 2>/dev/null)" \
     || die 1 "unexpected response from the server"
-  [ -n "$CR_PAPP" ] || die 4 "$1 is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $1"
+  [ -n "$CR_PAPP" ] || die 4 "$1${2:+ ($2)} is not in project \"${PROJECT_NAME:-$PROJECT_ID}\"; add it: citt submit$(project_arg) $1"
   E_KIND=app
   E_PACKAGE="$1"
+}
+
+# _cr_not_allowed PACKAGE: the refusal of an app the options do not allow, naming a platform that has no lab device (NP-634),
+# with the reason the options state (NP-951 `not_allowed_reason`: closed_platform, all_reserved, none_registered).
+_cr_not_allowed() {
+  local name reason
+  name="$(jq -r '{"android": "Android", "ios": "iOS"}[.platform // ""] // empty' "$CR_OPTS")"
+  reason="$(jq -r '.not_allowed_reason // empty' "$CR_OPTS")"
+  if [ -n "$name" ]; then
+    case "$reason" in
+      all_reserved) die 7 "every lab device for $name apps is reserved for other accounts; contact support to have one opened to your account" ;;
+      closed_platform) die 7 "$1 is an $name app and network captures on $name devices are not open yet; contact support for access" ;;
+    esac
+    die 7 "$1 is an $name app and no lab device for $name apps is registered yet"
+  fi
+  die 7 "$1 is not among the packages allowed for capture runs"
 }
 
 # _cr_options: GET the start options of CR_PAPP into CR_OPTS.
@@ -99,7 +124,7 @@ _cr_get_run() {
 # --- capture-options -------------------------------------------------------------------
 
 cmd_capture_options() {
-  local app="" dur="" dur_s="" pkg
+  local app="" dur="" dur_s="" pkg platform=""
   CITT_CMD="citt capture-options"
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
@@ -112,6 +137,11 @@ cmd_capture_options() {
       --duration)
         need_value "$1" $#
         dur="$2"
+        shift
+        ;;
+      --platform)
+        need_value "$1" $#
+        platform="$2"
         shift
         ;;
       --json) CITT_JSON=1 ;;
@@ -129,10 +159,11 @@ cmd_capture_options() {
   done
   [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
   pkg="$(_cr_package "$app")" || exit $?
+  _cr_platform "$platform"
   _cr_project_fix
   [ -z "$dur" ] || dur_s="$(_cr_secs --duration "$dur")" || exit $?
   need_auth
-  _cr_app "$pkg"
+  _cr_app "$pkg" "$platform"
   _cr_options
   if [ "$CITT_JSON" = 1 ]; then
     cat "$CR_OPTS"
@@ -151,6 +182,9 @@ cmd_capture_options() {
     jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status, (.active_runs // 0)]]' "$CR_OPTS" | table
     jq -r '.devices[] | select(.unavailable) | "\(.device_name): \(.unavailable)"' "$CR_OPTS"
   fi
+  # NP-634: the stated limits of the app's platform, then each device's (an Android app and an older API state none)
+  jq -r '(.limits // [])[] | "Limit: \(.text)"' "$CR_OPTS"
+  jq -r '.devices[] | .device_name as $n | (.limits // [])[] | "Limit on \($n): \(.text)"' "$CR_OPTS"
   printf '\n'
   jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" --arg note "$CITT_TRACKING_NOTE" "$CR_JQ"'
     "Exit states (servers): " + ([.states[] | "\(.code) \(.servers // "-")"] | join(", ") | if . == "" then "none reported" else . end),
@@ -436,7 +470,7 @@ _cr_proxy_file() {
 
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
-  local proxy_file=""
+  local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup=""
   CR_PT="" CR_PT_N=0
@@ -452,9 +486,10 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --proxy-file)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --proxy-file | --platform)
         need_value "$1" $#
         case "$1" in
+          --platform) platform="$2" ;;
           --language) language="$2" ;;
           --proxy-file) proxy_file="$2" ;;
           --goal) goal="$2" ;;
@@ -494,6 +529,7 @@ cmd_capture_start() {
   done
   [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
   pkg="$(_cr_package "$app")" || exit $?
+  _cr_platform "$platform"
   _cr_project_fix
   # NP-800: the session prompts of an orchestrated run, from the flags or from --prompts-file (JSON {goal, bring_me_in,
   # conclusion}); blank values and bullets are left out of the request body
@@ -573,7 +609,7 @@ cmd_capture_start() {
   # CF-W11: --passthrough hosts (validated while the flags were read), as the request's passthrough_hosts
   [ -z "$CR_PT" ] || pt_json="$(printf '%s\n' "$CR_PT" | jq -R . | jq -sc .)"
   need_auth
-  _cr_app "$pkg"
+  _cr_app "$pkg" "$platform"
 
   # A re-run of the same command within a day reuses the nonce, phone and session length of the
   # interrupted one, so the API returns the run that call may have created.
@@ -604,7 +640,7 @@ cmd_capture_start() {
   fi
   if [ -z "$nonce" ] || [ -z "$CR_DEV" ] || [ -z "$split_s" ]; then
     [ -n "$CR_OPTS" ] || _cr_options
-    [ "$(jq -r '.package_allowed' "$CR_OPTS")" = true ] || die 7 "$pkg is not among the packages allowed for capture runs"
+    [ "$(jq -r '.package_allowed' "$CR_OPTS")" = true ] || _cr_not_allowed "$pkg"
     [ "$(jq -r '.launcher_online' "$CR_OPTS")" = true ] || err "$CITT_CMD: the lab launcher is offline; the run queues until it reports"
     _cr_pick "$phone"
     [ -n "$split_s" ] || split_s="$(_cr_split "$dur_s")"

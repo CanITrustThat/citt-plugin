@@ -307,7 +307,11 @@ _task_cancel() {
   case "$CODE" in
     2??) ;;
     404) [ -z "$(body_field '.error')" ] && fail_http; die 4 "no task $id in your projects (see: citt tasks)" ;;
-    409) fail_out 5 "task $id cannot be cancelled: $(body_field '.message')" ;;
+    409)
+      local why
+      why="$(plain_message "$(body_field '.message')")"
+      fail_out 5 "task $id cannot be cancelled${why:+: $why}"
+      ;;
     *) fail_http ;;
   esac
   _task_get "$id" "$out"

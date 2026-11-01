@@ -171,7 +171,7 @@ cmd_help_answer() {
   HTTP_RETRY=no
   http POST "$CITT_V1/capture-help-requests/$id/answer" "$body"
   if ok; then
-    jq -e '.request.id | type == "number"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from POST $CITT_V1/capture-help-requests/$id/answer"
+    jq -e '.request.id | type == "number"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     if [ "$CITT_JSON" = 1 ]; then
       jq -c . "$RESP"
       return 0

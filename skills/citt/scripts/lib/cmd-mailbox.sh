@@ -90,7 +90,7 @@ _mb_create() {
   HTTP_RETRY=no
   http POST "$CITT_V1/lab-mail/addresses" "$body"
   if ok; then
-    jq -e '.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from POST $CITT_V1/lab-mail/addresses"
+    jq -e '.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     if [ "$CITT_JSON" = 1 ]; then
       jq -c . "$RESP"
       return 0
@@ -240,11 +240,11 @@ _mb_show() {
     if ! ok; then
       case "$CODE:$(body_field '.error')" in
         404:no_password) die 4 "no password is stored for $ref; the account was made with a password of its own" ;;
-        503:seal_key_missing) die 5 "$(body_field '.message')" ;;
+        503:seal_key_missing) die 5 "the stored password cannot be read right now; try again later, or ask the CITT team" ;;
       esac
       fail_http
     fi
-    jq -e '.password | type == "string" and length > 0' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from GET $CITT_V1/lab-mail/addresses/$cred/password"
+    jq -e '.password | type == "string" and length > 0' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
     shown="$(_mb_reveal_to "$cred")" || exit 1
     cp "$saved" "$RESP"
   fi

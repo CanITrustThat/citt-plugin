@@ -86,7 +86,7 @@ cmd_scrutinize() {
     call POST "$CITT_V1/findings/scrutinize" "$body"
     # Job ids go into printed commands: numbers only.
     jq -e 'all(.jobs[]?; (.job_id | type) == "number" and .job_id >= 0 and (.job_id | floor) == .job_id)' "$RESP" >/dev/null \
-      || die 1 "unexpected job id in the response from POST $CITT_V1/findings/scrutinize"
+      || die 1 "unexpected response from the server"
     cp "$RESP" "$jobs"
     if [ "$wait" = 0 ]; then
       if [ "$CITT_JSON" = 1 ]; then
