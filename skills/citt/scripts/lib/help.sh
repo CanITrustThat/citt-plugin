@@ -247,9 +247,12 @@ help_search() {
   cat <<'EOF'
 citt search TEXT (--days N | --from DATE [--to DATE]) [--project NAME|ID]... [--inside-words]
             [--limit N] [--cursor C] [--inline | --out FILE.csv [--max-rows N]] [--load-older] [--timeout S] [--json]
+citt search --query 'QUERY' [--days N | --from WHEN [--to WHEN]] [--project NAME|ID]... [--inside-words TEXT]
+            [--facet FIELD]... [--top N] [--limit N] [--cursor C] [--inline | --out FILE.csv [--max-rows N]] [--json]
+citt search --fields [--json]
 
 Finds captured requests (url, headers, body) across every capture session of your projects whose
-capture started in the range, newest session first. The range has no default: --days 30 is the
+capture started in the range, newest session first. With TEXT the range has no default: --days 30 is the
 usual search. Words and camelCase parts match (AppLovinSdk finds applovin and sdk); a quoted text
 or several words match as written. Use citt capture-sync instead to keep whole sessions on disk.
   --days N        the last N days, ending now; printed commands carry the resulting --from and --to
@@ -269,13 +272,27 @@ or several words match as written. Use citt capture-sync instead to keep whole s
   --load-older    restore the sessions of the range whose requests are in the archive (the stderr
                   notice gives their count and the estimated time), follow the restore every 15 s,
                   then search; exit 12 after --timeout (default 540 s) with the re-run command
-  --json          one citt.plugin.search/1 document: rows, next, total, older, restoring
+  --json          one citt.plugin.search/1 document: rows, next, total, older, restoring; with --query also
+                  query_info (the query as searched, the range, warnings) and incomplete; with --facet, facets
+  --query QUERY   field conditions in place of TEXT: host:idsync.rlcdn.com, -host:cdn.cookielaw.org,
+                  sent:advertising_id recipient:data_broker, param[gdpr_consent]:*, status:4xx, app:com.example.game,
+                  combined with AND (or a space), OR, NOT, a leading - and parentheses; a bare word matches as TEXT.
+                  The range is optional (default the last 30 days ending now); --from and --to also take now and
+                  now-7d (units min, h, d, w), and --days N is --from now-Nd. Warnings and their fixes print on
+                  stderr; a query that mixes AND and OR without parentheses exits 2 with both readings as commands
+  --inside-words TEXT  with --query: adds contains:"TEXT", the text inside longer words, beside the other conditions
+  --facet FIELD   with --query or TEXT: after the rows, the top values of FIELD with their apps and requests (10, or
+                  --top N up to 100): day, host, app, recipient, sent, signal, status, method, type, project,
+                  tracking, exit.state, phone; repeatable, up to 5; the last line states what the counts cover
+  --fields        the search fields of --query, with their other names, a description and an example
 Exit 12: --inside-words or --load-older still running after --timeout; the hits found so far are
 printed and the stderr line gives the re-run command.
 The CSV is read in pages of 50 rows; a page that passes the server's time limit is asked again once.
 Exit 13: a later page passed it twice or failed after its retries; the CSV keeps the rows written,
 and the Stopped early line gives the reason and the command for the next rows (a page refused for
 a sign-in or a usage limit keeps the rows too and exits 3 or 6).
+Exit 13 with --query: the last page read ended at the server's time limit before it read every session (a
+query with no host, app, recipient or identifier); the Searched N of M sessions line gives the next command.
 EOF
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.16.0
+
+- `citt search --query 'QUERY'` searches with field conditions in place of TEXT (`host:`, `app:`, `sent:`, `recipient:`, `param[name]:`, `status:4xx` and the other fields of `citt search --fields`, combined with `AND`, `OR`, `NOT`, `-` and parentheses). The range is optional (the last 30 days ending now), and `--from` and `--to` also take `now` and `now-7d`; `--days N` sends `from=now-Nd`. The first stdout line is the range searched. TEXT and `--query` together exit 2 with `Give the text as TEXT or as --query, not both.`; `citt search TEXT` sends the same request as 2.15.2 (TASK-609).
+- Warnings of a query print on stderr as `citt search: <sentence>` with `  try: citt search --query '<fixed>' ...` when the service has a fix; a query that mixes `AND` and `OR` without parentheses exits 2 with one `try:` command per reading; a refused query exits 2 with the service's sentence (TASK-609).
+- `--facet FIELD` (repeatable, up to 5) prints after the rows the top values of the field (`--top N`, default 10) with their apps and requests, and a last line that states what the counts cover (`Counted over all 4,120 matching requests.`, `Ranked from 64 of 6,130 sessions; no counts.`); `--json` adds `facets` (TASK-609).
+- `citt search --fields` lists the search fields with their other names, a description and an example (TASK-609).
+- `--inside-words TEXT` with `--query` adds `contains:"TEXT"` to the query (TASK-609).
+- A `--query` page that ends at the server's time limit before it reads every session exits 13 with `Searched N of M sessions; the next rows: <command> --cursor C`; a CSV keeps the rows fetched (TASK-609).
+- The CSV `matched` column holds each matched part of a `--query` row as `res.body at 26347: <snippet>` (TASK-609).
+
 ## 2.15.2
 
 - `citt capture-options` and `citt capture-start` take an iOS app: APP is an Android package id, an iOS bundle id or a Google Play link, and `--platform android|ios` picks the app of an id the project holds for both platforms; an iOS run goes to an iOS lab device with the same exit, language, proxy file and navigator options, and `--reset-gaid` is refused for it. An App Store link exits 2 with the line naming the bundle id to give instead (NP-634).
