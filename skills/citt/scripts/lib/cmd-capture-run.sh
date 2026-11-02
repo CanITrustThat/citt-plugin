@@ -198,6 +198,8 @@ cmd_capture_options() {
      else empty end),
     (if ((.device_locales // []) | length) > 0 then
        "Device languages (--language, default the exit'"'"'s language): " + ([.device_locales[].tag] | join(", ")) else empty end),
+    (if .device_location then .device_location as $l
+       | "Location (--location LAT,LNG, default none): decimal degrees, latitude \($l.lat_min) to \($l.lat_max), longitude \($l.lng_min) to \($l.lng_max), at most \($l.max_decimals) decimals, such as \($l.example.lat),\($l.example.lng)" else empty end),
     "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
@@ -468,10 +470,19 @@ _cr_proxy_file() {
   case "$_cr_x" in *x*) set -x ;; esac
 }
 
+# _cr_location VALUE: {"lat": N, "lng": N} of LAT,LNG in decimal degrees (an optional minus, at most 6 decimals, latitude -90 to 90,
+# longitude -180 to 180); status 1 for any other value (NP-981).
+_cr_location() {
+  [[ "$1" =~ ^(-?[0-9]{1,3}(\.[0-9]{1,6})?),(-?[0-9]{1,3}(\.[0-9]{1,6})?)$ ]] || return 1
+  jq -nce --arg a "${BASH_REMATCH[1]}" --arg b "${BASH_REMATCH[3]}" \
+    '($a | tonumber) as $lat | ($b | tonumber) as $lng
+     | if $lat >= -90 and $lat <= 90 and $lng >= -180 and $lng <= 180 then {lat: $lat, lng: $lng} else false end'
+}
+
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file="" platform=""
-  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language=""
+  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup=""
   CR_PT="" CR_PT_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
@@ -486,11 +497,12 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --proxy-file | --platform)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --location | --proxy-file | --platform)
         need_value "$1" $#
         case "$1" in
           --platform) platform="$2" ;;
           --language) language="$2" ;;
+          --location) location="$2" ;;
           --proxy-file) proxy_file="$2" ;;
           --goal) goal="$2" ;;
           --bring-me-in) bmi_json="$(jq -c --arg b "$2" '. + [$b]' <<<"$bmi_json")" ;;
@@ -588,6 +600,12 @@ cmd_capture_start() {
   # list (the options' device_locales), the plugin checks the form only
   [ -z "$language" ] || [[ "$language" =~ ^[a-z]{2,3}(-[A-Z][a-z]{3})?-[A-Z]{2}$ ]] \
     || usage_error "--language takes a device language tag of the form ll-CC or ll-Ssss-CC, such as zh-Hans-CN or es-US (the options list device_locales: citt capture-options)"
+  # NP-981: the phone location of every session, LAT,LNG in decimal degrees with at most 6 decimals, in range; sent as numbers
+  if [ -n "$location" ]; then
+    loc_json="$(_cr_location "$location")" \
+      || usage_error "--location takes LAT,LNG in decimal degrees, such as 39.7392,-104.9903 (latitude -90 to 90, longitude -180 to 180, at most 6 decimals)"
+    location="$(jq -r '"\(.lat),\(.lng)"' <<<"$loc_json")"
+  fi
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -620,6 +638,7 @@ cmd_capture_start() {
   [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
   [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
   [ -z "$language" ] || hin="$hin|device_locale=$language"
+  [ -z "$location" ] || hin="$hin|device_location=$location"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -655,7 +674,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --argjson pr "$prompts_json" --arg su "$allow_signup" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --argjson pr "$prompts_json" --arg su "$allow_signup" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -667,6 +686,7 @@ cmd_capture_start() {
      + (if ($pt | length) == 0 then {} else {passthrough_hosts: $pt} end)
      + (if $rg == "" then {} else {reset_gaid: true} end)
      + (if $dl == "" then {} else {device_locale: $dl} end)
+     + (if $loc == "" then {} else {device_location: ($loc | fromjson)} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
@@ -729,7 +749,8 @@ _cr_started() {
          then "; orchestrated: yes, " + n((.prompts.bring_me_in // []) | length; "bring-me-in bullet"; "bring-me-in bullets")
            + (if .prompts.goal then ", goal set" else ", no goal" end)
            + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end)
-      + (if .allow_signup == true then "; sign-up allowed" else "" end),
+      + (if .allow_signup == true then "; sign-up allowed" else "" end)
+      + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
 }
@@ -782,7 +803,10 @@ _cr_watch() {
         + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)
         + (($s | .persona) // {} | if .locale then "; Phone locale \(.locale)"
              + (if .locale_source == "run" then " (set by the run)" elif .locale_source == "exit" then " (set by the exit)" else "" end)
-             + (if .time_zone then " · time zone \(.time_zone)" else "" end) else "" end)' "$RESP" 2>/dev/null)" \
+             + (if .time_zone then " · time zone \(.time_zone)" else "" end) else "" end)
+        + (($s | .persona.location) // null | if type != "object" or .lat == null then ""
+             elif .exposure.ok == false then "; location not set: \(.exposure.reason // "the phone'"'"'s real location is readable by apps")"
+             else "; location \(.lat),\(.lng) " + (if .verified == true then "verified on the phone" else "not verified" end) end)' "$RESP" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -816,7 +840,8 @@ _cr_watch() {
           + (if ($r.failed_sessions // 0) > 0 then ", \($r.failed_sessions) failed" else "" end)
           + (if ($r.flags // 0) > 0 then ", " + n($r.flags; "flag"; "flags") else "" end)
           + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)
-          + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)' "$RESP"
+          + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)
+          + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then
