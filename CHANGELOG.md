@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.18.0
+
+- `citt mailbox create` makes a new lab address on `pelmu.me` by default; `--domain pinegrovemail.com` puts it on the older domain, and the request body contains `domain`. Addresses made before 2026-11-03 are on `pinegrovemail.com` and keep receiving. Messages name the address on the domain asked for (NP-928).
+
 ## 2.17.0
 
 - `citt capture-start --location LAT,LNG` sets the phone location of every session of the run to that point, in decimal degrees (latitude -90 to 90, longitude -180 to 180, at most 6 decimals), such as `--location 39.7392,-104.9903`; the request body contains `device_location: {"lat": 39.7392, "lng": -104.9903}`. Any other form or a value out of range exits 2 with `--location takes LAT,LNG in decimal degrees, such as 39.7392,-104.9903` and no request. The start line ends `; location 39.7392,-104.9903`; `citt captures` and the `citt capture-watch` run line show the location; each `citt capture-watch` session line states `location 39.7392,-104.9903 verified on the phone` or `not verified`, or `location not set: <reason>` for a session in which the phone's real location was readable by apps. `citt capture-options` prints the accepted form. Apps can detect the location as simulated; the time zone stays the exit's (NP-981).

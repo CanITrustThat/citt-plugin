@@ -457,14 +457,16 @@ EOF
 
 help_mailbox() {
   cat <<'EOF'
-citt mailbox create [--local PART] [--project ID] [--app PACKAGE] [--run ID] [--session ID] [--note TEXT]
-                    [--password-stdin | --no-password] [--json]
+citt mailbox create [--local PART] [--domain DOMAIN] [--project ID] [--app PACKAGE] [--run ID] [--session ID]
+                    [--note TEXT] [--password-stdin | --no-password] [--json]
 citt mailbox list [--json]
 citt mailbox show ADDRESS|CREDENTIAL_ID [--reveal] [--json]
 citt mailbox email EMAIL_ID --html FILE
 
-Lab mail addresses on pinegrovemail.com (Mailboxes on the dashboard). create makes an address
-by hand: a generated first.last name, or --local PART; optional links to a project and app, or
+Lab mail addresses on pelmu.me (Mailboxes on the dashboard); addresses made before 2026-11-03
+are on pinegrovemail.com and keep receiving. create makes an address by hand: a generated
+first.last name, or --local PART; --domain pinegrovemail.com puts it on the older domain;
+optional links to a project and app, or
 to a run (its project and app follow) and one of its sessions; a note. A 16-character password
 is generated and stored for the account; --password-stdin stores your own (first line of
 stdin), --no-password none. Mail to the address shows at once, and mail to an address of a

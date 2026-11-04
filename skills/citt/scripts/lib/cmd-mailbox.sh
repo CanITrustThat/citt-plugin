@@ -6,7 +6,8 @@
 # shellcheck shell=bash disable=SC2016
 
 # The lab mail domain (04 point 18); the service checks it, this names a local part in messages only.
-MB_DOMAIN=pinegrovemail.com
+# NP-928 (Filip, 2026-11-03): new addresses on pelmu.me; --domain pinegrovemail.com makes one on the old domain, which keeps receiving.
+MB_DOMAIN=pelmu.me
 MB_NOTE_MAX=500
 
 # MB_JQ: `links`, the project, app, run and session of a LabAddress as words (needs $L from local_times); `kind_word`.
@@ -37,13 +38,14 @@ cmd_mailbox() {
 }
 
 _mb_create() {
-  local local_part="" project="" app="" run="" session="" note="" have_note=0 pw_mode=generate password=""
+  local local_part="" project="" app="" run="" session="" note="" have_note=0 pw_mode=generate password="" domain=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --local | --project | --app | --run | --session | --note)
+      --local | --project | --app | --run | --session | --note | --domain)
         need_value "$1" $#
         case "$1" in
           --local) local_part="$2" ;;
+          --domain) domain="$2" ;;
           --project) project="$2" ;;
           --app) app="$2" ;;
           --run) run="$2" ;;
@@ -78,8 +80,8 @@ _mb_create() {
   local body
   body="$(tmpfile mailbox_create)"
   # QA round 2 R2-P1: the password reaches jq on stdin (printf is a builtin), never as an argument in a process's argv.
-  printf '%s\n' "$password" | jq -Rc --arg l "$local_part" --arg p "$project" --arg a "$app" --arg r "$run" --arg s "$session" --arg n "$note" --arg hn "$have_note" --arg pm "$pw_mode" '
-    . as $pw | {} + (if $l != "" then {local_part: $l} else {} end) + (if $p != "" then {project_id: ($p | tonumber)} else {} end)
+  printf '%s\n' "$password" | jq -Rc --arg l "$local_part" --arg p "$project" --arg a "$app" --arg r "$run" --arg s "$session" --arg n "$note" --arg hn "$have_note" --arg pm "$pw_mode" --arg d "$domain" '
+    . as $pw | {} + (if $l != "" then {local_part: $l} else {} end) + (if $d != "" then {domain: $d} else {} end) + (if $p != "" then {project_id: ($p | tonumber)} else {} end)
        + (if $a != "" then {package_id: $a} else {} end) + (if $r != "" then {run_id: ($r | tonumber)} else {} end)
        + (if $s != "" then {session_id: ($s | tonumber)} else {} end) + (if $hn == "1" then {note: $n} else {} end)
        + (if $pm == "stdin" then {password: $pw} elif $pm == "none" then {password_generate: false} else {} end)' >"$body"
@@ -103,7 +105,7 @@ _mb_create() {
   fi
   local error shown="$local_part" what
   error="$(body_field '.error')"
-  case "$shown" in '' | *@*) ;; *) shown="$shown@$MB_DOMAIN" ;; esac
+  case "$shown" in '' | *@*) ;; *) shown="$shown@${domain:-$MB_DOMAIN}" ;; esac
   case "$CODE:$error" in
     409:address_taken)
       die 5 "${shown:-the generated address} is taken; choose another --local, or leave it out for a generated name"
