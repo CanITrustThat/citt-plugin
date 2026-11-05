@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.25.0
+
+- `citt capture-options` and `citt capture-start` take an iOS bundle id of one segment, with a hyphen or with a segment that starts with a digit, such as `pinterest`, `LiveScore`, `com.mwm.sampler-app` and `com.gramgames.1010`; the id starts with a letter or digit, holds letters, digits, `_`, `-` and `.` with no empty segment, and is at most 240 characters. An App Store number exits 2 with `<number> is an App Store number, not a bundle id; give the app's bundle id with --platform ios (citt apps lists it)` and no request (NP-1341).
+- `citt submit` of an iOS app by App Store number or App Store link lists the app under its bundle id when the App Store lookup finds it; the number is kept in the row as `app_store_id` (NP-1341, a change of the service).
+- `citt submit` lists, after the not-found lines, each iOS app kept under its App Store number because its bundle id was not found: `Queued under the App Store number, bundle id not found (N):`, then one line per number with `the App Store lists no app with this number` or `the App Store could not be asked; submit the app again later to list it under its bundle id` (NP-1341).
+
+## 2.24.0
+
+- `citt capture-options` marks an exit country that takes no run with `(unavailable)` on its region line and prints `Unavailable: <reason>`: the lab's connect attempts of the last 7 days in that country passed none and every recorded failure was the country check (the exit is placed in another country, such as JO servers that exit in FR); the reason names the failure, the count, when the country is offered again and the time of the reading. A country whose every server failed within the last 900 s prints `Exit country <CC> may fail its first session: <reason>`, and a country whose attempts measured under the 5 MB/s floor prints `Exit country <CC> is slow: <reason>` with the measured speed and the attempt counts (it stays available: a slow server is still used inside a run). `citt capture-start --country <CC>` of an unavailable country exits 4 with the reason and sends no start request; a 422 `exit_country_unavailable` from the start exits 4 with its message; a start answer with `exit_warning` prints `Warning: <text>` (NP-1339).
+
+## 2.23.0
+
+- `citt captures` and the `citt capture-watch` run line state the cause of a failed app install before the reason: `failed (CITT side): ...` for a failure on the CITT side (the install helper, the lab's network route or store accounts, the stored build), `failed (device side): ...` for the device's storage or a device that stopped answering, `failed (app side): ...` for a paid app, an app the store does not offer or an app with no build for the device. A failure with no stated cause shows no word. With `--json`, each run has `failure_cause` (`service`, `device`, `app` or null). A run whose install failed on the CITT side is queued once more on the phone it was booked on; one that failed on the device side is queued once more on a free phone of the same model, and fails when there is none (NP-1336).
+
+## 2.21.0
+
+- `citt capture-options` prints `<phone>: This phone is offline for a fault on our side; runs booked on it wait until it is back.` for a phone that is offline for a fault on the lab side; runs queued on it start once it is back (NP-1335).
+- The `Active runs` cell of `citt capture-options` states the running and the queued runs, such as `3 (1 running, 2 queued)`; `citt capture-start --phone` on a busy phone states `is busy (1 running, 2 queued)`, and the no-free-phone line gives the same counts. With a service that does not state the two counts, the cell is the number as before (NP-1335).
+- `citt capture-start --phone` on a phone offline for a fault on the lab side prints the sentence above once; the run is queued on it (NP-1335).
+
 ## 2.20.0
 
 - `citt search --hosts-file FILE` searches a list of domains, one per line (`#` comments and blank lines allowed; a leading `*.`, a trailing `.` and upper case folded; repeats once), as `domain:(a.com OR b.com ...)`, which includes subdomains, joined with any `--query` by AND; up to 500 domains. A search of rows reads at most 500 hosts: over that it exits 2 with the number of hosts, without repeating the list, and with `try:` commands for `--export` and `--counts host,app`, which have no limit of hosts. A line that is not a domain exits 2 with `line N of FILE: "TEXT" is not a domain; ...` and no request; printed commands name `--hosts-file FILE`, not the list (TASK-642).

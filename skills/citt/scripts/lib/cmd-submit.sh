@@ -190,5 +190,13 @@ cmd_submit() {
     | select(length > 0)
     | "Not found, ios (\(length)): " + (group_by(.reason) | map([(.[0].reason // "-"), length])
         | sort_by(-.[1], .[0]) | map("\(.[0]) \(.[1])") | join(", "))' "$RESP"
+  # NP-1341: an iOS app submitted by App Store number whose bundle id the App Store lookup did not give stays under the number.
+  jq -r '[.apps[] | select(.bundle_id_lookup != null)]
+    | select(length > 0)
+    | ("Queued under the App Store number, bundle id not found (\(length)):"),
+      ((map(.package_id | length) | max) as $w
+       | .[] | "  " + .package_id + ([range(0; $w - (.package_id | length) + 3)] | map(" ") | join(""))
+         + (if .bundle_id_lookup == "app_store_not_listed" then "the App Store lists no app with this number"
+            else "the App Store could not be asked; submit the app again later to list it under its bundle id" end))' "$RESP"
   printf 'Next: citt status --project %s --wait\n' "$(shq "$(jq -r .project "$RESP")")"
 }

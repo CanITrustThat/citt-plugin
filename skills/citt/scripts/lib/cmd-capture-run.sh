@@ -30,8 +30,10 @@ _cr_secs() {
   printf '%s' "$n"
 }
 
-# _cr_package APP: the package id of a package id, an iOS bundle id or a Google Play link. An App Store link holds the store's
-# number, not the bundle id the project lists (NP-634).
+# _cr_package APP: the package id of a package id, an iOS bundle id or a Google Play link. An App Store link or number is not the
+# bundle id the project lists (NP-634). NP-1341: the rule is the service's iOS bundle id rule (NP-1122), which Android package ids
+# also pass: letters, digits, `_`, `-` and `.`, starting with a letter or digit, no empty segment, at most 240 characters, not all
+# digits, not `temp`; one segment (`pinterest`) is allowed.
 _cr_package() {
   local a="$1" p
   case "$a" in
@@ -42,7 +44,10 @@ _cr_package() {
       ;;
     *) p="$a" ;;
   esac
-  [[ "$p" =~ ^[A-Za-z][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)+$ ]] || usage_error "not a package id, bundle id or Google Play link: $a"
+  [[ "$p" =~ ^[0-9]+$ ]] && usage_error "$p is an App Store number, not a bundle id; give the app's bundle id with --platform ios (citt apps lists it)"
+  if ! [[ "$p" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(\.[A-Za-z0-9_-]+)*$ ]] || [ "${#p}" -gt 240 ] || [ "$p" = temp ]; then
+    usage_error "not a package id, bundle id or Google Play link: $a"
+  fi
   printf '%s' "$p"
 }
 
@@ -179,7 +184,10 @@ cmd_capture_options() {
   if [ "$(jq '.devices | length' "$CR_OPTS")" = 0 ]; then
     printf 'Phones: none registered\n'
   else
-    jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status, (.active_runs // 0)]]' "$CR_OPTS" | table
+    # NP-1335: the active runs as running and queued when the API states both
+    jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status,
+      (if (.active_runs // 0) > 0 and (.running_runs | type) == "number" and (.queued_runs | type) == "number"
+       then "\(.active_runs) (\(.running_runs) running, \(.queued_runs) queued)" else (.active_runs // 0) end)]]' "$CR_OPTS" | table
     jq -r '.devices[] | select(.unavailable) | "\(.device_name): \(.unavailable)"' "$CR_OPTS"
   fi
   # NP-634: the stated limits of the app's platform, then each device's (an Android app and an older API state none)
@@ -191,10 +199,14 @@ cmd_capture_options() {
     (if ((.countries // []) | length) > 0 then
        (.regions // ([.countries[].region] | unique)) as $regions
        | ($regions[] as $g | [.countries[] | select(.region == $g)
-           | "\(.code) \(.servers // "?")" + (if .code == "US" then " (by state, --state)" else "" end)]
+           | "\(.code) \(.servers // "?")" + (if .code == "US" then " (by state, --state)" else "" end)
+             + (if .available == false then " (unavailable)" else "" end)]
          | select(length > 0) | "Exit countries (servers), \($g): " + join(", ")),
          (if any(.countries[]; .servers == null) then
-            "? is a country no phone worker has reported a server count for yet; --country CC takes any code listed" else empty end)
+            "? is a country no phone worker has reported a server count for yet; --country CC takes any code listed" else empty end),
+         (.countries[] | select(.available == false and .unavailable_reason) | "Unavailable: \(.unavailable_reason)"),
+         (.countries[] | select(.available != false and .window_reason) | "Exit country \(.code) may fail its first session: \(.window_reason)"),
+         (.countries[] | select(.available != false and .slow_reason) | "Exit country \(.code) is slow: \(.slow_reason)")
      else empty end),
     (if ((.device_locales // []) | length) > 0 then
        "Device languages (--language, default the exit'"'"'s language): " + ([.device_locales[].tag] | join(", ")) else empty end),
@@ -240,11 +252,13 @@ _cr_pick() {
          + [$d[] | select(.device_name == $p)]
          + [$d[] | select((.device_name // "" | ascii_downcase) == ($p | ascii_downcase))]) | first // empty' "$CR_OPTS")"
     [ -n "$sel" ] || die 4 "no phone \"$1\"; phones: $(jq -r '[.devices[] | "\(.device_name) (device \(.device_id))"] | join(", ") | if . == "" then "none registered" else . end' "$CR_OPTS")"
-    # NP-890: a phone whose worker refused its model settings is `unavailable` with one sentence; the run queues until it is fixed
+    # NP-890: a phone whose worker refused its model settings is `unavailable` with one sentence; the run queues until it is fixed.
+    # NP-1335: the sentence of a phone off adb (`unavailable_kind` `adb_offline`) states when booked runs start and is printed as it is
     if [ -n "$(jq -r '.unavailable // empty' <<<"$sel")" ]; then
-      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r '.unavailable' <<<"$sel"); the run queues until it is fixed"
+      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r '.unavailable + (if .unavailable_kind == "adb_offline" then "" else "; the run queues until it is fixed" end)' <<<"$sel")"
     else case "$(jq -r '.status' <<<"$sel")" in
-      busy) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is busy ($(jq -r '.active_runs // 0' <<<"$sel") active runs); the run queues behind them" ;;
+      busy) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is busy ($(jq -r 'if (.running_runs | type) == "number" and (.queued_runs | type) == "number"
+          then "\(.running_runs) running, \(.queued_runs) queued" else "\(.active_runs // 0) active runs" end' <<<"$sel")); the run queues behind them" ;;
       offline) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is offline; the run queues until it reports" ;;
     esac; fi
   else
@@ -254,7 +268,10 @@ _cr_pick() {
       die 5 "no free phone: $(jq -r 'def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
         [.devices[] | "\(.device_name) (device \(.device_id)) \(.status)"
           + (if .unavailable then ": " + .unavailable else "" end)
-          + (if (.active_runs // 0) > 0 then ", " + n(.active_runs; "active run"; "active runs") else "" end)] | join("; ")' "$CR_OPTS"); give one with --phone NAME|ID to queue the run on it"
+          + (if (.active_runs // 0) == 0 then ""
+             elif (.running_runs | type) == "number" and (.queued_runs | type) == "number"
+             then ", \(.running_runs) running, \(.queued_runs) queued"
+             else ", " + n(.active_runs; "active run"; "active runs") end)] | join("; ")' "$CR_OPTS"); give one with --phone NAME|ID to queue the run on it"
     fi
   fi
   CR_DEV="$(jq -r '.device_id' <<<"$sel")"
@@ -656,6 +673,11 @@ cmd_capture_start() {
     _cr_options
     [ "$(jq -r --arg c "$country" 'any(.countries[]?; .code == $c)' "$CR_OPTS")" = true ] \
       || die 4 "no exit country $country in the capture options; list them with: citt capture-options $pkg$(project_arg)"
+    # NP-1339: a country whose recent connect attempts all failed on its country check or speed takes no run until it is
+    # offered again; the reason names when
+    local unavailable
+    unavailable="$(jq -r --arg c "$country" '.countries[]? | select(.code == $c and .available == false) | .unavailable_reason // "unavailable"' "$CR_OPTS")"
+    [ -z "$unavailable" ] || die 4 "$unavailable; list the exit countries with: citt capture-options $pkg$(project_arg)"
   fi
   if [ -z "$nonce" ] || [ -z "$CR_DEV" ] || [ -z "$split_s" ]; then
     [ -n "$CR_OPTS" ] || _cr_options
@@ -698,6 +720,10 @@ cmd_capture_start() {
     2??) [ "$wait" = 1 ] || rm -f "$pend" ;;
     400 | 402 | 403 | 404 | 409 | 422) rm -f "$pend" ;;
   esac
+  # NP-1339: the country became unavailable between the options and the start
+  if [ "$CODE" = 422 ] && [ "$(body_field '.error')" = exit_country_unavailable ]; then
+    die 4 "$(body_field '.message'); list the exit countries with: citt capture-options $pkg$(project_arg)"
+  fi
   # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
   if [ "$CODE" = 503 ] && [ "$(body_field '.error')" = proxy_exit_unavailable ]; then
     rm -f "$pend"
@@ -751,6 +777,7 @@ _cr_started() {
            + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end)
       + (if .allow_signup == true then "; sign-up allowed" else "" end)
       + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end),
+    (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
 }
@@ -835,7 +862,9 @@ _cr_watch() {
     now_state="$(jq -r '"\(.run.state)|\(.run.status_reason // "")"' "$RESP")"
     if [ "$now_state" != "$last" ] && [ "$CITT_JSON" != 1 ]; then
       jq -r "$CR_JQ"' .run as $r
-        | "Run \($r.experiment_id) (\($r.run_key)): \($r.state)" + (if $r.status_reason then ": \($r.status_reason)" else "" end)
+        | "Run \($r.experiment_id) (\($r.run_key)): \($r.state)"
+          + ({"service": " (CITT side)", "device": " (device side)", "app": " (app side)"}[$r.failure_cause // ""] // "")
+          + (if $r.status_reason then ": \($r.status_reason)" else "" end)
           + ", " + (if $r.planned_sessions then "\($r.finished_sessions // 0) of \(n($r.planned_sessions; "session"; "sessions"))"
                     else n($r.finished_sessions // 0; "session"; "sessions") end)
           + (if ($r.failed_sessions // 0) > 0 then ", \($r.failed_sessions) failed" else "" end)

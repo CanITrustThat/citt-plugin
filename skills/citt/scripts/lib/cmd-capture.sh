@@ -2270,7 +2270,8 @@ cmd_captures() {
     def ended: if $sort == "finished" then [.finished_at | lt] else [] end;
     [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
-        (.state // "-") + (if .status_reason then ": " + .status_reason else "" end)
+        (.state // "-") + ({"service": " (CITT side)", "device": " (device side)", "app": " (app side)"}[.failure_cause // ""] // "")
+          + (if .status_reason then ": " + .status_reason else "" end)
           + (if .device_locale then "; device language \(.device_locale)" else "" end)
           + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
           + (if .exit_redirected == true
