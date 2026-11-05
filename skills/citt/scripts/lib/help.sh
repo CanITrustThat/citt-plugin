@@ -502,15 +502,38 @@ is generated and stored for the account; --password-stdin stores your own (first
 stdin), --no-password none. Mail to the address shows at once, and mail to an address of a
 session stays linked to that session with no time limit.
 list prints every address of your account. show prints one address, its links and each email
-with the time after the session, the code and the link; --reveal puts the password on the
-clipboard (pbcopy, wl-copy or xclip) or else in a mode-600 file under ~/.config/citt/revealed
-and prints only "copied" or the file path, never the password (each reveal is recorded).
-Never pass a password to a model or a prompt.
+with the time after the session, the masked sender and subject (links, codes and every word
+holding a digit masked), the snippet length, the code length and whether it has a link; no
+snippet, code or link is printed. --reveal puts the password on the clipboard (pbcopy, wl-copy
+or xclip) or else in a mode-600 file under ~/.config/citt/revealed, writes the codes, links and
+snippets to a mode-600 file there, and prints only "copied" or the file paths (each reveal is
+recorded). Never pass a password, a code or a message to a model or a prompt.
 email --html saves an email's HTML part (else its text part as HTML) to a new mode-600 FILE; the
 file's Content-Security-Policy blocks remote images and tracking pixels when it is opened.
 Exit 5 when the address is taken or received mail before it was created here (choose another
 address, or contact support to link that mail to a session); 4 when the run, project or address
 is not among yours; 3 when Mailboxes are not available on this account (contact support).
+EOF
+}
+
+help_inbox() {
+  cat <<'EOF'
+citt inbox [--kind all|address|phone] [--json]
+citt inbox PHONE_ID [--reveal] [--json]
+citt inbox ADDRESS|CREDENTIAL_ID [--reveal] [--json]
+
+The Inbox of the dashboard: the lab addresses and phone numbers your sessions signed up with,
+newest first, with kind, state, app, session, persona age, the newest message time and the
+newest code length. A number prints as its last 4 digits (•••• 3807) and a code as its length
+([code, 6 digits]); --json removes the number and gives each code as its length. PHONE_ID
+prints one number: provider, kind, state, end, renewal, the account it belongs to, run,
+session, cost so far, and per text only its time, masked sender, length, whether it has a link
+and its code length; no text is printed. --reveal puts the codes (newest first) on the
+clipboard (pbcopy, wl-copy or xclip) or else in a mode-600 file, writes the texts to a mode-600
+file under ~/.config/citt/revealed, and prints only where they went. Never pass a number, a
+code or a text to a model or a prompt. An address or credential id is citt mailbox show.
+Exit 3 when the Inbox or lab phone numbers are not available on this account (contact
+support); 4 when they are not available right now, or the number is not among yours.
 EOF
 }
 

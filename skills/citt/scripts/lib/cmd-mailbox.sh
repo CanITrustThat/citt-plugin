@@ -11,7 +11,38 @@ MB_DOMAIN=pelmu.me
 MB_NOTE_MAX=500
 
 # MB_JQ: `links`, the project, app, run and session of a LabAddress as words (needs $L from local_times); `kind_word`.
-MB_JQ="$JQ_LT"'
+# MASK_JQ (NP-924 QA rounds 1 and 2): the plugin's stdout is a model's input (decision 31), and Filip's rule keeps codes and phone
+# numbers from models: `codetag` a code as its length, `clen` a code as its length in --json, `has_url`, `mask_meta` a subject or
+# sender with its links, codes and digit tokens masked. No email snippet or SMS text is printed.
+MASK_JQ='
+def codetag: if test("^\\p{Nd}+$") then "[code, \(length) digits]" else "[code, \(length) characters]" end;
+def clen: if type == "string" then length else . end;
+# NP-924 QA round 2 (decision): stdout prints no email snippet or SMS text. A subject or sender keeps its words, with every link
+# (any `scheme://`, `www.`, `host.tld/path` and `host.tld?query`, hosts in any script) as `[link]`, the token after a code word
+# (code, PIN, OTP, passcode, verification, confirm...) and the token before "is your ... code" as `[code]`, every all-capital token
+# of 4 to 14 letters (any script, dashes inside) and every token holding a digit (any script) as `[masked]` (QA round 3 R3-2).
+def has_url: test("(?i)(?:https?://|www\\.)\\S|\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)+/");
+# `mask_message`: a server message (an error answer) with the masks below but the all-capital rule, which would take words such as HTML.
+def mask_message: if type != "string" then . else
+  gsub("(?i)\\b[a-z][a-z0-9+.-]*://\\S+"; "[link]")
+  | gsub("(?i)\\bwww\\.\\S+"; "[link]")
+  | gsub("(?i)\\b[\\p{L}\\p{N}-]+(?:\\.[\\p{L}\\p{N}-]+)+[/?]\\S*"; "[link]")
+  | gsub("(?i)(?<w>\\b(?:code|pin|otp|passcode|verification|confirm[a-z]*)\\b[^\\p{L}\\p{N}]{0,3}(?:(?:is|was)[^\\p{L}\\p{N}]{1,3})?)(?!(?:code|pin|otp|passcode|is|was)\\b)(?<t>[\\p{L}\\p{N}](?:[\\p{L}\\p{N}]|-(?=[\\p{L}\\p{N}])){3,63})(?![\\p{L}\\p{N}])"; "\(.w)[code]")
+  | gsub("(?i)\\b[\\p{L}\\p{N}](?:[\\p{L}\\p{N}]|-(?=[\\p{L}\\p{N}])){3,31}(?=\\s+(?:is|was|=)\\s+(?:your|the|a)\\s+(?:\\S+\\s+){0,2}(?:code|pin|otp|passcode|verification|confirm[a-z]*)\\b)"; "[code]")
+  | gsub("\\S*\\p{N}\\S*"; "[masked]")
+  end;
+def mask_meta: if type != "string" then . else
+  gsub("(?i)\\b[a-z][a-z0-9+.-]*://\\S+"; "[link]")
+  | gsub("(?i)\\bwww\\.\\S+"; "[link]")
+  | gsub("(?i)\\b[\\p{L}\\p{N}-]+(?:\\.[\\p{L}\\p{N}-]+)+[/?]\\S*"; "[link]")
+  | gsub("(?i)(?<w>\\b(?:code|pin|otp|passcode|verification|confirm[a-z]*)\\b[^\\p{L}\\p{N}]{0,3}(?:(?:is|was)[^\\p{L}\\p{N}]{1,3})?)(?!(?:code|pin|otp|passcode|is|was)\\b)(?<t>[\\p{L}\\p{N}](?:[\\p{L}\\p{N}]|-(?=[\\p{L}\\p{N}])){3,63})(?![\\p{L}\\p{N}])"; "\(.w)[code]")
+  | gsub("(?i)\\b[\\p{L}\\p{N}](?:[\\p{L}\\p{N}]|-(?=[\\p{L}\\p{N}])){3,31}(?=\\s+(?:is|was|=)\\s+(?:your|the|a)\\s+(?:\\S+\\s+){0,2}(?:code|pin|otp|passcode|verification|confirm[a-z]*)\\b)"; "[code]")
+  | gsub("(?<![\\p{L}\\p{N}])\\p{Lu}(?:\\p{Lu}|-(?=\\p{Lu})){3,13}(?![\\p{L}\\p{N}])"; "[masked]")
+  | gsub("\\S*\\p{N}\\S*"; "[masked]")
+  end;
+'
+
+MB_JQ="$JQ_LT$MASK_JQ"'
 def kind_word: if .kind == "manual" then "made by hand" else "sign-up session" end;
 def links: [ (if .project_id then "project \(.project_id)" else empty end),
              (if .app.package_id then "app \(.app.label // .app.package_id)" else empty end),
@@ -34,6 +65,8 @@ cmd_mailbox() {
   esac
   # shellcheck disable=SC2034  # read by err and fail_out in lib/common.sh
   CITT_CMD="citt mailbox $sub"
+  # shellcheck disable=SC2034  # read by mask_server_text and fail_out in lib/common.sh
+  CITT_MASK_JQ="$MASK_JQ"
   "_mb_$sub" "$@"
 }
 
@@ -97,8 +130,8 @@ _mb_create() {
       jq -c . "$RESP"
       return 0
     fi
-    jq -r --argjson L "$(local_times "$RESP")" --arg page "$(app_url "/mailboxes/$(jq -r .credential_id "$RESP")")" "$MB_JQ"'
-      "Created \(.address) (credential \(.credential_id))", "Links: \(links)", "Mailbox page: \($page)",
+    jq -r --argjson L "$(local_times "$RESP")" --arg page "$(app_url "/inbox/$(jq -r .credential_id "$RESP")")" "$MB_JQ"'
+      "Created \(.address) (credential \(.credential_id))", "Links: \(links)", "Inbox page: \($page)",
       (if .has_password then "Password: stored; show it with: citt mailbox show \(.address) --reveal" else "Password: none stored" end),
       "Mail to it shows on that page and with: citt mailbox show \(.address)"' "$RESP"
     return 0
@@ -177,21 +210,22 @@ _mb_clipboard() {
   fi
 }
 
-# _mb_reveal_to CRED: puts the password of $RESP on the clipboard (prints `clipboard`) or in the mode-600 file
-# $CITT_STATE/revealed/CRED.txt (prints its path). QA round 2 R2-P1, decision 31: stdout is a model's input when an agent runs
-# the plugin, so the value goes to a place only the user opens; it passes through a pipe, never an argument.
+# _mb_reveal_to NAME [FILTER]: puts the string FILTER makes of $RESP (default: the password) on the clipboard (prints
+# `clipboard`) or in the mode-600 file $CITT_STATE/revealed/NAME.txt (prints its path). QA round 2 R2-P1, decision 31: stdout
+# is a model's input when an agent runs the plugin, so the value goes to a place only the user opens; it passes through a
+# pipe, never an argument. NP-924: citt inbox PHONE_ID --reveal hands over the codes of a number this way.
 _mb_reveal_to() {
-  local clip dir file
+  local clip dir file filter="${2:-.password}"
   clip="$(_mb_clipboard)"
   case "$clip" in
     pbcopy | wl-copy)
-      if jq -j '.password' "$RESP" | "$clip" >/dev/null 2>&1; then
+      if jq -j "$filter" "$RESP" | "$clip" >/dev/null 2>&1; then
         printf 'clipboard'
         return 0
       fi
       ;;
     xclip)
-      if jq -j '.password' "$RESP" | xclip -selection clipboard >/dev/null 2>&1; then
+      if jq -j "$filter" "$RESP" | xclip -selection clipboard >/dev/null 2>&1; then
         printf 'clipboard'
         return 0
       fi
@@ -201,8 +235,8 @@ _mb_reveal_to() {
   file="$dir/$1.txt"
   (
     umask 077
-    mkdir -p "$dir" && chmod 700 "$dir" && rm -f "$file" && jq -j '.password' "$RESP" >"$file" && chmod 600 "$file"
-  ) || die 1 "could not write the password file $file"
+    mkdir -p "$dir" && chmod 700 "$dir" && rm -f "$file" && jq -j "$filter" "$RESP" >"$file" && chmod 600 "$file"
+  ) || die 1 "could not write the file $file"
   printf '%s' "$file"
 }
 
@@ -229,52 +263,83 @@ _mb_show() {
   http GET "$CITT_V1/lab-mail/addresses/$(urlenc "$ref")"
   if ! ok; then
     [ "$CODE:$(body_field '.error')" != 404:not_found ] || die 4 "$ref is not among your lab addresses; list them: citt mailbox list"
+    # NP-924 QA round 3 R3-6: lab mail off on the server
+    [ "$CODE:$(body_field '.error')" != 404:lab_mail_off ] || die 4 "Lab addresses are not available right now: lab mail is off on this server; try again later, or contact support"
     fail_http
   fi
   jq -e '.credential.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
-  local cred shown=""
+  local cred shown="" codes_file="" has_secrets addr
   cred="$(jq -r .credential.credential_id "$RESP")"
+  addr="$(tmpfile mailbox_show)"
+  cp "$RESP" "$addr"
+  # NP-924 QA round 1 Q11: email codes and links are not printed (decision 31); --reveal writes them to a mode-600 file
+  has_secrets="$(jq '[.emails[] | select((.code // "") != "" or (.link // "") != "" or (.snippet // "") != "")] | length > 0' "$addr")"
   if [ "$reveal" = 1 ]; then
-    local saved
-    saved="$(tmpfile mailbox_show)"
-    cp "$RESP" "$saved"
-    http GET "$CITT_V1/lab-mail/addresses/$cred/password"
-    if ! ok; then
-      case "$CODE:$(body_field '.error')" in
-        404:no_password) die 4 "no password is stored for $ref; the account was made with a password of its own" ;;
-        503:seal_key_missing) die 5 "the stored password cannot be read right now; try again later, or ask the CITT team" ;;
-      esac
-      fail_http
+    local has_pw
+    has_pw="$(jq -r '.credential.has_password == true' "$addr")"
+    [ "$has_pw" = true ] || [ "$has_secrets" = true ] || die 4 "no password is stored for $ref and no email on this page has a code or a link"
+    if [ "$has_pw" = true ]; then
+      http GET "$CITT_V1/lab-mail/addresses/$cred/password"
+      if ! ok; then
+        case "$CODE:$(body_field '.error')" in
+          404:no_password) die 4 "no password is stored for $ref; the account was made with a password of its own" ;;
+          503:seal_key_missing) die 5 "the stored password cannot be read right now; try again later, or ask the CITT team" ;;
+        esac
+        fail_http
+      fi
+      jq -e '.password | type == "string" and length > 0' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+      shown="$(_mb_reveal_to "$cred")" || exit 1
     fi
-    jq -e '.password | type == "string" and length > 0' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
-    shown="$(_mb_reveal_to "$cred")" || exit 1
-    cp "$saved" "$RESP"
+    if [ "$has_secrets" = true ]; then
+      local dir="$CITT_STATE/revealed"
+      codes_file="$dir/$cred-codes.txt"
+      (
+        umask 077
+        mkdir -p "$dir" && chmod 700 "$dir" && rm -f "$codes_file" \
+          && jq -r '.emails[] | (if (.code // "") != "" then "Email \(.id) code: \(.code)" else empty end),
+              (if (.link // "") != "" then "Email \(.id) link: \(.link)" else empty end),
+              (if (.snippet // "") != "" then "Email \(.id) snippet: \(.snippet)" else empty end)' "$addr" >"$codes_file" \
+          && chmod 600 "$codes_file"
+      ) || die 1 "could not write the file $codes_file"
+    fi
   fi
+  cp "$addr" "$RESP"
   if [ "$CITT_JSON" = 1 ]; then
-    jq -c --arg shown "$shown" '
-      if $shown == "clipboard" then . + {password_copied: true}
-      elif $shown != "" then . + {password_file: $shown} else . end' "$RESP"
+    jq -c --arg shown "$shown" --arg codes "$codes_file" "$MASK_JQ"'
+      ([.emails[].code | select(type == "string" and length > 0)] | unique | sort_by(-length)) as $cs
+      | .emails |= map(.subject |= mask_meta | .sender |= mask_meta
+          | .has_link = ((.link // "") != "") | .has_code = ((.code // "") != "") | .code_length = (.code | clen)
+          | .snippet_length = ((.snippet // "") | length) | del(.link, .code, .snippet))
+      | (if $shown == "clipboard" then . + {password_copied: true}
+         elif $shown != "" then . + {password_file: $shown} else . end)
+      | (if $codes != "" then . + {codes_file: $codes} else . end)' "$RESP"
     return 0
   fi
   local page
-  page="$(app_url "/mailboxes/$cred")"
+  page="$(app_url "/inbox/$cred")"
   jq -r --argjson L "$(local_times "$RESP")" --arg page "$page" --arg shown "$shown" "$MB_JQ"'
     .credential | "\(.address) (credential \(.credential_id), \(kind_word))",
       (if .note then "Note: \(.note)" else empty end), "Links: \(links)",
       (if $shown == "clipboard" then "Password: copied to the clipboard"
        elif $shown != "" then "Password: written to \($shown) (mode 600); open it yourself and delete it after signing in"
        elif .has_password then "Password: stored; reveal it with --reveal" else "Password: none stored" end),
-      "Mailbox page: \($page)", "Emails: \(.mail_count)"' "$RESP"
+      "Inbox page: \($page)", "Emails: \(.mail_count)"' "$RESP"
   [ "$(jq '.emails | length' "$RESP")" != 0 ] || return 0
   jq -c --argjson L "$(local_times "$RESP")" "$MB_JQ"'
     (.credential.session_ended_at | ts) as $end
-    | [["Received", "After the session", "From", "Subject", "Code"]]
+    | ([.emails[].code | select(type == "string" and length > 0)] | unique | sort_by(-length)) as $cs
+    | [["Received", "After the session", "From", "Subject", "Snippet", "Code", "Link"]]
     + [.emails[] | [(.received_at | lt),
         (if $end == 0 then "-" elif (.received_at | ts) < $end then "during the session" else "\((.received_at | ts) - $end | dur) after" end),
-        .sender, (.subject // "(no subject)"), .code]]' "$RESP" | table
-  jq -r '.emails[] | select(.link) | "Email \(.id) link: \(.link)"' "$RESP"
+        (.sender | mask_meta), (.subject // "(no subject)" | mask_meta), "\((.snippet // "") | length) characters",
+        (if (.code // "") != "" then (.code | codetag) else "" end), (if (.link // "") != "" then "yes" else "" end)]]' "$RESP" | table
+  if [ -n "$codes_file" ]; then
+    printf 'Codes, links and snippets: written to %s (mode 600); open it yourself\n' "$codes_file"
+  elif [ "$has_secrets" = true ]; then
+    printf 'Codes, links and snippets are not printed here; write them to a mode-600 file: citt mailbox show %s --reveal\n' "$ref"
+  fi
   jq -r '.emails[0].id | "Save an email'"'"'s HTML: citt mailbox email \(.) --html \(.).html"' "$RESP"
-  [ -z "$(jq -r '.next_cursor // empty' "$RESP")" ] || printf 'Older emails are on the Mailbox page: %s\n' "$page"
+  [ -z "$(jq -r '.next_cursor // empty' "$RESP")" ] || printf 'Older emails are on the Inbox page of the address: %s\n' "$page"
 }
 
 # _mb_email ID --html FILE (NP-903): GET /lab-mail/emails/{id}/html (the HTML part decoded to UTF-8, its head starting with a CSP
@@ -312,7 +377,7 @@ _mb_email() {
     cp "$out" "$RESP"
     case "$CODE:$(body_field '.error')" in
       404:not_found) die 4 "email $id is not among the emails you can read; list an address's emails: citt mailbox show ADDRESS" ;;
-      404:no_html_part) die 4 "$(body_field '.message') Download the raw message from the Mailboxes page, or list the address's emails: citt mailbox show ADDRESS" ;;
+      404:no_html_part) die 4 "$(mask_server_text "$(body_field '.message')") Download the raw message from the Mailboxes page, or list the address's emails: citt mailbox show ADDRESS" ;;
     esac
     fail_http
   fi

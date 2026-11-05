@@ -618,7 +618,7 @@ fail_http() {
     case "$CODE" in 000 | 5??) fail_out 12 "$WAIT_TIMEOUT_LINE" ;; esac
   fi
   error="$(body_field '.error')"
-  message="$(body_field '.message')"
+  message="$(mask_server_text "$(body_field '.message')")"
   case "$CODE" in
     000)
       msg="$(_net_line)"
@@ -632,7 +632,7 @@ fail_http() {
         local unknown
         unknown="$(body_field '(.unknown_apps // []) | join(", ") | select(. != "")')"
         # EPIC-18: a 400 `invalid_feedback` holds its reason in `detail`.
-        [ -n "$message" ] || message="$(body_field '.detail | strings')"
+        [ -n "$message" ] || message="$(mask_server_text "$(body_field '.detail | strings')")"
         message="$(plain_message "$message")"
         if [ -n "$message" ]; then
           msg="request rejected: $message${unknown:+: $unknown}"
@@ -743,13 +743,28 @@ fail_http() {
   fail_out "$code" "$msg"
 }
 
+# mask_server_text TEXT: TEXT from a server answer, through CITT_MASK_JQ's `mask_message` when a command set it (NP-924 QA round 3
+# R3-3: citt inbox and citt mailbox, whose answers can hold codes, links and numbers), else unchanged. The text reaches jq on
+# stdin, never as an argument.
+mask_server_text() {
+  if [ -n "${CITT_MASK_JQ:-}" ] && [ -n "$1" ]; then
+    printf '%s' "$1" | jq -Rrs "$CITT_MASK_JQ"'mask_message'
+  else
+    printf '%s' "$1"
+  fi
+}
+
 # fail_out CODE MESSAGE: the stderr line and, with --json, the response body (or a built error
 # document) with http_status and MESSAGE as its message (the API code stays in error), then exit CODE.
 fail_out() {
   local code="$1" msg="$2"
   err "$CITT_CMD: $msg"
   if [ "$CITT_JSON" = 1 ]; then
-    if jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
+    if [ -n "${CITT_MASK_JQ:-}" ] && jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
+      # NP-924 QA round 3 R3-3: the error code and the masked message only, none of the body's other fields
+      jq -c --argjson s "${CODE#0}" --arg m "$msg" \
+        '{error: ((.error | strings) // "http_error"), message: $m, http_status: (if $s == 0 then null else $s end)}' "$RESP"
+    elif jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
         '. + {http_status: (if $s == 0 then null else $s end)} | .message = $m | .error = (.error // "http_error")' "$RESP"
     else

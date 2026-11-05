@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task"
 
 top_help() {
   cat <<'EOF'
@@ -42,6 +42,7 @@ Commands:
   help-requests    help requests of your capture runs (--watch to be told of new ones)
   help-answer      answer a bring-me-in request by text (the session orchestrator acts on it)
   mailbox          lab mail addresses: create one by hand, list them, show one with its emails
+  inbox            lab addresses and phone numbers of your sessions; one number with its texts
   native           decompile an app's native binaries with Binary Ninja into its sources (--wait)
   tasks            submissions (scans, questions, captures, exports, native code) with status
   task             one task: status, parts, timeline and result link (--watch)
@@ -158,6 +159,12 @@ main() {
     mailbox)
       # shellcheck source=lib/cmd-mailbox.sh
       . "$CITT_LIB/cmd-mailbox.sh"
+      ;;
+    inbox)
+      # shellcheck source=lib/cmd-mailbox.sh
+      . "$CITT_LIB/cmd-mailbox.sh"
+      # shellcheck source=lib/cmd-inbox.sh
+      . "$CITT_LIB/cmd-inbox.sh"
       ;;
     native)
       # shellcheck source=lib/cmd-native.sh

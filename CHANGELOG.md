@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.26.0
+
+- `citt inbox` lists the lab addresses and phone numbers of the account, newest first: kind, state, the app and persona each signed up, the newest message or text time and whether it has a code. `citt inbox <address|phone id>` prints one address or number with its messages or texts, newest first (NP-924).
+- `citt mailbox show` and `citt inbox` print no message bodies, snippets, links or codes on stdout. The table and `--json` give metadata only: received time, masked sender and subject, `has_code` with the code's length, `has_link` and the length of the message. Each run of 4 or more digits in a sender or subject prints as `[code, N digits]`, or `[number, N digits]` over 8 digits (NP-924).
+- `--reveal` on `citt mailbox show` and `citt inbox` writes the codes, links and snippets to a mode-600 file, or to the clipboard, and prints only where they went (NP-924).
+- A phone number prints as `•••• NNNN`, its last 4 digits, for every token (NP-924).
+
 ## 2.25.0
 
 - `citt capture-options` and `citt capture-start` take an iOS bundle id of one segment, with a hyphen or with a segment that starts with a digit, such as `pinterest`, `LiveScore`, `com.mwm.sampler-app` and `com.gramgames.1010`; the id starts with a letter or digit, holds letters, digits, `_`, `-` and `.` with no empty segment, and is at most 240 characters. An App Store number exits 2 with `<number> is an App Store number, not a bundle id; give the app's bundle id with --platform ios (citt apps lists it)` and no request (NP-1341).
