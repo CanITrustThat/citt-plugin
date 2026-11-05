@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.27.0
+
+- `citt capture-start --location LAT,LNG --location-always` books the "Allow all the time" location permission (background location) for every session of the run: the request body contains `location_permission: "all_the_time"`, and the app is granted location while in use and in the background at the session start. Android phones only. `--location-always` without `--location` exits 2 before any request. The start line and the `citt capture-watch` run line end `, location permission all the time` (NP-1354).
+
 ## 2.26.0
 
 - `citt inbox` lists the lab addresses and phone numbers of the account, newest first: kind, state, the app and persona each signed up, the newest message or text time and whether it has a code. `citt inbox <address|phone id>` prints one address or number with its messages or texts, newest first (NP-924).

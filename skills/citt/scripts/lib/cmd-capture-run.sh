@@ -499,7 +499,7 @@ _cr_location() {
 cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file="" platform=""
-  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json=""
+  local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup=""
   CR_PT="" CR_PT_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
@@ -543,6 +543,7 @@ cmd_capture_start() {
       --state-fallback) fallback=any_state ;;
       --reset-gaid) reset_gaid=true ;;
       --allow-signup) allow_signup=true ;;
+      --location-always) loc_always=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -623,6 +624,9 @@ cmd_capture_start() {
       || usage_error "--location takes LAT,LNG in decimal degrees, such as 39.7392,-104.9903 (latitude -90 to 90, longitude -180 to 180, at most 6 decimals)"
     location="$(jq -r '"\(.lat),\(.lng)"' <<<"$loc_json")"
   fi
+  # NP-1354: "Allow all the time" location is the researcher's booking choice, for a run that sets the phone location
+  [ -z "$loc_always" ] || [ -n "$location" ] \
+    || usage_error "--location-always needs --location LAT,LNG: the \"Allow all the time\" location permission applies to a run that sets the phone location"
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -656,6 +660,7 @@ cmd_capture_start() {
   [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
   [ -z "$language" ] || hin="$hin|device_locale=$language"
   [ -z "$location" ] || hin="$hin|device_location=$location"
+  [ -z "$loc_always" ] || hin="$hin|location_permission=all_the_time"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -696,7 +701,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --argjson pr "$prompts_json" --arg su "$allow_signup" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --argjson pr "$prompts_json" --arg su "$allow_signup" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -709,6 +714,7 @@ cmd_capture_start() {
      + (if $rg == "" then {} else {reset_gaid: true} end)
      + (if $dl == "" then {} else {device_locale: $dl} end)
      + (if $loc == "" then {} else {device_location: ($loc | fromjson)} end)
+     + (if $la == "" then {} else {location_permission: "all_the_time"} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
@@ -776,7 +782,8 @@ _cr_started() {
            + (if .prompts.goal then ", goal set" else ", no goal" end)
            + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end)
       + (if .allow_signup == true then "; sign-up allowed" else "" end)
-      + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end),
+      + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
+      + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
@@ -871,7 +878,8 @@ _cr_watch() {
           + (if ($r.flags // 0) > 0 then ", " + n($r.flags; "flag"; "flags") else "" end)
           + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)
           + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)
-          + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)' "$RESP"
+          + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)
+          + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then

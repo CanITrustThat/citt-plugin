@@ -389,7 +389,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
@@ -409,6 +409,9 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --location   phone location of every session, LAT,LNG in decimal degrees, such as 39.7392,-104.9903; apps can detect it as
                simulated; independent of the exit, whose time zone stays; a session where the phone's real location is
                readable by apps does not start the app (default: no location is set)
+  --location-always
+               with --location: the app gets the "Allow all the time" location permission (background location) at the
+               session start, Android phones only (default: location while the app is in use)
   --proxy-file your own proxies as the exit, one per line: http://user:pass@host:port, socks5://user:pass@host:port or
                host:port:user:pass (http); - reads stdin; # comments and blank lines skipped; at most 100 entries; a literal
                {session} in the user is replaced with a new id each session. Each session tries the entries first to last and
