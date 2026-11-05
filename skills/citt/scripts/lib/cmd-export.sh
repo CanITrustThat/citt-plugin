@@ -163,6 +163,7 @@ cmd_export() {
   local st status start
   st="$(tmpfile export_status)"
   start="$(now_s)"
+  wait_deadline "$timeout" "still running after $timeout s; re-run: $CITT_CMD $(project_ref) --apps $(shq "$apps") --export-id $export_id"
   while :; do
     call GET "$CITT_V1/exports/$export_id"
     cp "$RESP" "$st"
@@ -180,6 +181,7 @@ cmd_export() {
     fi
     poll_sleep "$(jq -r '.poll_after_seconds // empty' "$st")"
   done
+  wait_done
   if [ "$status" = failed ]; then
     die 8 "export $export_id failed: $(jq -r '.error // "no error given"' "$st")"
   fi
@@ -243,7 +245,7 @@ cmd_export() {
     case "$CODE" in
       200 | 206) ;;
       *)
-        cp "$part" "$RESP" 2>/dev/null
+        # NP-1340 L4: http() put the error body in RESP and left the part file at its size before the answer.
         rm -f "$part"
         fail_http
         ;;

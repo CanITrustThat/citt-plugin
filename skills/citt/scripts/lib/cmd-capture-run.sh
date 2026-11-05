@@ -776,6 +776,7 @@ _cr_watch() {
   [ -f "$sfile" ] || : >"$sfile"
   [ -f "$ofile" ] || : >"$ofile"
   start="$(now_s)"
+  wait_deadline "$timeout" "run $rid has not ended after $timeout s; re-run: citt capture-watch $(shq "$arg")"
   while :; do
     _cr_get_run "$rid"
     polls=$((polls + 1))
@@ -861,6 +862,7 @@ _cr_watch() {
     [ "$left" -gt 0 ] || break
     poll_sleep "" "$left"
   done
+  wait_done
 
   local st key fin planned failed reason code=0
   st="${now_state%%|*}"

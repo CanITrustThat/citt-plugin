@@ -271,6 +271,7 @@ _prompt_wait() {
   E_KIND=thread
   E_THREAD="$tid"
   start="$(now_s)"
+  wait_deadline "$timeout" "the turn of thread $tid is not answered after $timeout s; re-run: citt prompt --thread $tid --wait"
   while :; do
     call_prompt GET "$CITT_V1/prompts/$tid"
     [ -n "$seq" ] || seq="$(body_field '.turns | last | .seq')"
@@ -286,6 +287,7 @@ _prompt_wait() {
     fi
     poll_sleep "$(body_field '.poll_after_seconds')"
   done
+  wait_done
   if [ "$st" = failed ]; then
     _prompt_done 8 turn_failed "turn $seq of thread $tid failed: $(jq -r --arg s "$seq" \
       '[.turns[] | select((.seq | tostring) == $s)] | first | .reason // "no reason given"' "$RESP")"

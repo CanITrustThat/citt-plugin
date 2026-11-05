@@ -193,6 +193,7 @@ _native_watch() {
   last="$(jq -r --argjson L "$L" "$JQ_NATIVE"' progress_line' "$state")"
   [ "$(jq '(.run.binaries // []) | length' "$state")" = 0 ] || listed=1
   start="$(now_s)"
+  wait_deadline "$timeout" "run $(jq -r '.run.run_id // "?"' "$state") is still running after $timeout s; re-run: $NATIVE_RERUN"
   while :; do
     st="$(jq -r '.status // "not_run"' "$state")"
     case "$NATIVE_ENDED" in *" $st "*)
@@ -219,6 +220,7 @@ _native_watch() {
     fi
     last="$line"
   done
+  wait_done
 
   run="$(jq -r '.run.run_id // "?"' "$state")"
   if [ "$CITT_JSON" = 1 ]; then

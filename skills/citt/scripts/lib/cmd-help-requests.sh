@@ -89,6 +89,7 @@ _hr_watch() {
   seen_file="$CITT_STATE/help-requests/seen"
   (umask 077 && mkdir -p "$CITT_STATE/help-requests")
   start="$(now_s)"
+  wait_deadline "$timeout" "no new open help request after $timeout s; re-run: citt help-requests --watch"
   while :; do
     call GET "$CITT_V1/capture-help-requests?state=open&limit=200"
     jq -e '.requests | type == "array"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
@@ -113,6 +114,7 @@ _hr_watch() {
     [ "$left" -gt 0 ] || break
     poll_sleep "" "$left"
   done
+  wait_done
   err "$CITT_CMD: no new open help request after $timeout s; re-run: citt help-requests --watch"
   return 12
 }

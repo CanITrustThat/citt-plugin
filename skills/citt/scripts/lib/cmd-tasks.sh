@@ -166,6 +166,7 @@ _tasks_watch() {
   cp "$RESP" "$cur"
   [ "$CITT_JSON" = 1 ] || _tasks_table "$cur" ""
   start="$(now_s)"
+  wait_deadline "$timeout" "tasks still queued or running after $timeout s; re-run: $rerun"
   while :; do
     active="$(jq '[.tasks[] | select(.status == "queued" or .status == "running")] | length' "$cur")"
     [ "$active" -gt 0 ] || break
@@ -196,6 +197,7 @@ _tasks_watch() {
       printf '%s\n' "$line"
     done
   done
+  wait_done
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --argjson polls "$polls" --argjson ended "$([ "$active" -gt 0 ] && printf false || printf true)" \
       '{schema: "citt.plugin.tasks/1", polls: $polls, ended: $ended, tasks, next_cursor}' "$cur"
@@ -257,6 +259,7 @@ cmd_task() {
   st="$(jq -r .status "$doc")"
   last="$(jq -r --argjson L "$(local_times "$doc")" "$JQ_TASK"' "Task \(.task_id): \(tstate)" + (if tqueue != null then "; \(tqueue)" else "" end)' "$doc")"
   start="$(now_s)"
+  wait_deadline "$timeout" "task $id is still $st after $timeout s; re-run: citt task $id --watch"
   while [ "$st" = queued ] || [ "$st" = running ]; do
     left=$((timeout - ($(now_s) - start)))
     [ "$left" -gt 0 ] || break
@@ -272,6 +275,7 @@ cmd_task() {
     [ "$line" = "$last" ] || printf '%s\n' "$line"
     last="$line"
   done
+  wait_done
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --argjson polls "$polls" '{schema: "citt.plugin.task/1", polls: $polls, ended: (.status != "queued" and .status != "running"), task: .}' "$doc"
   fi

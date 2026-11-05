@@ -116,6 +116,9 @@ cmd_scrutinize() {
   printf '{}' >"$details"
   printf '[]' >"$failed"
   pending="${ids[*]}"
+  local wref=""
+  [ "$pid" = null ] || wref=" $(project_ref)"
+  wait_deadline "$timeout" "still running after $timeout s; re-run: citt scrutinize $pending$wref --wait --job-id $(jq -r '[.jobs[].job_id | tostring] | join(",")' "$jobs")"
   while :; do
     local still=""
     for id in $pending; do
@@ -146,6 +149,7 @@ cmd_scrutinize() {
     if [ $(($(now_s) - start)) -ge "$timeout" ]; then break; fi
     poll_sleep ""
   done
+  wait_done
   done_list="$(jq -r 'keys | length' "$details")"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --slurpfile j "$jobs" --slurpfile f "$failed" \

@@ -247,19 +247,26 @@ help_search() {
   cat <<'EOF'
 citt search TEXT (--days N | --from DATE [--to DATE]) [--project NAME|ID]... [--inside-words]
             [--limit N] [--cursor C] [--inline | --out FILE.csv [--max-rows N]] [--load-older] [--timeout S] [--json]
-citt search --query 'QUERY' [--days N | --from WHEN [--to WHEN]] [--project NAME|ID]... [--inside-words TEXT]
-            [--facet FIELD]... [--top N] [--limit N] [--cursor C] [--inline | --out FILE.csv [--max-rows N]] [--json]
+citt search --query 'QUERY' [--hosts-file FILE] [--days N | --from WHEN [--to WHEN]] [--project NAME|ID]...
+            [--inside-words TEXT] [--facet FIELD]... [--top N] [--limit N] [--cursor C]
+            [--inline | --out FILE.csv [--max-rows N]] [--json]
+citt search --query 'QUERY' [--hosts-file FILE] [range] [--project NAME|ID]... --counts host|app|host,app
+            [--out FILE.csv] [--json]
+citt search --query 'QUERY' [--hosts-file FILE] [range] [--project NAME|ID]... --export FILE.csv.gz
+            [--order newest|oldest] [--timeout S]
+citt search --export-id N --export FILE.csv.gz [--timeout S]
+citt search --cancel-export N [--json]
 citt search --fields [--json]
 
-Finds captured requests (url, headers, body) across every capture session of your projects whose
+Finds captured requests (url, headers, body) across the capture sessions of your projects whose
 capture started in the range, newest session first. With TEXT the range has no default: --days 30 is the
 usual search. Words and camelCase parts match (AppLovinSdk finds applovin and sdk); a quoted text
 or several words match as written. Use citt capture-sync instead to keep whole sessions on disk.
   --days N        the last N days, ending now; printed commands carry the resulting --from and --to
   --from, --to    a date (2026-10-20, the whole day in UTC) or an RFC 3339 time; --to defaults to now
-  --project       a project name or id, repeatable; default every project you can read
+  --project       a project name or id, repeatable; default all projects you can read
   --inside-words  also find the text inside longer words (sdk in appsflyersdk): much slower, a search
-                  that reports progress every 15 s; start with --days 1, then 3, then 7; the
+                  that reports progress each 15 s; start with --days 1, then 3, then 7; the
                   service states its longest range and refuses a wider one with exit 2
   --limit N       the inline page, 1 to 200 (default 50)
   --inline        always print one page inline, with the next-page command
@@ -270,7 +277,7 @@ or several words match as written. Use citt capture-sync instead to keep whole s
   --max-rows N    the row cap of the CSV (default 5000); the rows past it are counted with the
                   command that writes them
   --load-older    restore the sessions of the range whose requests are in the archive (the stderr
-                  notice gives their count and the estimated time), follow the restore every 15 s,
+                  notice gives their count and the estimated time), follow the restore each 15 s,
                   then search; exit 12 after --timeout (default 540 s) with the re-run command
   --json          one citt.plugin.search/1 document: rows, next, total, older, restoring; with --query also
                   query_info (the query as searched, the range, warnings) and incomplete; with --facet, facets
@@ -280,18 +287,41 @@ or several words match as written. Use citt capture-sync instead to keep whole s
                   The range is optional (default the last 30 days ending now); --from and --to also take now and
                   now-7d (units min, h, d, w), and --days N is --from now-Nd. Warnings and their fixes print on
                   stderr; a query that mixes AND and OR without parentheses exits 2 with both readings as commands
+                  A query is at most 8,000 characters (a list of up to 500 values per field)
+  --hosts-file FILE  one domain per line (# comments and blank lines allowed; subdomains are included), searched as
+                  domain:(a.com OR b.com ...), joined with --query by AND; up to 500 domains; --query is optional with it.
+                  --out, --inline and --facet read at most 500 hosts, and a few dozen domains can pass that: for such a
+                  list, --export FILE.csv.gz and --counts host,app have no host limit
   --inside-words TEXT  with --query: adds contains:"TEXT", the text inside longer words, beside the other conditions
   --facet FIELD   with --query or TEXT: after the rows, the top values of FIELD with their apps and requests (10, or
                   --top N up to 100): day, host, app, recipient, sent, signal, status, method, type, project,
                   tracking, exit.state, phone; repeatable, up to 5; the last line states what the counts cover
   --fields        the search fields of --query, with their other names, a description and an example
+  --counts BY     with --query: complete counts of all groups, BY host (requests, sessions, apps per host), app
+                  (requests, sessions, hosts per app) or host,app (requests, sessions per pair), with no rows; up to 50
+                  groups print as a table, more go to a citt-counts-*.csv file (or --out FILE.csv); the last line states
+                  the totals. A search with a condition on request contents (path:, param[...], a word) that matches
+                  more than 150,000 requests exits 2 with the counted search as a try: command
+  --export FILE.csv.gz  with --query: all matching rows, with no row cap, written on the server and downloaded to
+                  FILE.csv.gz (the CSV columns, gzip; SHA-256 checked); progress each 15 s on stderr. The run is kept
+                  in FILE.csv.gz.citt-export: the same command follows the running export, or downloads a finished one,
+                  in place of starting over. After --timeout (default 540 s) exit 12, after Ctrl-C exit 130 (TERM 143): the
+                  export keeps running on the server, and the printed command follows it. Over 5,000,000 rows the
+                  export stops (exit 13) and prints the command for the rest of the range. A failed export with rows keeps
+                  them: the file is downloaded, exit 13 with the command for the rest; with no file, exit 8. Sessions in
+                  the archive exit 13, stated on the last line with the --load-older command that exports them
+  --order ORDER   with --export: newest (default) or oldest sessions first; an export cut short then covers the
+                  oldest part of the range
+  --export-id N   with --export FILE.csv.gz: follow and download export N, whatever its search
+  --cancel-export N  cancel export N on the server (or remove the file of a finished one)
 Exit 12: --inside-words or --load-older still running after --timeout; the hits found so far are
 printed and the stderr line gives the re-run command.
-The CSV is read in pages of 50 rows; a page that passes the server's time limit is asked again once.
+The CSV is read in pages of 50 rows; a page that passes the server's time limit is asked again once, and a page
+that meets no connection or a server restart is asked again for about 75 s.
 Exit 13: a later page passed it twice or failed after its retries; the CSV keeps the rows written,
 and the Stopped early line gives the reason and the command for the next rows (a page refused for
 a sign-in or a usage limit keeps the rows too and exits 3 or 6).
-Exit 13 with --query: the last page read ended at the server's time limit before it read every session (a
+Exit 13 with --query: the last page read ended at the server's time limit before it read all sessions (a
 query with no host, app, recipient or identifier); the Searched N of M sessions line gives the next command.
 EOF
 }

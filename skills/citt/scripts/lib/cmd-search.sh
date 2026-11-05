@@ -17,6 +17,13 @@ SEARCH_PAGE_MAX=200
 SEARCH_WALK_PAGE=50
 # A 503 capture_tables_busy (TASK-590 capture_lock.rs, with Retry-After) is asked again this many times.
 SEARCH_BUSY_RETRIES=3
+# TASK-642 D2: the longest --query (TASK-640 D1), and the longest GET path of a search or facets request: a longer one is sent
+# as the POST form (TASK-640 D11), under the 8 KB request line of nginx and the 16 KB URL of Cloudflare.
+SEARCH_QUERY_MAX=8000
+SEARCH_GET_MAX=7000
+# TASK-642 D6: the waits after no connection or a gateway error while a CSV walk, --counts or an export is read (a deploy stops
+# the service about 20 s): 75 s in all.
+SEARCH_OUTAGE_WAITS="1 2 4 8 15 15 15 15"
 
 # The CSV columns: the 19 row fields of the TASK-590 contract, the matched part when the API reports it,
 # and the dashboard link that opens the request in its session video.
@@ -100,6 +107,43 @@ _s_range_query() {
   query ${a[@]+"${a[@]}"}
 }
 
+# _s_body [K V...]: the parameters of _s_query K V... as the JSON object of a POST form (TASK-640 D11, TASK-641): project_id
+# and field as lists, project_id, limit and top as numbers, every other value a string; empty values are left out.
+_s_body() {
+  local -a a
+  if [ "$S_QMODE" = 1 ]; then
+    a=(query "$S_QUERY" from "$S_FROM" to "$S_TO")
+  else
+    a=(q "$S_Q" from "$S_FROM" to "$S_TO")
+  fi
+  local p
+  for p in $S_PIDS; do a+=(project_id "$p"); done
+  a+=("$@")
+  # shellcheck disable=SC2016
+  jq -nc '$ARGS.positional as $a | reduce range(0; ($a | length) - 1; 2) as $i ({};
+    $a[$i] as $k | $a[$i + 1] as $v
+    | if $v == "" then .
+      elif $k == "project_id" then .project_id += [$v | tonumber]
+      elif $k == "field" then .field += [$v]
+      elif $k == "limit" or $k == "top" then .[$k] = ($v | tonumber)
+      else .[$k] = $v end)' --args ${a[@]+"${a[@]}"}
+}
+
+# _s_search_call SUFFIX [K V...]: GET /capture-search<SUFFIX> with the query string of _s_query K V...; a path over
+# SEARCH_GET_MAX bytes goes as the POST form with the same parameters (TASK-640 D11), and its cursors work in either form.
+_s_search_call() {
+  local suffix="$1" path body
+  shift
+  path="$CITT_V1/capture-search$suffix$(_s_query "$@")"
+  if [ "${#path}" -le "$SEARCH_GET_MAX" ]; then
+    _s_call GET "$path"
+    return $?
+  fi
+  body="$(tmpfile body)"
+  _s_body "$@" >"$body" || die 1 "cannot write the search request"
+  _s_call POST "$CITT_V1/capture-search$suffix" "$body"
+}
+
 # Filip, 2026-10-30 (round 8): citt search states every answer other than 2xx in its own plain sentences, with one
 # generic sentence for anything unmapped: no host, API path, API error code or HTTP status in a human line. With --json
 # the error document keeps the API error code in `error`, and `message` is the plain sentence. The shared fail_http of
@@ -113,6 +157,8 @@ _s_noun() {
     */projects) printf 'the project lookup of this search' ;;
     */capture-search/facets) printf 'the counts of this search' ;;
     */capture-search/fields) printf 'the list of search fields' ;;
+    */capture-search/groups) printf 'the counts of this search' ;;
+    */capture-search/exports*) printf 'the export of this search' ;;
     *) printf 'this search' ;;
   esac
 }
@@ -125,6 +171,8 @@ _s_feature() {
     */projects) printf 'the project list' ;;
     */capture-search/facets) printf 'counts of a search' ;;
     */capture-search/fields) printf 'the list of search fields' ;;
+    */capture-search/groups) printf 'complete counts of a search' ;;
+    */capture-search/exports*) printf 'search exports' ;;
     *)
       if [ "$S_QMODE" = 1 ]; then
         printf 'searches with --query'
@@ -161,23 +209,62 @@ _s_fix_lines() {
     elif (.deep | type) == "object" then "d\t\(.deep.q)\t\(.deep.from // "")\t\(.deep.to // "")" else empty end' "$1" 2>/dev/null \
     | while IFS=$'\t' read -r kind v f t; do
       if [ "$kind" = q ]; then
-        err "  try: citt search --query $(_s_qq "$v")$S_REST"
+        err "  try: $(_s_fix_cmd "$v")"
       else
         err "  try: citt search $(shq "$v") --from $(shq "$f") --to $(shq "$t")$(_s_project_words) --inside-words"
       fi
     done
 }
 
+# _s_fix_cmd QUERY: the command of a fix query, with this search's range, projects and S_FIX_TAIL (the --counts or --export
+# words); a fix that starts with the --hosts-file list names --hosts-file, not the list (TASK-642 D1).
+_s_fix_cmd() {
+  local q="$1"
+  if [ -n "${S_HOSTS_Q:-}" ]; then
+    if [ "$q" = "$S_HOSTS_Q" ]; then
+      printf 'citt search%s%s%s' "$S_HF_WORDS" "$S_REST" "${S_FIX_TAIL:-}"
+      return 0
+    fi
+    case "$q" in
+      "$S_HOSTS_Q "*)
+        printf 'citt search --query %s%s%s%s' "$(_s_qq "${q#"$S_HOSTS_Q "}")" "$S_HF_WORDS" "$S_REST" "${S_FIX_TAIL:-}"
+        return 0
+        ;;
+    esac
+  fi
+  printf 'citt search --query %s%s%s' "$(_s_qq "$q")" "$S_REST" "${S_FIX_TAIL:-}"
+}
+
 # _s_refused: a refused --query (query_ambiguous, query_invalid, query_too_complex, query_too_broad): the API's message, written
 # in plain words by the query crate (D348), then its fixes as commands (both readings of an ambiguous query, D336); exit 2.
 _s_refused() {
-  local message
+  local message over=0
   message="$(body_field '.message')"
   [ -n "$message" ] || message="the server refused this search; check the text, the range and the projects"
+  if [ "$(body_field '.error'):$(body_field '.limit')" = query_too_broad:hosts ]; then
+    message="This search matches $(_s_grp "$(body_field '.value')") hosts in this range; --out, --inline and --facet read up to $(_s_grp "$(body_field '.max')"). --export and --counts have no host limit."
+    over=1
+  fi
+  message="$(_s_refusal_short "$message")"
   if [ "${S_PEEK:-0}" = 1 ] || [ "$CITT_JSON" = 1 ]; then _s_out 2 "$message"; fi
   err "$CITT_CMD: $message"
+  if [ "$over" = 1 ]; then
+    local gz="citt-search.csv.gz"
+    [ -z "${out:-}" ] || gz="${out%.csv}.csv.gz"
+    err "  try: $S_BASE --export $(shq "$gz")"
+    err "  try: $S_BASE --counts host,app"
+  fi
   _s_fix_lines "$RESP"
   exit 2
+}
+
+# _s_refusal_short TEXT: a refusal that repeats the search stays readable: the list of --hosts-file is named, not repeated, and
+# a text over 600 characters keeps its start and its end, which hold the reason and the next action (QA round 2, R2-B1).
+_s_refusal_short() {
+  local m="$1"
+  if [ -n "${S_HOSTS_Q:-}" ]; then m="${m//"$S_HOSTS_Q"/the domains of --hosts-file}"; fi
+  if [ "${#m}" -gt 600 ]; then m="${m:0:280} ... ${m:$((${#m} - 280))}"; fi
+  printf '%s' "$m"
 }
 
 # _s_fail: the line and exit code of an answer other than 2xx (exit codes as in the reference: 1 to 10).
@@ -190,14 +277,14 @@ _s_fail() {
     000) _s_out 9 "the service could not be reached; check the network connection and try again" ;;
     400)
       case "$error" in
-        query_ambiguous | query_invalid | query_too_complex | query_too_broad) _s_refused ;;
-        cursor_mismatch) _s_out 7 "--cursor is not a cursor of this search: use the --cursor of a command this search printed, with the same query, range and projects" ;;
+        query_ambiguous | query_invalid | query_too_complex | query_too_broad | groups_not_countable) _s_refused ;;
+        cursor_mismatch) _s_out 7 "--cursor is from another search: use the --cursor of a command this search printed, with the same query, range and projects" ;;
         range_too_wide)
           local max sessions requests
           max="$(body_field '.limit_days')"
           sessions="$(body_field '.range_sessions')"
           requests="$(body_field '.range_requests')"
-          _s_out 2 "the inside-words search covers at most $(_s_counted "$max" day); the asked range holds $(_s_counted "$sessions" session) and $(_s_counted "$requests" request); narrow it, for example: citt search $(shq "$S_Q") --days ${max:-1} --inside-words$(_s_project_words)"
+          _s_out 2 "the inside-words search covers up to $(_s_counted "$max" day); this range has $(_s_counted "$sessions" session) and $(_s_counted "$requests" request); shorten it, for example: citt search $(shq "$S_Q") --days ${max:-1} --inside-words$(_s_project_words)"
           ;;
         invalid_from | invalid_to)
           case "$message" in
@@ -210,7 +297,7 @@ _s_fail() {
           ;;
         *)
           case "$message" in
-            after*) _s_out 7 "--cursor is not a cursor of this search: use the --cursor of a command this search printed, with the same range and projects" ;;
+            after*) _s_out 7 "--cursor is from another search: use the --cursor of a command this search printed, with the same range and projects" ;;
             *) _s_out 7 "the server refused this search; check the text, the range and the projects" ;;
           esac
           ;;
@@ -225,6 +312,11 @@ _s_fail() {
       _s_out 3 "this account cannot search these capture sessions"
       ;;
     404 | 405)
+      if [ -z "$error" ] && [ "$REQ_METHOD" = POST ]; then
+        case "$REQ_PATH" in
+          */capture-search | */capture-search/facets) _s_out 10 "this server does not take a search this long yet; shorten the --query or the --hosts-file" ;;
+        esac
+      fi
       [ -n "$error" ] || _s_out 10 "this server does not offer $(_s_feature) yet"
       if [ "$error" = deep_search_not_found ]; then
         # F18: the inside-words search was removed while it was followed (replaced by a newer one, or unread).
@@ -240,7 +332,7 @@ _s_fail() {
     422) _s_out 7 "$generic" ;;
     503)
       if [ "$error" = search_timed_out ]; then
-        _s_out 8 "the search passed the server's time limit; narrow the range or the projects, or search again"
+        _s_out 8 "the search timed out; shorten the range, pick fewer projects, or search again"
       fi
       if [ "$error" = capture_tables_busy ]; then
         _s_out 8 "$(_s_busy_line); try again shortly"
@@ -310,12 +402,15 @@ _s_busy_line() {
     */capture-search/restore) what="loading older sessions" ;;
     */capture-search/deep*) what="the inside-words search" ;;
     */capture-search/facets) what="the count of matches" ;;
+    */capture-search/groups) what="the count of groups" ;;
+    */capture-search/exports*) what="the export" ;;
   esac
   case "$(body_field '.busy_reason')" in
-    pool) printf '%s is busy with other searches right now' "$what" ;;
-    facets) printf 'the count of matches is busy with other counts right now' ;;
-    one_search_without_narrowing) printf 'another search of this account without a host, app, recipient or identifier is still running' ;;
-    *) printf '%s is briefly unavailable while older data is being moved' "$what" ;;
+    pool | searches) printf '%s is busy with other searches' "$what" ;;
+    facets) printf 'the count of matches is busy with other counts' ;;
+    groups) printf 'the count of groups is busy with other counts' ;;
+    one_search_without_narrowing) printf 'another broad search of this account is running' ;;
+    *) printf '%s is briefly unavailable while older sessions are moved' "$what" ;;
   esac
 }
 
@@ -327,7 +422,7 @@ _s_busy_line() {
 # walk page after rows were written), a failed answer returns 75 in place of _s_fail, with S_STOP_CODE and S_STOP_LINE
 # (the exit code and line _s_fail would give) and S_STOP_KIND (timed, busy, net, server or other) set (TASK-602).
 _s_call() {
-  local method="$1" again=no tries=0 timed=0 wait left busy error
+  local method="$1" again=no tries=0 timed=0 wait left busy error outages=0
   case "$HTTP_RETRY" in
     yes) again=yes ;;
     auto) [ "$method" != GET ] || again=yes ;;
@@ -344,6 +439,19 @@ _s_call() {
       [ "$timed" = 0 ] || break
       timed=1
       busy=timed
+    elif [ "${S_LONG_RETRY:-0}" = 1 ] && _s_outage "$error"; then
+      # TASK-642 D6: a walk, a count or an export poll waits out a service restart.
+      outages=$((outages + 1))
+      # shellcheck disable=SC2086
+      [ "$outages" -le "$(printf '%s\n' $SEARCH_OUTAGE_WAITS | wc -l | tr -d ' ')" ] || break
+      wait="$(_s_outage_wait "$outages")"
+      if [ "$CODE" = 000 ]; then
+        err "$CITT_CMD: the service could not be reached; trying again in $wait s"
+      else
+        err "$CITT_CMD: the server could not answer; trying again in $wait s"
+      fi
+      sleep "$wait"
+      continue
     elif [ "$again" = yes ]; then
       case "$CODE" in 000 | 5??) ;; *) break ;; esac
     else
@@ -368,7 +476,7 @@ _s_call() {
       err "$CITT_CMD: $(_s_busy_line); trying again in $wait s"
       poll_sleep "$wait"
     else
-      [ "$busy" = no ] || err "$CITT_CMD: the search passed the server's time limit; trying once more"
+      [ "$busy" = no ] || err "$CITT_CMD: the search timed out; trying once more"
       sleep "$wait"
     fi
   done
@@ -395,6 +503,36 @@ _s_call() {
   _s_fail
 }
 
+# _s_outage ERROR: true for an answer of a service that is restarting (TASK-642 D6): no connection (other than curl's own
+# time limit), a gateway error, or a 503 with no error code.
+_s_outage() {
+  case "$CODE" in
+    000)
+      case "${NET_REASON:-}" in *"Operation timed out"*) return 1 ;; esac
+      return 0
+      ;;
+    502 | 504 | 52?) return 0 ;;
+    503) [ -z "$1" ] ;;
+    *) return 1 ;;
+  esac
+}
+
+# _s_outage_wait N: the seconds before try N + 1: the Nth of SEARCH_OUTAGE_WAITS, or a Retry-After of at most 15 s; 0 in test
+# mode.
+_s_outage_wait() {
+  local w ra
+  if [ "${CITT_TEST_MODE:-}" = 1 ]; then
+    printf '0'
+    return 0
+  fi
+  # shellcheck disable=SC2086
+  w="$(printf '%s\n' $SEARCH_OUTAGE_WAITS | sed -n "$1p")"
+  is_uint "$w" || w=15
+  ra="$(hdr Retry-After)"
+  if is_uint "$ra" && [ "$ra" -le 15 ]; then w="$ra"; fi
+  printf '%s' "$w"
+}
+
 _s_project_words() {
   local p
   for p in $S_PIDS; do printf ' --project %s' "$p"; done
@@ -408,7 +546,7 @@ _s_page() {
     _s_call GET "$CITT_V1/capture-search/deep/$S_JOB$(query after "$after" limit "$limit")" || return $?
   else
     HTTP_RETRY=no
-    _s_call GET "$CITT_V1/capture-search$(_s_query limit "$limit" after "$after")" || return $?
+    _s_search_call "" limit "$limit" after "$after" || return $?
   fi
   _s_shape "$SHAPE_PAGE"
   # A running inside-words job (TASK-591) answers has_more true and next set (to the given after when no new hit
@@ -552,7 +690,7 @@ _s_facets() {
   a+=(top "$S_TOP")
   S_SOFT=1
   HTTP_RETRY=no
-  _s_call GET "$CITT_V1/capture-search/facets$(_s_query ${a[@]+"${a[@]}"})" || rc=$?
+  _s_search_call /facets ${a[@]+"${a[@]}"} || rc=$?
   S_SOFT=0
   if [ "$rc" != 0 ]; then
     err "$CITT_CMD: the counts of --facet could not be made: $S_STOP_LINE"
@@ -624,7 +762,7 @@ _s_older_notice() {
   line="$(jq -r "$JQ_COUNTED"'.older | select(. != null and (.sessions // 0) > 0)
     | (.estimated_seconds // 0) as $e | (.sessions == 1) as $one
     | (if $e < 60 then "under a minute" elif $e < 7200 then "about \(($e / 60) | ceil) min" else "about \(($e / 3600) | ceil) h" end) as $t
-    | "\(.sessions | counted("older session")) (\(.requests // 0 | counted("request")), captured \((.oldest_started_at // .captured_from // "?")[0:10]) to \((.newest_started_at // .captured_to // "?")[0:10])) \(if $one then "was" else "were" end) not searched: \(if $one then "its" else "their" end) requests are in the archive; restoring \(if $one then "it" else "them" end) takes \($t)"' \
+    | "\(.sessions | counted("older session")) (\(.requests // 0 | counted("request")), captured \((.oldest_started_at // .captured_from // "?")[0:10]) to \((.newest_started_at // .captured_to // "?")[0:10])) \(if $one then "was" else "were" end) not searched: \(if $one then "it is" else "they are" end) archived; restoring \(if $one then "it" else "them" end) takes \($t)"' \
     "$S_PAGE" 2>/dev/null)"
   [ -z "$line" ] || err "$CITT_CMD: $line; run: $S_BASE --load-older"
   line="$(jq -r "$JQ_COUNTED"'.restoring | select(. != null) | "\(.sessions_total // 0 | counted("older session")) \(if .sessions_total == 1 then "is" else "are" end) being restored: \(.sessions_done // 0 | grp) of \(.sessions_total // 0 | grp) done"' "$S_PAGE" 2>/dev/null)"
@@ -670,6 +808,8 @@ _s_csv() {
   local out="$1" max="$2" first="$3" after="$4" n=0 got lim preview left prev total=null stopped=0 rc rowsf made=0
   local from_cursor=0 read_n=0 r cut=0
   [ -z "$after" ] || from_cursor=1
+  # TASK-642 D6: every page of the walk waits out a service restart before the walk stops early.
+  S_LONG_RETRY=1
   preview="$(tmpfile preview)"
   rowsf="$(tmpfile csvrows)"
   while :; do
@@ -726,6 +866,7 @@ _s_csv() {
     fi
     [ "$n" -lt "$max" ] || break
   done
+  S_LONG_RETRY=0
   [ "$made" = 1 ] || _s_csv_head "$out"
   [ ! -s "$preview" ] || _s_range_line "$preview"
   printf 'Wrote %s rows to %s.\n' "$n" "$out"
@@ -738,8 +879,8 @@ _s_csv() {
     tail="; try it again shortly"
     case "$S_STOP_KIND" in
       timed)
-        why="the search of the next rows passed the server's time limit twice"
-        tail="; or narrow the range or the projects"
+        why="the next rows timed out twice"
+        tail="; or shorten the range or pick fewer projects"
         ;;
       busy) why="$(_s_busy_line)" ;;
       net) why="the service could not be reached" ;;
@@ -751,11 +892,11 @@ _s_csv() {
         ;;
     esac
     printf 'Stopped early after %s %s: %s. The next rows: %s --cursor %s --out %s%s.\n' \
-      "$n" "$([ "$n" = 1 ] && printf row || printf rows)" "$why" "$S_BASE" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")" "$tail"
+      "$n" "$([ "$n" = 1 ] && printf row || printf rows)" "$why" "$S_BASE${S_MAX_WORDS:-}" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")" "$tail"
   elif [ "$cut" = 1 ] || { [ -n "$after" ] && [ "$(jq -r '.incomplete == true' "$S_PAGE")" = true ]; }; then
     # The last page ended at the server's time budget (D359): exit 13 with the sessions read and the command that continues.
     S_PARTIAL_CODE=13
-    _s_incomplete_line "$S_PAGE" "$read_n" "$S_BASE" " --out $(shq "$(_s_next_csv "$(basename "$out")")")"
+    _s_incomplete_line "$S_PAGE" "$read_n" "$S_BASE${S_MAX_WORDS:-}" " --out $(shq "$(_s_next_csv "$(basename "$out")")")"
   elif [ -z "$after" ] && [ "$from_cursor" = 1 ]; then
     # A walk from a cursor holds the rest of the result only: its row count is not the count of the search.
     printf 'The rest of the result: %s %s, the last rows of the search.\n' "$n" "$([ "$n" = 1 ] && printf row || printf rows)"
@@ -769,7 +910,7 @@ _s_csv() {
     left="$(jq -nr --argjson n "$n" --argjson t "$total" 'if $t == null then "more matches"
       elif $t.est then "about \($t.n - $n) matches" else "\($t.n - $n) matches" end')"
     printf 'Left out: %s over the row cap of %s; the next rows: %s --cursor %s --out %s\n' \
-      "$left" "$max" "$S_BASE" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")"
+      "$left" "$max" "$S_BASE${S_MAX_WORDS:-}" "$(shq "$after")" "$(shq "$(_s_next_csv "$(basename "$out")")")"
   fi
   if [ "$n" -gt 0 ]; then
     printf 'First %s rows:\n' "$([ "$n" -lt "$SEARCH_PREVIEW_ROWS" ] && printf '%s' "$n" || printf '%s' "$SEARCH_PREVIEW_ROWS")"
@@ -905,15 +1046,22 @@ _s_deep_finished() {
 
 cmd_search() {
   local days="" limit="" cursor="" out="" inline=0 load_older=0 timeout=540 max_rows="" n
-  local query_given=0 iw="" fields=0 top="" nfacets=0
+  local query_given=0 iw="" fields=0 top="" nfacets=0 hosts_file="" counts="" export="" order="" export_id="" cancel_id=""
   local -a prefs
   prefs=()
   S_FACET_LIST=""
   while [ $# -gt 0 ]; do
     case "$1" in
-      --days | --from | --to | --project | --limit | --cursor | --out | --timeout | --max-rows | --query | --facet | --top)
+      --days | --from | --to | --project | --limit | --cursor | --out | --timeout | --max-rows | --query | --facet | --top \
+        | --hosts-file | --counts | --export | --order | --export-id | --cancel-export)
         need_value "$1" $#
         case "$1" in
+          --hosts-file) hosts_file="$2" ;;
+          --counts) counts="$2" ;;
+          --export) export="$2" ;;
+          --order) order="$2" ;;
+          --export-id) export_id="$2" ;;
+          --cancel-export) cancel_id="$2" ;;
           --query)
             [ "$query_given" = 0 ] || usage_error "give one --query (combine conditions inside it with AND, OR and NOT)"
             query_given=1
@@ -962,24 +1110,81 @@ cmd_search() {
     esac
     shift
   done
+  # TASK-642 D4: --cancel-export and --export-id act on an export by its id, with no search.
+  local searched=0
+  { [ -z "$S_Q" ] && [ "$query_given" = 0 ] && [ -z "$iw" ] && [ -z "$hosts_file" ]; } || searched=1
+  if [ -n "$cancel_id" ]; then
+    is_uint "$cancel_id" || usage_error "--cancel-export needs the number of an export, got: $cancel_id"
+    { [ "$searched" = 0 ] && [ -z "$export$export_id$counts$out" ]; } || usage_error "--cancel-export takes the number of an export and no search: citt search --cancel-export N"
+    need_auth
+    _s_export_cancel "$cancel_id"
+    return 0
+  fi
+  if [ -n "$export_id" ]; then
+    is_uint "$export_id" || usage_error "--export-id needs the number of an export, got: $export_id"
+    [ -n "$export" ] || usage_error "--export-id needs the file to write: citt search --export-id $export_id --export FILE.csv.gz"
+    [ "$searched" = 0 ] || usage_error "--export-id follows an export by its number; give it with --export FILE.csv.gz and no search"
+  fi
+  if [ -n "$export" ]; then
+    case "$export" in *.csv.gz) ;; *) usage_error "--export needs a file name ending in .csv.gz, got: $export" ;; esac
+    { [ -z "$out$counts$cursor$limit$max_rows$S_FACET_LIST" ] && [ "$inline" = 0 ] && [ "$CITT_JSON" = 0 ]; } \
+      || usage_error "--export writes all rows to its file: give it without --out, --counts, --cursor, --limit, --max-rows, --facet, --inline and --json"
+    case "${order:-newest}" in newest | oldest) ;; *) usage_error "--order takes newest or oldest, got: $order" ;; esac
+  elif [ -n "$order" ]; then
+    usage_error "--order goes with --export FILE.csv.gz"
+  fi
+  if [ -n "$export_id" ]; then
+    need_auth
+    S_EX_GIVEN="$export"
+    case "$export" in /*) ;; *) export="$PWD/$export" ;; esac
+    _s_export_id "$export_id" "$export" "$timeout"
+    return 0
+  fi
+  if [ -n "$counts" ]; then
+    _s_by_json "$counts" >/dev/null || usage_error "--counts takes host, app or host,app, got: $counts"
+    { [ -z "$cursor$limit$max_rows$S_FACET_LIST" ] && [ "$inline" = 0 ]; } \
+      || usage_error "--counts counts all groups: give it without --facet, --cursor, --limit, --max-rows and --inline"
+  fi
+  if [ -n "$counts$export" ] && [ "$query_given" = 0 ] && [ -z "$hosts_file" ]; then
+    usage_error "$([ -n "$counts" ] && printf -- '--counts' || printf -- '--export') works with --query or --hosts-file: give the text as --query, such as --query 'host:example.com'"
+  fi
+  if [ -n "$hosts_file" ]; then
+    { [ -z "$S_Q" ] && { [ "$query_given" = 1 ] || [ -z "$iw" ] || [ "$S_DEEP" = 1 ]; }; } \
+      || usage_error "--hosts-file works with --query: give the text as --query, such as --query 'TEXT' --hosts-file FILE"
+    _s_hosts_file "$hosts_file"
+  fi
   if [ "$fields" = 1 ]; then
-    { [ -z "$S_Q" ] && [ "$query_given" = 0 ] && [ -z "$iw" ]; } || usage_error "--fields lists the search fields; give it with no search"
+    [ "$searched" = 0 ] || usage_error "--fields lists the search fields; give it with no search"
     need_auth
     _s_fields
     return 0
   fi
-  if [ "$query_given" = 1 ]; then
+  if [ "$query_given" = 1 ] || [ -n "$hosts_file" ]; then
     [ -z "$S_Q" ] || usage_error "Give the text as TEXT or as --query, not both."
     S_QMODE=1
-    [ -n "$(printf '%s' "$S_QUERY" | tr -d ' \t\n')" ] || usage_error "give the search to --query: citt search --query 'host:example.com'; see: citt search --fields"
+    [ "$query_given" = 0 ] || [ -n "$(printf '%s' "$S_QUERY" | tr -d ' \t\n')" ] \
+      || usage_error "give the search to --query: citt search --query 'host:example.com'; see: citt search --fields"
     if [ "$S_DEEP" = 1 ]; then
       [ -n "$iw" ] || usage_error "with --query, --inside-words takes the text: --inside-words TEXT"
       # contains:"TEXT" joins the query with AND; a query with OR is put in parentheses first, so the two do not mix (D336).
       case " $(printf '%s' "$S_QUERY" | tr '\t\n()' '    ') " in *" OR "*) S_QUERY="($S_QUERY)" ;; esac
-      S_QUERY="$S_QUERY contains:\"$(printf '%s' "$iw" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
+      S_QUERY="$S_QUERY${S_QUERY:+ }contains:\"$(printf '%s' "$iw" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g')\""
       S_DEEP=0
     fi
-    [ "${#S_QUERY}" -le 1000 ] || usage_error "the search of --query is limited to 1,000 characters"
+    # The query of the printed commands; with --hosts-file the list goes first, joined by AND (TASK-642 D1).
+    S_UQ="$S_QUERY"
+    if [ -n "$hosts_file" ]; then
+      if [ -n "$S_UQ" ]; then
+        case " $(printf '%s' "$S_UQ" | tr '\t\n()' '    ') " in *" OR "*) S_QUERY="$S_HOSTS_Q ($S_UQ)" ;; *) S_QUERY="$S_HOSTS_Q $S_UQ" ;; esac
+      else
+        S_QUERY="$S_HOSTS_Q"
+      fi
+    fi
+    # Characters as the service counts them (Unicode code points), whatever the locale (TASK-642 QA Q1).
+    local qlen
+    qlen="$(jq -rn --arg q "$S_QUERY" '$q | length')"
+    [ "$qlen" -le "$SEARCH_QUERY_MAX" ] \
+      || usage_error "the search of --query is limited to 8,000 characters$([ -z "$hosts_file" ] || printf ' with the --hosts-file list'), and this one has $(_s_grp "$qlen"); split the list over several searches"
   elif [ -n "$iw" ]; then
     [ -z "$S_Q" ] || usage_error "give one search text (quote a text with spaces): $iw"
     S_Q="$iw"
@@ -1032,6 +1237,9 @@ cmd_search() {
   fi
   if [ "$CITT_JSON" = 1 ] && [ -n "$out" ]; then usage_error "use --json or --out FILE.csv, not both"; fi
   local page_size="${limit:-$SEARCH_PAGE_DEFAULT}" cap="${max_rows:-$SEARCH_MAX_ROWS_DEFAULT}"
+  # The next-rows commands of a walk keep the row cap it was given (QA round 2, R2-Q2).
+  S_MAX_WORDS=""
+  [ -z "$max_rows" ] || S_MAX_WORDS=" --max-rows $max_rows"
 
   need_auth
   # Projects: a number is a project id; a name is looked up in the project list.
@@ -1071,7 +1279,8 @@ cmd_search() {
     [ -z "$S_FROM" ] || S_REST="$S_REST --from $(shq "$S_FROM")"
     [ -z "$S_TO" ] || S_REST="$S_REST --to $(shq "$S_TO")"
     S_REST="$S_REST$(_s_project_words)"
-    S_BASE="citt search --query $(_s_qq "$S_QUERY")$S_REST"
+    S_EX_HEAD="citt search$([ -z "$S_UQ" ] || printf ' --query %s' "$(_s_qq "$S_UQ")")${S_HF_WORDS:-}"
+    S_BASE="$S_EX_HEAD$S_REST"
   else
     if [ -n "$days" ]; then
       S_TO="$(_s_iso "$now")"
@@ -1094,6 +1303,20 @@ cmd_search() {
       exit "$rcode"
     }
     S_DEADLINE=""
+  fi
+  # --counts and --export (TASK-642): after --load-older, so the restored sessions are counted or exported.
+  if [ -n "$counts" ]; then
+    S_FIX_TAIL=" --counts $counts$([ -z "$out" ] || printf ' --out %s' "$(shq "$out")")"
+    _s_counts "$counts" "$out"
+    return 0
+  fi
+  if [ -n "$export" ]; then
+    S_FIX_TAIL=" --export $(shq "$export")$([ "${order:-newest}" = newest ] || printf ' --order %s' "$order")"
+    S_EX_GIVEN="$export"
+    case "$export" in /*) ;; *) export="$PWD/$export" ;; esac
+    S_EX_RESTORED="$load_older"
+    _s_export "$export" "${order:-newest}" "$timeout"
+    return $?
   fi
   if [ "$S_DEEP" = 1 ]; then
     S_DEEP_LATE=""

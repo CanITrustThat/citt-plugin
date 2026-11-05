@@ -25,6 +25,10 @@ CS_OVERLAP_S=900
 CS_MIN_EVERY=300
 # Seconds before a failed session is tried again, by attempt: 15 min, 1 h, 4 h, then 24 h.
 CS_BACKOFF="900 3600 14400 86400"
+# NP-1340: a session whose requests got no answer (past the GET retry budget) is tried again by any sync 60 s on; the sync
+# goes on with the next session or run and stops after CS_NET_STOP such failures in a row.
+CS_NET_WAIT=60
+CS_NET_STOP=3
 
 # jq: `ts` turns an RFC 3339 UTC time (any fraction, Z or +00:00) into epoch seconds with the fraction.
 CS_JQ_TS='def ts: if . == null or . == "" then 0 else
@@ -537,6 +541,11 @@ _cs_resolve_sessions() {
 
 CS_FCODE=0
 CS_FMSG=""
+# NP-1340: curl's exit code, message and the failure class of a file that got no answer (CS_FCODE 9).
+CS_FRC=""
+CS_FREASON=""
+CS_FCLASS=""
+CS_FRETRIED=0
 
 _cs_retry_after() {
   local ra
@@ -797,7 +806,11 @@ _cs_fetch() {
           ;;
         000)
           CS_FCODE=9
-          CS_FMSG="the service could not be reached; the next sync resumes $rel from $(_cs_bytes "$(_cs_size "$part")")"
+          CS_FRC="$NET_RC"
+          CS_FREASON="$NET_REASON"
+          CS_FCLASS="$(_net_class)"
+          CS_FRETRIED="$RETRIED"
+          CS_FMSG="the service could not be reached ($CS_FCLASS$([ "$RETRIED" = 0 ] || printf '; retried %s times' "$RETRIED")) during $rel; the next sync resumes it from $(_cs_bytes "$(_cs_size "$part")")"
           return 1
           ;;
         404)
@@ -822,6 +835,9 @@ _cs_fetch() {
     if [ "$tagbad" = 0 ] && [ "$got" -lt "$size" ]; then
       if [ "$tries" -ge 5 ]; then
         CS_FCODE=9
+        CS_FRC="$NET_RC"
+        CS_FREASON="$NET_REASON"
+        CS_FCLASS="the answer stopped after $(_cs_bytes "$got")"
         CS_FMSG="the download of $rel stopped at $got of $size bytes; the next sync resumes it"
         return 1
       fi
@@ -871,7 +887,7 @@ _cs_worker() {
         printf 'ok\t%s\t%s\n' "$rel" "$size" >>"$out"
         drops=0
       else
-        printf 'fail\t%s\t%s\t%s\n' "$CS_FCODE" "$rel" "$CS_FMSG" >>"$out"
+        printf 'fail\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$CS_FCODE" "$rel" "$CS_FMSG" "$CS_FRC" "$CS_FCLASS" "$(printf '%s' "$CS_FREASON" | tr '\t\n' '  ')" "$CS_FRETRIED" >>"$out"
         case "$CS_FCODE" in
           1 | 3 | 6) break ;;
           9)
@@ -1009,6 +1025,9 @@ CS_INTEG=0
 CS_SERVER_ERR=0
 CS_ABORT=0
 CS_ABORT_MSG=""
+# NP-1340: network failures of this sync, and how many came in a row (a session or run that succeeds resets it).
+CS_NET_ERRS=0
+CS_NET_STREAK=0
 CS_VER_SESS=0
 CS_VER_FILES=0
 CS_DRY_SESS=0
@@ -1021,7 +1040,8 @@ _cs_abort() {
   CS_ABORT_MSG="$2"
 }
 
-# _cs_fail SESSION CODE MESSAGE ETAG RUN_ID RUN_KEY FOLDER: records a failed session with its next try.
+# _cs_fail SESSION CODE MESSAGE ETAG RUN_ID RUN_KEY FOLDER [CURL_EXIT CURL_MESSAGE]: records a failed session with its next
+# try; a network failure (code 9, NP-1340) waits CS_NET_WAIT seconds and keeps curl's exit code and message.
 _cs_fail() {
   local sid="$1" code="$2" msg="$3" now attempts wait
   now="$(now_s)"
@@ -1030,15 +1050,35 @@ _cs_fail() {
   wait="$(printf '%s\n' $CS_BACKOFF | sed -n "${attempts}p")"
   # shellcheck disable=SC2086
   [ -n "$wait" ] || wait="$(printf '%s\n' $CS_BACKOFF | tail -n1)"
-  _cs_st '.failures[$s] = {attempts: $a, exit: $c, last_error: $m, at: $at, next_try_at: ($n | todateiso8601),
-           export_etag: $e, run_id: $r, run_key: $k, folder: $f}' \
+  [ "$code" != 9 ] || wait="$CS_NET_WAIT"
+  _cs_st '.failures[$s] = ({attempts: $a, exit: $c, last_error: $m, at: $at, next_try_at: ($n | todateiso8601),
+           export_etag: $e, run_id: $r, run_key: $k, folder: $f}
+           + (if $rc == "" then {} else {curl_exit: ($rc | tonumber), curl_message: $cm} end))' \
     --arg s "$sid" --argjson a "$attempts" --argjson c "$code" --arg m "$msg" --arg at "$(_cs_now_iso)" \
-    --argjson n "$((now + wait))" --arg e "$4" --argjson r "${5:-null}" --arg k "$6" --arg f "$7"
+    --argjson n "$((now + wait))" --arg e "$4" --argjson r "${5:-null}" --arg k "$6" --arg f "$7" --arg rc "${8:-}" --arg cm "${9:-}"
   _cs_save
   CS_FAILED_NOW=$((CS_FAILED_NOW + 1))
   if [ "$code" = 11 ]; then CS_INTEG=$((CS_INTEG + 1)); else CS_SERVER_ERR=$((CS_SERVER_ERR + 1)); fi
   err "$CITT_CMD: session $sid${6:+ ($6/$7)}: $msg"
 }
+
+# _cs_neterr WHAT CLASS RETRIES CURL_EXIT CURL_MESSAGE [SESSION RUN]: one network failure of this sync, for the log line
+# (`network_errors`), and the count in a row; at CS_NET_STOP in a row the sync stops after the current step.
+_cs_neterr() {
+  jq -nc --arg at "$(_cs_now_iso)" --arg w "$1" --arg c "$2" --argjson n "${3:-0}" --argjson rc "${4:-0}" --arg m "$5" \
+    --arg s "${6:-}" --arg r "${7:-}" \
+    '{at: $at, what: $w, class: $c, retries: $n, curl_exit: $rc, curl_message: $m}
+     + (if $s == "" then {} else {session_id: ($s | tonumber)} end) + (if $r == "" then {} else {run_id: ($r | tonumber)} end)' \
+    >>"$_CITT_TMP/neterrs.jsonl"
+  CS_NET_ERRS=$((CS_NET_ERRS + 1))
+  CS_NET_STREAK=$((CS_NET_STREAK + 1))
+  if [ "$CS_NET_STREAK" -ge "$CS_NET_STOP" ]; then
+    _cs_abort 9 "the service could not be reached $CS_NET_STREAK times in a row ($2); the sync stopped; the next sync continues"
+  fi
+}
+
+# _cs_net_ok: a session or run that got its answers; the count in a row starts again.
+_cs_net_ok() { CS_NET_STREAK=0; }
 
 # _cs_session ROW: lists one session's files, downloads what is missing, writes the marker and
 # the state. ROW is a feed row or a {session_id, src} row of a retry or a verify. A layout 2 session lists
@@ -1078,7 +1118,12 @@ _cs_session() {
     2??) ;;
     401) fail_http ;;
     000)
-      _cs_abort 9 "$CITT_NET_LINE"
+      # The curl message goes to the state and the log line only (it names the host); the printed line has the class.
+      local nl cls curl_msg="$NET_REASON"
+      nl="$(_net_line)"
+      cls="$(_net_class)"
+      _cs_fail "$sid" 9 "${nl%%; check the network*}; the next sync tries it again" "$feed_etag" "$run_id" "" "" "$NET_RC" "$curl_msg"
+      _cs_neterr "session $sid file list" "$cls" "$RETRIED" "$NET_RC" "$curl_msg" "$sid" "$run_id"
       return
       ;;
     429)
@@ -1247,6 +1292,11 @@ _cs_session() {
     fi
   fi
   printf '%s\t%s\n' "$run_id" "$run_key" >>"$_CITT_TMP/touched"
+  # NP-1340: the run's run-level files are pending until a sync fetches all of them, whatever later syncs touch.
+  if [ -n "$run_id" ] && [ "$CS_DRY" = 0 ]; then
+    _cs_st '.runs_pending[$i] = (.runs_pending[$i] // {run_key: $k, since: $at})' --arg i "$run_id" --arg k "$run_key" --arg at "$(_cs_now_iso)"
+    _cs_save
+  fi
 
   # The presigned list of the session (NP-579); the API path when it is unavailable or with --via api.
   local par via=api need4="$_CITT_TMP/need4.$sid" dlrc
@@ -1331,7 +1381,17 @@ _cs_session() {
   done
   case "$worst" in
     3) fail_out 3 "$msg" ;;
-    1 | 6 | 9)
+    9)
+      # NP-1340: one session's files got no answer: recorded with a short wait; the sync goes on.
+      local frc fcls freason frel fn
+      IFS=$'\t' read -r frel frc fcls freason fn < <(awk -F '\t' '$1 == "fail" && $2 == 9 { print $3 "\t" $5 "\t" $6 "\t" $7 "\t" $8; exit }' "$res")
+      is_uint "$frc" || frc=0
+      is_uint "$fn" || fn=0
+      _cs_fail "$sid" 9 "$msg" "$etag" "$run_id" "$run_key" "$folder" "$frc" "$freason"
+      _cs_neterr "session $sid file $frel" "${fcls:-the connection failed}" "$fn" "$frc" "$freason" "$sid" "$run_id"
+      return
+      ;;
+    1 | 6)
       _cs_abort "$worst" "$msg"
       return
       ;;
@@ -1428,6 +1488,7 @@ _cs_session() {
     --arg s "$sid" --arg e "$etag" --argjson r "${run_id:-null}" --arg k "$run_key" --arg f "$folder" --arg g "$mgroups" \
     --argjson x "$xrec" --argjson n "$files" --argjson b "$bytes" --arg at "$now" --slurpfile m "$marker"
   _cs_save
+  _cs_net_ok
   [ "${CITT_JSON:-0}" = 1 ] || [ "$nneed" = 0 ] \
     || printf 'Session %s: %s/%s, %s, %s\n' "$sid" "$run_key" "$folder" "$(_cs_n "$okn" file files)" "$(_cs_bytes "$okbytes")"
 }
@@ -1513,7 +1574,7 @@ _cs_run_files() {
       ok) [ "$n" != README.md ] || readme=changed ;;
       same | absent) ;;
       net)
-        _cs_abort 9 "$CITT_NET_LINE"
+        _cs_run_netfail "$id" "$rk" "$n"
         return
         ;;
       *)
@@ -1532,7 +1593,7 @@ _cs_run_files() {
       case "$CS_RG" in
         ok | same | absent) ;;
         net)
-          _cs_abort 9 "$CITT_NET_LINE"
+          _cs_run_netfail "$id" "$rk" "schema/$s.schema.json"
           return
           ;;
         *) errs=$((errs + 1)) ;;
@@ -1544,15 +1605,31 @@ _cs_run_files() {
     CS_SERVER_ERR=$((CS_SERVER_ERR + 1))
     return
   fi
-  _cs_st '.runs[$i] = {run_key: $k, run_etag: $e, fetched_at: $at}' \
+  _cs_st '.runs[$i] = {run_key: $k, run_etag: $e, fetched_at: $at} | del(.runs_pending[$i])' \
     --arg i "$id" --arg k "$rk" --arg e "$etag" --arg at "$(_cs_now_iso)"
   _cs_save
+  _cs_net_ok
 }
 
-# _cs_runs RESET: refreshes the run-level files of every run touched in this sync and of every
-# local run whose run_etag moved in GET /capture-runs?changed_after=.
+# _cs_run_netfail ID RUN_KEY FILE: a run-level file got no answer (NP-1340): the run stays in runs_pending, the line names
+# the run and the failure class, and the sync goes on with the next run.
+_cs_run_netfail() {
+  local cls nl
+  cls="$(_net_class)"
+  nl="$(_net_line)"
+  _cs_checksums "$CS_DIR/$2"
+  _cs_st '.runs_pending[$i] = ((.runs_pending[$i] // {run_key: $k, since: $at}) + {last_error: $m, curl_exit: $rc, at: $at})' \
+    --arg i "$1" --arg k "$2" --arg at "$(_cs_now_iso)" --arg m "${nl%%; check the network*}" --argjson rc "${NET_RC:-0}"
+  _cs_save
+  err "$CITT_CMD: run $2: $3: ${nl%%; check the network*}; the next sync fetches it again"
+  _cs_neterr "run $1 $3" "$cls" "$RETRIED" "$NET_RC" "$NET_REASON" "" "$1"
+}
+
+# _cs_runs RESET: refreshes the run-level files of every run touched in this sync, of every run in runs_pending (a run
+# whose files a sync has not fetched in full, NP-1340), and of every local run whose run_etag moved in
+# GET /capture-runs?changed_after=.
 _cs_runs() {
-  local after hw cursor="" all id rk etag want
+  local after hw cursor="" all id rk etag want listfail=0
   all="$(tmpfile runs.jsonl)"
   hw="$(jq -r '.runs_high_water // empty' "$CS_ST")"
   if [ "$1" = 0 ] && [ -n "$hw" ]; then
@@ -1570,8 +1647,14 @@ _cs_runs() {
       2??) ;;
       401) fail_http ;;
       000)
-        _cs_abort 9 "$CITT_NET_LINE"
-        return
+        # NP-1340: the touched and pending runs are fetched without the list; the cursor stays.
+        local nl
+        nl="$(_net_line)"
+        err "$CITT_CMD: the run list: ${nl%%; check the network*}; runs that changed are refreshed on the next sync"
+        _cs_neterr "run list" "$(_net_class)" "$RETRIED" "$NET_RC" "$NET_REASON"
+        listfail=1
+        [ "$CS_ABORT" = 0 ] || return
+        break
         ;;
       *)
         err "$CITT_CMD: the server could not answer for the run list; run files are refreshed on the next sync"
@@ -1583,7 +1666,18 @@ _cs_runs() {
     cursor="$(body_field '.next_cursor')"
     [ -n "$cursor" ] || break
   done
-  # Targets: touched runs, and local runs whose run_etag moved; only runs inside --run and of --session.
+  # NP-1340: a run pending for 7 days (its run files refused every day, or the run gone) leaves the pending list.
+  local stale
+  stale="$(jq -r --argjson now "$(now_s)" "$CS_JQ_TS"' .runs_pending // {} | to_entries[]
+    | select((.value.since | ts) < $now - 7 * 86400) | "\(.key)\t\(.value.run_key)"' "$CS_ST")"
+  if [ -n "$stale" ]; then
+    while IFS=$'\t' read -r id rk; do
+      err "$CITT_CMD: run $rk: its run files were not fetched in 7 days; it leaves the pending list"
+      _cs_st 'del(.runs_pending[$i])' --arg i "$id"
+    done <<<"$stale"
+    _cs_save
+  fi
+  # Targets: touched runs, pending runs and local runs whose run_etag moved; only runs inside --run and of --session.
   want="$(tmpfile run_targets)"
   jq -r -n --slurpfile st "$CS_ST" --rawfile touched "$_CITT_TMP/touched" --arg rids "$CS_RIDS" \
     --arg srids "$CS_SRIDS" --argjson sonly "$([ -n "$CS_SESSIONS" ] && printf 1 || printf 0)" '
@@ -1593,6 +1687,8 @@ _cs_runs() {
     | [inputs] as $listed
     | ($listed | map({key: (.experiment_id | tostring), value: .}) | from_entries) as $by
     | ( [$t[] | select(.id != "") | {id, key: ($by[.id].run_key // .key), etag: ($by[.id].run_etag // "")}]
+      + [($st[0].runs_pending // {}) | to_entries[] | {id: .key, key: ($by[.key].run_key // .value.run_key),
+         etag: ($by[.key].run_etag // $st[0].runs[.key].run_etag // "")}]
       + [$listed[] | (.experiment_id | tostring) as $i | select($st[0].runs[$i] != null and $st[0].runs[$i].run_etag != .run_etag)
          | {id: $i, key: .run_key, etag: .run_etag}] )
     | unique_by(.id)[] | select(($only | length) == 0 or (.id as $i | $only | index($i)))
@@ -1603,8 +1699,9 @@ _cs_runs() {
     _cs_run_files "$id" "$rk" "$etag"
     [ "$CS_ABORT" = 0 ] || return
   done <"$want"
-  # A verify leaves the cursor as it was.
+  # A verify leaves the cursor as it was, and so does a run list that got no answer.
   [ "$CS_VERIFY" = 0 ] || return 0
+  [ "$listfail" = 0 ] || return 0
   hw="$(jq -r -s --arg old "$hw" "$CS_JQ_TS"' (map(.changed_at) + [$old] | map(select(. != null and . != "")) | max_by(ts)) // empty' "$all")"
   [ -z "$hw" ] || _cs_st '.runs_high_water = $h' --arg h "$hw"
 }
@@ -1616,6 +1713,7 @@ _cs_sync() {
   start="$(now_s)"
   : >"$_CITT_TMP/touched"
   : >"$_CITT_TMP/dropped"
+  : >"$_CITT_TMP/neterrs.jsonl"
   if [ "$CS_DRY" = 0 ]; then
     mkdir -p "$CS_META" 2>/dev/null || die 1 "cannot create $CS_META"
     chmod 700 "$CS_META" 2>/dev/null || true
@@ -1753,21 +1851,29 @@ _cs_sync() {
     code="$CS_ABORT"
   elif [ "$CS_INTEG" -gt 0 ]; then
     code=11
+  elif [ "$CS_NET_ERRS" -gt 0 ]; then
+    code=9
   elif [ "$nfail" -gt 0 ] || [ "$CS_SERVER_ERR" -gt 0 ]; then
     code=8
   fi
   summary="$(_cs_n "$CS_NEW" "new session" "new sessions"), $CS_UPD updated, $(_cs_n "$CS_FILES" file files), $(_cs_bytes "$CS_BYTES") in $(_cs_dur "$secs"); $nfail failed"
   local errors dropped
   errors="$(jq -c '[.failures | to_entries[] | {session_id: (.key | tonumber), run_key: .value.run_key, folder: .value.folder,
-    error: .value.last_error, exit: .value.exit, attempts: .value.attempts, next_try_at: .value.next_try_at}]' "$CS_ST")"
+    error: .value.last_error, exit: .value.exit, attempts: .value.attempts, next_try_at: .value.next_try_at}
+    + (if .value.curl_exit != null then {curl_exit: .value.curl_exit, curl_message: .value.curl_message} else {} end)]' "$CS_ST")"
+  local neterrs pending
+  neterrs="$(jq -s -c '.' "$_CITT_TMP/neterrs.jsonl" 2>/dev/null)"
+  [ -n "$neterrs" ] || neterrs='[]'
+  pending="$(jq -c '[.runs_pending // {} | to_entries[] | {run_id: (.key | tonumber), run_key: .value.run_key}]' "$CS_ST")"
   dropped="$(jq -R -s -c 'split("\n") | map(select(. != "") | split("\t") | {session_id: (.[0] | tonumber), path: .[1]})' "$_CITT_TMP/dropped")"
   jq -nc --arg at "$(_cs_now_iso)" --argjson code "$code" --argjson new "$CS_NEW" --argjson upd "$CS_UPD" \
     --argjson files "$CS_FILES" --argjson bytes "$CS_BYTES" --argjson secs "$secs" --argjson failed "$nfail" \
     --arg hw "$(jq -r '.high_water // empty' "$CS_ST")" --arg summary "$summary" --arg abort "$CS_ABORT_MSG" \
-    --argjson errors "$errors" --argjson dropped "$dropped" --argjson verify "$CS_VERIFY" \
+    --argjson errors "$errors" --argjson dropped "$dropped" --argjson verify "$CS_VERIFY" --argjson neterrs "$neterrs" \
+    --argjson pending "$pending" \
     '{at: $at, exit: $code, new: $new, updated: $upd, files: $files, bytes: $bytes, seconds: $secs, failed: $failed,
       high_water: (if $hw == "" then null else $hw end), summary: $summary, error: (if $abort == "" then null else $abort end),
-      verify: ($verify == 1), failures: $errors, kept_files: $dropped}' >>"$CS_META/log.jsonl"
+      verify: ($verify == 1), failures: $errors, kept_files: $dropped, network_errors: $neterrs, runs_pending: $pending}' >>"$CS_META/log.jsonl"
 
   if [ "${CITT_JSON:-0}" = 1 ]; then
     tail -n1 "$CS_META/log.jsonl" | jq -c --arg d "$CS_DIR" '{schema: "citt.plugin.capture-sync/1", dir: $d} + .'

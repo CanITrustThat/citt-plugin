@@ -263,6 +263,10 @@ need_auth() {
 # Request state, set by http.
 CODE=""
 NET_REASON=""
+# NP-1340: curl's exit code of the last attempt without an answer (0 when there was one) and the bytes of the answer it got;
+# _net_class states the failure in plain words.
+NET_RC=0
+NET_BYTES=0
 RETRIED=0
 REQ_METHOD=""
 REQ_PATH=""
@@ -275,6 +279,13 @@ HTTP_OUT=""
 HTTP_RESUME=0
 # Wall time of one request in seconds; 300 unless a command sets less for one call.
 HTTP_MAX_TIME=""
+# NP-1340 M1: a wait loop sets HTTP_DEADLINE (epoch seconds, its --timeout end) and WAIT_TIMEOUT_LINE (its re-run line) before
+# its first poll and clears both after it (wait_deadline, wait_done). Each GET's retry budget is then at most the time left; a
+# GET that gets no answer or a 5xx with its budget cut by the deadline ends the command with WAIT_TIMEOUT_LINE and exit 12
+# (fail_http), inside the timeout. HTTP_CAPPED is 1 for a call whose budget the deadline cut.
+HTTP_DEADLINE=""
+WAIT_TIMEOUT_LINE=""
+HTTP_CAPPED=0
 # Extra request headers, one per line.
 HTTP_HEADERS=""
 # Extra curl arguments for every request until changed, one per line (citt capture-sync --limit-rate).
@@ -298,6 +309,56 @@ hdr() {
     END { if (last != "") print last }'
 }
 
+# NP-1340: a GET is asked again while its base waits fit in CITT_RETRY_BUDGET_S seconds (100; the environment variable
+# CITT_RETRY_BUDGET, 0 to 600, sets another) and the time since the first request plus the next wait stays within it: waits
+# of 1, 2, 4, 8, 16, 30, 30 s (7 retries). Each wait is drawn from 80 to 120 % of its base; a Retry-After in seconds on the
+# answer is the base of that wait (up to 10 % more). Other methods asked again (HTTP_RETRY=yes) keep 3 retries
+# (_retry_delay: Retry-After, else 1, 2, 4 s).
+CITT_RETRY_BUDGET_S=100
+
+# _retry_wait_ms ATTEMPT RETRY_AFTER: "BASE_MS WAIT_MS" for the wait after the ATTEMPTth request.
+_retry_wait_ms() {
+  local attempt="$1" ra="$2" base jit
+  if is_uint "$ra"; then
+    base=$((ra * 1000))
+    # NP-1340 L1: a Retry-After of 0 waits 1 s.
+    [ "$base" -ge 1000 ] || base=1000
+    jit=$((base * (RANDOM % 101) / 1000))
+  else
+    case "$attempt" in 1) base=1000 ;; 2) base=2000 ;; 3) base=4000 ;; 4) base=8000 ;; 5) base=16000 ;; *) base=30000 ;; esac
+    jit=$((base * ((RANDOM % 401) - 200) / 1000))
+  fi
+  printf '%s %s' "$base" $((base + jit))
+}
+
+# _net_class: the failure class of the last attempt in plain words, from curl's exit code and the bytes received.
+_net_class() {
+  if [ "$NET_BYTES" -gt 0 ] 2>/dev/null; then
+    case "$NET_RC" in 18 | 56 | 92 | 16 | 28)
+      printf 'the answer stopped after %s' "$(awk -v b="$NET_BYTES" 'BEGIN { printf "%.1f MB", b / 1048576 }')"
+      return
+      ;;
+    esac
+  fi
+  case "$NET_RC" in
+    6) printf 'name lookup failed' ;;
+    7) printf 'could not connect' ;;
+    28) printf 'the connection timed out' ;;
+    35 | 55 | 56 | 16 | 92) printf 'the connection was reset' ;;
+    52) printf 'the connection closed with no answer' ;;
+    18) printf 'the answer stopped after 0.0 MB' ;;
+    *) printf 'the connection failed' ;;
+  esac
+}
+
+# _net_line: CITT_NET_LINE with the failure class and the retry count of the last request.
+_net_line() {
+  local c
+  c="$(_net_class)"
+  [ "$RETRIED" -gt 0 ] && c="$c; retried $RETRIED times"
+  printf 'the service could not be reached (%s); check the network connection and try again' "$c"
+}
+
 _retry_delay() {
   local attempt="$1" ra
   if [ "${CITT_TEST_MODE:-}" = "1" ]; then
@@ -314,10 +375,10 @@ _retry_delay() {
 }
 
 # http METHOD PATH [BODY_FILE]: the response body goes to $RESP (or $HTTP_OUT), the status to
-# $CODE ("000" when there was no response, with $NET_REASON). GETs and, with HTTP_RETRY=yes,
-# POSTs are retried 3 times on 5xx and network failures. HEAD is sent with -I.
+# $CODE ("000" when there was no response, with $NET_REASON, NET_RC and NET_BYTES). GETs and, with HTTP_RETRY=yes, other
+# methods are asked again on 5xx and network failures within the retry budget (NP-1340, above). HEAD is sent with -I.
 http() {
-  local method="$1" path="$2" body="${3:-}" out retry attempt=0 rc url h chunk="$HTTP_CHUNK"
+  local method="$1" path="$2" body="${3:-}" out retry attempt=0 rc url h chunk="$HTTP_CHUNK" budget waited=0 t0 w ra base wait wout pre
   REQ_METHOD="$method"
   REQ_PATH="${path%%\?*}"
   out="${HTTP_OUT:-$RESP}"
@@ -327,7 +388,7 @@ http() {
   fi
   case "$path" in http://* | https://*) url="$path" ;; *) url="$CITT_HOST$path" ;; esac
   local -a args
-  args=(-sS -g -o "$out" -D "$HDRS" -w '%{http_code}' --connect-timeout 20)
+  args=(-sS -g -o "$out" -D "$HDRS" -w '%{http_code} %{size_download}' --connect-timeout 20)
   if [ "$method" = HEAD ]; then args+=(-I); else args+=(-X "$method"); fi
   [ "$HTTP_CLIENT_HDR" = 0 ] || args+=(-H "X-CITT-Client: $CITT_CLIENT")
   if [ -n "$HTTP_HEADERS" ]; then
@@ -350,12 +411,38 @@ EOF
   elif [ "$HTTP_RESUME" = 1 ]; then
     args+=(-C -)
   else
-    args+=(--max-time "${HTTP_MAX_TIME:-300}")
+    w="${HTTP_MAX_TIME:-300}"
+    [ "${CITT_TEST_MODE:-}" != 1 ] || ! is_uint "${CITT_HTTP_MAX_TIME:-}" || w="$CITT_HTTP_MAX_TIME"
+    # NP-1340 M1: one request of a wait loop ends by the loop's deadline (5 s at least).
+    if is_uint "$HTTP_DEADLINE"; then
+      t0=$((HTTP_DEADLINE - $(now_s)))
+      [ "$t0" -ge 5 ] || t0=5
+      [ "$w" -le "$t0" ] || w="$t0"
+    fi
+    args+=(--max-time "$w")
   fi
+  budget="$CITT_RETRY_BUDGET_S"
+  if is_uint "${CITT_RETRY_BUDGET:-}" && [ "$CITT_RETRY_BUDGET" -le 600 ]; then budget="$CITT_RETRY_BUDGET"; fi
+  HTTP_CAPPED=0
+  if is_uint "$HTTP_DEADLINE"; then
+    w=$((HTTP_DEADLINE - $(now_s)))
+    [ "$w" -ge 0 ] || w=0
+    if [ "$w" -lt "$budget" ]; then
+      budget="$w"
+      HTTP_CAPPED=1
+    fi
+  fi
+  budget=$((budget * 1000))
+  t0="$(now_s)"
+  NET_RC=0
+  NET_BYTES=0
+  NET_REASON=""
   while :; do
     attempt=$((attempt + 1))
     : >"$HDRS"
     [ "$HTTP_RESUME" = 1 ] || : >"$out"
+    pre=0
+    [ "$HTTP_RESUME" != 1 ] || [ ! -f "$out" ] || pre="$(file_bytes "$out")"
     if [ "$HTTP_AUTH" != 1 ]; then
       CODE="$(curl -q ${args[@]+"${args[@]}"} "$url" 2>"$_CITT_ERR" </dev/null)"
     elif [ -n "$chunk" ]; then
@@ -364,18 +451,51 @@ EOF
       CODE="$(curl -q --config <(_citt_cfg) ${args[@]+"${args[@]}"} "$url" 2>"$_CITT_ERR" </dev/null)"
     fi
     rc=$?
+    wout="$CODE"
+    CODE="${wout%% *}"
+    case "$wout" in *' '*) NET_BYTES="${wout##* }" ;; *) NET_BYTES=0 ;; esac
+    is_uint "$NET_BYTES" || NET_BYTES=0
     [ -n "$CODE" ] || CODE=000
-    if [ "$rc" -ne 0 ] && [ "$CODE" = 000 ]; then
+    # NP-1340 L4: an answer other than 200 or 206 to a resumed download (a 503 body) leaves the part file at its size before
+    # the attempt; the body goes to RESP for the error mapping.
+    if [ "$HTTP_RESUME" = 1 ] && [ -f "$out" ]; then
+      case "$CODE" in 200 | 206) ;; *)
+        if [ "$(file_bytes "$out")" -gt "$pre" ]; then
+          [ "$out" = "$RESP" ] || tail -c +"$((pre + 1))" "$out" >"$RESP" 2>/dev/null
+          head -c "$pre" "$out" >"$out.cut" && mv -f "$out.cut" "$out"
+        fi
+        ;;
+      esac
+    fi
+    if [ "$rc" -ne 0 ] && { [ "$CODE" = 000 ] || [ "$HTTP_RESUME" != 1 ]; }; then
+      CODE=000
+      NET_RC="$rc"
       NET_REASON="$(sed -e 's/^curl: ([0-9]*) //' "$_CITT_ERR" | head -n1)"
       [ -n "$NET_REASON" ] || NET_REASON="curl exit $rc"
-    elif [ "$rc" -ne 0 ] && [ "$HTTP_RESUME" != 1 ]; then
-      CODE=000
-      NET_REASON="$(sed -e 's/^curl: ([0-9]*) //' "$_CITT_ERR" | head -n1)"
+    elif [ "$CODE" != 000 ]; then
+      NET_RC=0
+      NET_REASON=""
     fi
-    if [ "$retry" = yes ] && [ "$attempt" -lt 4 ]; then
+    if [ "$retry" = yes ] && [ "$method" != GET ]; then
+      if [ "$attempt" -lt 4 ]; then
+        case "$CODE" in 000 | 5??)
+          sleep "$(_retry_delay "$attempt")"
+          continue
+          ;;
+        esac
+      fi
+    elif [ "$retry" = yes ]; then
       case "$CODE" in 000 | 5??)
-        sleep "$(_retry_delay "$attempt")"
-        continue
+        ra=""
+        [ "$CODE" = 000 ] || { ra="$(hdr Retry-After)"; is_uint "$ra" || ra=""; }
+        read -r base wait <<<"$(_retry_wait_ms "$attempt" "$ra")"
+        if [ $((waited + base)) -le "$budget" ] && [ $((($(now_s) - t0) * 1000 + base)) -le "$budget" ]; then
+          waited=$((waited + base))
+          if [ "${CITT_TEST_MODE:-}" != 1 ]; then
+            sleep "$((wait / 1000)).$(printf '%03d' $((wait % 1000)))"
+          fi
+          continue
+        fi
         ;;
       esac
     fi
@@ -493,11 +613,15 @@ _balance_line() {
 # fail_http: the stderr line and exit code for a failed request (DESIGN-11 "HTTP error handling").
 fail_http() {
   local error message msg code
+  # NP-1340 M1: a wait loop's time ran out while the service did not answer: its re-run line, exit 12.
+  if [ "$HTTP_CAPPED" = 1 ] && [ -n "$WAIT_TIMEOUT_LINE" ]; then
+    case "$CODE" in 000 | 5??) fail_out 12 "$WAIT_TIMEOUT_LINE" ;; esac
+  fi
   error="$(body_field '.error')"
   message="$(body_field '.message')"
   case "$CODE" in
     000)
-      msg="$CITT_NET_LINE"
+      msg="$(_net_line)"
       code=9
       ;;
     400)
@@ -603,7 +727,12 @@ fail_http() {
       code=8
       ;;
     5??)
-      msg="$CITT_SERVER_LINE"
+      # NP-1340: nginx answers 503 service_restarting while the service restarts (a deploy).
+      if [ "$CODE" = 503 ] && [ "$error" = service_restarting ]; then
+        msg="the service is restarting; try again in a minute"
+      else
+        msg="$CITT_SERVER_LINE"
+      fi
       code=8
       ;;
     *)
@@ -624,9 +753,10 @@ fail_out() {
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
         '. + {http_status: (if $s == 0 then null else $s end)} | .message = $m | .error = (.error // "http_error")' "$RESP"
     else
-      jq -nc --arg m "$msg" --arg c "$CODE" \
+      jq -nc --arg m "$msg" --arg c "$CODE" --argjson rc "${NET_RC:-0}" --argjson n "${RETRIED:-0}" \
         '{error: (if $c == "000" then "network" else "http_error" end), message: $m,
-          http_status: (if $c == "000" then null else ($c | tonumber) end)}'
+          http_status: (if $c == "000" then null else ($c | tonumber) end)}
+         + (if $c == "000" then {curl_exit: $rc, retries: $n} else {} end)'
     fi
   fi
   exit "$code"
@@ -781,6 +911,18 @@ resolve_project() {
 }
 
 # --- polling ---------------------------------------------------------------
+
+# wait_deadline TIMEOUT_S LINE: the GETs of a wait loop retry at most until TIMEOUT_S from now, then exit 12 with LINE
+# (NP-1340 M1); wait_done clears it.
+wait_deadline() {
+  HTTP_DEADLINE=$(($(now_s) + $1))
+  WAIT_TIMEOUT_LINE="$2"
+}
+wait_done() {
+  HTTP_DEADLINE=""
+  WAIT_TIMEOUT_LINE=""
+  HTTP_CAPPED=0
+}
 
 # poll_sleep SECONDS [MAX]: the response's poll_after_seconds (or 15); CITT_POLL_INTERVAL in test
 # mode; at most MAX seconds when given (the time left before a --timeout).

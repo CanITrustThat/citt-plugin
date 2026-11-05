@@ -142,6 +142,8 @@ main() {
     search)
       # shellcheck source=lib/cmd-search.sh
       . "$CITT_LIB/cmd-search.sh"
+      # shellcheck source=lib/cmd-search-bulk.sh
+      . "$CITT_LIB/cmd-search-bulk.sh"
       ;;
     capture-options | capture-start | capture-watch | capture-stop)
       # shellcheck source=lib/cmd-capture.sh
@@ -179,6 +181,9 @@ main() {
     capture-stop) cmd_capture_stop "$@" | clean ;;
     help-requests) cmd_help_requests "$@" | clean ;;
     help-answer) cmd_help_answer "$@" | clean ;;
+    # search runs in this shell (TASK-642 QA Q4): the INT and TERM traps of a followed export then get a signal sent to the
+    # citt process alone, not only one sent to its process group.
+    search) cmd_search "$@" > >(clean) ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }

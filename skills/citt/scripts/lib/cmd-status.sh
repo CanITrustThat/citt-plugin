@@ -56,6 +56,7 @@ cmd_status() {
   resolve_project
   local start polls=0 active settled
   start="$(now_s)"
+  [ "$wait" = 0 ] || wait_deadline "$timeout" "still running after $timeout s; re-run: citt status$(project_arg) --wait"
   while :; do
     call GET "$CITT_V1/projects/$PROJECT_ID/status"
     polls=$((polls + 1))
@@ -67,6 +68,7 @@ cmd_status() {
     fi
     poll_sleep "$(jq -r '.poll_after_seconds // empty' "$RESP")"
   done
+  wait_done
   if [ "$CITT_JSON" = 1 ]; then
     if [ "$wait" = 1 ]; then
       jq -c --argjson p "$polls" --argjson s "$settled" \
