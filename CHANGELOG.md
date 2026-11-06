@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.29.0
+
+- `citt inbox` and `citt mailbox show` print a field only when it has the type the server sends: a code, sender, subject, source, time, cursor or flag that arrives as a number, object or list prints as null or not at all, in tables and in `--json`. With `--json`, an `error` code holding a digit reads `http_error` (NP-1368).
+
 ## 2.28.0
 
 - `citt inbox --json` and `citt mailbox show --json` (also `citt inbox ADDRESS|CRED_ID|PHONE_ID --json`) print only the fields they name: an address row's linked numbers (`numbers[]`) as their last 4 digits, the numbers of an address (`phones[]`) as their last 4 digits with the length of the newest code, the sessions of an address (`sessions[]`), and no field the server adds later, also inside a nested object (the app is its id, label and package id). In `citt inbox` and `citt mailbox`, an error prints no `unknown_apps` value and, with `--json`, an `error` code that is not a plain code reads `http_error`. No phone number, code, password, text or email body reaches stdout (NP-1358).

@@ -764,9 +764,10 @@ fail_out() {
   err "$CITT_CMD: $msg"
   if [ "$CITT_JSON" = 1 ]; then
     if [ -n "${CITT_MASK_JQ:-}" ] && jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
-      # NP-924 QA round 3 R3-3: the error code and the masked message only, none of the body's other fields
+      # NP-924 QA round 3 R3-3: the error code and the masked message only, none of the body's other fields; NP-1368 (I-2): a code
+      # of [a-z_] only, so no digit of a number or code reaches stdout through it
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
-        '{error: ((.error | strings | select(test("^[a-z][a-z0-9_]{0,63}$"))) // "http_error"), message: $m,
+        '{error: ((.error | strings | select(test("^[a-z_]{1,64}$"))) // "http_error"), message: $m,
           http_status: (if $s == 0 then null else $s end)}' "$RESP"
     elif jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \

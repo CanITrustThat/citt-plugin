@@ -16,7 +16,8 @@ MB_NOTE_MAX=500
 # sender with its links, codes and digit tokens masked. No email snippet or SMS text is printed.
 MASK_JQ='
 def codetag: if test("^\\p{Nd}+$") then "[code, \(length) digits]" else "[code, \(length) characters]" end;
-def clen: if type == "string" then length else . end;
+# NP-1368 (R3-1): a code length, a masked sender or subject, a masked message: null for any value that is not a string
+def clen: if type == "string" then length else null end;
 # NP-1358 QA round 1 P1-1: --json prints only the fields named here (deny by default): no number, code, password, body, snippet or
 # link reaches stdout, also from a field the server adds later
 # QA round 2 R2-1: a named key keeps its value only when it is a scalar or a list of scalars; a nested object is printed only through
@@ -38,7 +39,7 @@ def safe_session: pick(["run_id", "seq", "session_id", "ended_at", "address", "p
 # of 4 to 14 letters (any script, dashes inside) and every token holding a digit (any script) as `[masked]` (QA round 3 R3-2).
 def has_url: test("(?i)(?:https?://|www\\.)\\S|\\b[a-z0-9-]+(?:\\.[a-z0-9-]+)+/");
 # `mask_message`: a server message (an error answer) with the masks below but the all-capital rule, which would take words such as HTML.
-def mask_message: if type != "string" then . else
+def mask_message: if type != "string" then null else
   gsub("(?i)\\b[a-z][a-z0-9+.-]*://\\S+"; "[link]")
   | gsub("(?i)\\bwww\\.\\S+"; "[link]")
   | gsub("(?i)\\b[\\p{L}\\p{N}-]+(?:\\.[\\p{L}\\p{N}-]+)+[/?]\\S*"; "[link]")
@@ -46,7 +47,7 @@ def mask_message: if type != "string" then . else
   | gsub("(?i)\\b[\\p{L}\\p{N}](?:[\\p{L}\\p{N}]|-(?=[\\p{L}\\p{N}])){3,31}(?=\\s+(?:is|was|=)\\s+(?:your|the|a)\\s+(?:\\S+\\s+){0,2}(?:code|pin|otp|passcode|verification|confirm[a-z]*)\\b)"; "[code]")
   | gsub("\\S*\\p{N}\\S*"; "[masked]")
   end;
-def mask_meta: if type != "string" then . else
+def mask_meta: if type != "string" then null else
   gsub("(?i)\\b[a-z][a-z0-9+.-]*://\\S+"; "[link]")
   | gsub("(?i)\\bwww\\.\\S+"; "[link]")
   | gsub("(?i)\\b[\\p{L}\\p{N}-]+(?:\\.[\\p{L}\\p{N}-]+)+[/?]\\S*"; "[link]")
@@ -55,6 +56,61 @@ def mask_meta: if type != "string" then . else
   | gsub("(?<![\\p{L}\\p{N}])\\p{Lu}(?:\\p{Lu}|-(?=\\p{Lu})){3,13}(?![\\p{L}\\p{N}])"; "[masked]")
   | gsub("\\S*\\p{N}\\S*"; "[masked]")
   end;
+# NP-1368 (R3-1, QA rounds 1 to 3): `strict` is applied to every answer before any field of it is printed. An id, an address and a
+# package id are checked against the rule the server itself applies to that field, so every value the server can generate or
+# accept prints and nothing else does; the other fields are checked against their schema type and range:
+# - an object stays only under `app`, `credential` or `refresh_error`; a list only under the containers named below; any other object
+#   or list is null; `phone_ids` keeps only phone ids
+# - ids: `id` is a non-negative integer (a text or email id) or a phone or credential id: `phone_` or `cred_` plus 16 lower-case
+#   letters and digits (`new_id` in lab_phone.rs and lab_mail_manual.rs draws them from a-z and 2-7); a cursor is the server form
+#   `<microseconds>.<id>` (`cursor_of` in lab_mail_read.rs)
+# - a number is a non-negative integer under a numeric key, at most 3 digits for `persona_age`, 4 for `seq` and `session_seq`, 6 for
+#   the counts, 7 for cents, and 9 for the database ids (a phone number has 10 or more); any other number is null
+# - `number_last4` is 4 ASCII digits; a time is ISO 8601 in 2000 to 2099, printed without its fraction of a second; an enum is
+#   letters, `_` and `-`
+# - an address or recipient: the local part under `LOCAL` of lab_mail_manual.rs (lower-case letters, digits and . _ + -, starting
+#   and ending with a letter or digit, no `..`, at most 64) at a valid host name; it is printed as it is
+# - a package id: `pkgid` below, the intake.rs rules
+# - a code, sender, subject, text, snippet, link or password stays as it is: none is printed whole (a length, a mask or --reveal)
+# - every other string (label, note, service name, ...) goes through `mask_meta`, and a token of 8 or more characters holding
+#   upper- and lower-case letters and a digit or a symbol (the shape of a password) is `[masked]`
+def idkeys: ["id", "project_id", "run_id", "session_id", "user_id", "project_app_id"];
+def numcap($k): if ($k | IN(idkeys[])) then 999999999 elif $k == "persona_age" then 999 elif ($k | IN("seq", "session_seq")) then 9999
+  elif ($k | IN("count", "mail_count", "sms_count")) then 999999 elif ($k | IN("charged_cents", "refunded_cents", "cost_cents", "refund_cents")) then 9999999
+  else -1 end;
+def tskey: endswith("_at") or IN("ends_at", "reusable_until", "code_wait_until");
+def enumkeys: ["state", "status", "release_outcome", "provider", "kind", "identity_kind", "body_state", "source", "number_type",
+  "release_reason", "spam_verdict", "virus_verdict", "addresses_off"];
+def rawkeys: ["code", "last_code", "sender", "subject", "content", "snippet", "link", "password", "number"];
+def labid: type == "string" and test("^(phone|cred)_[a-z0-9]{16}$");
+def labaddr: test("^[a-z0-9](?:[a-z0-9._+-]{0,62}[a-z0-9])?@(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,62}$")
+  and (split("@")[0] | contains("..") | not);
+# `pkgid`: intake.rs `is_package_name` (Android), `is_ios_bundle_id` (at most 240 bytes, not all digits, not `temp`) or
+# `is_app_store_number`
+def pkgid: test("^[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+$")
+  or (length <= 240 and test("^[A-Za-z0-9][A-Za-z0-9_-]*(?:\\.[A-Za-z0-9_-]+)*$") and . != "temp")
+  or test("^[0-9]{1,64}$");
+def nopw: gsub("(?<!\\S)(?=\\S*\\p{Lu})(?=\\S*\\p{Ll})(?=\\S*[^\\p{L}\\s])\\S{8,}"; "[masked]");
+def strict: walk(if type == "object" then with_entries(.key as $k | .value |= (
+    if type == "object" then (if ($k | IN("app", "credential", "refresh_error")) then . else null end)
+    elif type == "array" then
+      (if ($k | IN("rows", "numbers", "texts", "emails", "phones", "sessions", "links", "addresses")) then .
+       elif $k == "phone_ids" then map(select(labid and startswith("phone_")))
+       else null end)
+    elif ($k | IN("code", "last_code")) then (if type == "string" then . else null end)
+    elif type == "number" then (if . == floor and . >= 0 and . <= numcap($k) then . else null end)
+    elif type != "string" then .
+    elif $k == "id" then (if labid then . else null end)
+    elif $k == "credential_id" then (if labid and startswith("cred_") then . else null end)
+    elif $k == "next_cursor" then (if test("^[0-9]{1,19}\\.(?:(?:phone|cred)_[a-z0-9]{16}|[0-9]{1,19})$") then . else null end)
+    elif $k == "number_last4" then (if test("^[0-9]{4}$") then . else null end)
+    elif ($k | tskey) then (if test("^20[0-9]{2}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])[T ](?:[01][0-9]|2[0-3]):[0-5][0-9](?::[0-5][0-9](?:\\.[0-9]{1,9})?)?(?:Z|[+-](?:0[0-9]|1[0-4]):?[0-5][0-9])$")
+        then sub("\\.[0-9]+"; "") else null end)
+    elif ($k | IN(enumkeys[])) then (if test("^[A-Za-z_-]{1,64}$") then . else null end)
+    elif ($k | IN(rawkeys[])) then .
+    elif ($k | IN("address", "recipient")) then (if labaddr then . else null end)
+    elif $k == "package_id" then (if pkgid then . else null end)
+    else (mask_meta | nopw) end)) else . end);
 '
 
 MB_JQ="$JQ_LT$MASK_JQ"'
@@ -83,6 +139,17 @@ cmd_mailbox() {
   # shellcheck disable=SC2034  # read by mask_server_text and fail_out in lib/common.sh
   CITT_MASK_JQ="$MASK_JQ"
   "_mb_$sub" "$@"
+}
+
+# _strict_resp: $RESP through `strict` (NP-1368, R3-1) before any field of it is printed.
+_strict_resp() {
+  { jq -c "$MASK_JQ"'strict' "$RESP" >"$RESP.s" 2>/dev/null && mv "$RESP.s" "$RESP"; } || die 1 "the server answer could not be read"
+}
+
+# jqp ARGS: jq for a print step (NP-1368 QA round 1 Q1-2): jq's own error text can name a value, so it is dropped and one fixed
+# line is printed instead (with --json, the plugin_error document, so stdout is never empty).
+jqp() {
+  jq "$@" 2>/dev/null || die 1 "the server answer could not be read"
 }
 
 _mb_create() {
@@ -283,6 +350,7 @@ _mb_show() {
     fail_http
   fi
   jq -e '.credential.credential_id | type == "string"' "$RESP" >/dev/null 2>&1 || die 1 "unexpected response from the server"
+  _strict_resp
   local cred shown="" codes_file="" has_secrets addr
   cred="$(jq -r .credential.credential_id "$RESP")"
   addr="$(tmpfile mailbox_show)"
@@ -320,9 +388,9 @@ _mb_show() {
   fi
   cp "$addr" "$RESP"
   if [ "$CITT_JSON" = 1 ]; then
-    jq -c --arg shown "$shown" --arg codes "$codes_file" "$MASK_JQ"'
+    jqp -c --arg shown "$shown" --arg codes "$codes_file" "$MASK_JQ"'
       {credential: (.credential | safe_credential), phones: ((.phones // []) | map(safe_phone)),
-        sessions: ((.sessions // []) | map(safe_session)), next_cursor,
+        sessions: ((.sessions // []) | map(safe_session)), next_cursor: (.next_cursor | if type == "string" then . else null end),
         emails: ((.emails // []) | map((pick(["id", "credential_id", "recipient", "received_at", "body_state", "spam_verdict", "virus_verdict"])
           + {subject: (.subject | mask_meta), sender: (.sender | mask_meta), has_link: ((.link // "") != ""),
              has_code: ((.code // "") != ""), code_length: (.code | clen), snippet_length: ((.snippet // "") | length)})))}
@@ -333,15 +401,18 @@ _mb_show() {
   fi
   local page
   page="$(app_url "/inbox/$cred")"
-  jq -r --argjson L "$(local_times "$RESP")" --arg page "$page" --arg shown "$shown" "$MB_JQ"'
+  jqp -r --argjson L "$(local_times "$RESP")" --arg page "$page" --arg shown "$shown" "$MB_JQ"'
     .credential | "\(.address) (credential \(.credential_id), \(kind_word))",
       (if .note then "Note: \(.note)" else empty end), "Links: \(links)",
       (if $shown == "clipboard" then "Password: copied to the clipboard"
        elif $shown != "" then "Password: written to \($shown) (mode 600); open it yourself and delete it after signing in"
        elif .has_password then "Password: stored; reveal it with --reveal" else "Password: none stored" end),
       "Inbox page: \($page)", "Emails: \(.mail_count)"' "$RESP"
+  # NP-1368 QA round 1 Q1-4: the numbers linked to the address, as their last 4 digits
+  jqp -r '(.phones // []) | if length == 0 then empty else
+    "Numbers: " + (map((if .number_last4 then "•••• \(.number_last4)" else "••••" end) + " (\(.id))") | join(", ")) end' "$RESP"
   [ "$(jq '.emails | length' "$RESP")" != 0 ] || return 0
-  jq -c --argjson L "$(local_times "$RESP")" "$MB_JQ"'
+  jqp -c --argjson L "$(local_times "$RESP")" "$MB_JQ"'
     (.credential.session_ended_at | ts) as $end
     | ([.emails[].code | select(type == "string" and length > 0)] | unique | sort_by(-length)) as $cs
     | [["Received", "After the session", "From", "Subject", "Snippet", "Code", "Link"]]
@@ -354,7 +425,7 @@ _mb_show() {
   elif [ "$has_secrets" = true ]; then
     printf 'Codes, links and snippets are not printed here; write them to a mode-600 file: citt mailbox show %s --reveal\n' "$ref"
   fi
-  jq -r '.emails[0].id | "Save an email'"'"'s HTML: citt mailbox email \(.) --html \(.).html"' "$RESP"
+  jqp -r '.emails[0].id | "Save an email'"'"'s HTML: citt mailbox email \(.) --html \(.).html"' "$RESP"
   [ -z "$(jq -r '.next_cursor // empty' "$RESP")" ] || printf 'Older emails are on the Inbox page of the address: %s\n' "$page"
 }
 
