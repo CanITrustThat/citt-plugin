@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.30.0
+
+- `citt capture-watch` and `citt capture-start --wait` name a phone-disconnected gap when a run ends `done_with_gaps`: a session whose phone was disconnected keeps its own state, so a run can end with gaps and no failed session. The stderr line then reads `run N ended done_with_gaps: phone disconnected in session S for N s` (one clause per session), or `1 of 3 sessions failed; phone disconnected in session S for N s` when a session also failed (exit 13 in both cases) (NP-1414).
+
 ## 2.29.0
 
 - `citt inbox` and `citt mailbox show` print a field only when it has the type the server sends: a code, sender, subject, source, time, cursor or flag that arrives as a number, object or list prints as null or not at all, in tables and in `--json`. With `--json`, an `error` code holding a digit reads `http_error` (NP-1368).

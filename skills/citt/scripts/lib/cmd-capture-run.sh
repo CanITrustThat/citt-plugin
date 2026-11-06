@@ -941,7 +941,17 @@ _cr_watch() {
   fi
   case "$st" in
     done_with_gaps)
-      err "$CITT_CMD: run $rid ended done_with_gaps: $failed of $planned sessions failed"
+      # NP-1414: a session with a phone-disconnected gap keeps its state; the gap is named from the run reason, else counted
+      local gaps
+      gaps="$(jq -r '[(.run.status_reason // "") | scan("phone disconnected in session [0-9]+ for [0-9]+ s")] | join("; ")' "$RESP")"
+      if [ -z "$gaps" ] && [ "$(jq -r '.run.sessions_phone_away // 0' "$RESP")" -gt 0 ] 2>/dev/null; then
+        gaps="phone disconnected in $(jq -r '.run.sessions_phone_away' "$RESP") of $planned sessions"
+      fi
+      if [ "$failed" -gt 0 ] 2>/dev/null || [ -z "$gaps" ]; then
+        err "$CITT_CMD: run $rid ended done_with_gaps: $failed of $planned sessions failed${gaps:+; $gaps}"
+      else
+        err "$CITT_CMD: run $rid ended done_with_gaps: $gaps"
+      fi
       code=13
       ;;
     stopped)
