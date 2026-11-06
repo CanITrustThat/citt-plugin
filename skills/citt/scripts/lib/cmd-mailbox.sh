@@ -17,6 +17,21 @@ MB_NOTE_MAX=500
 MASK_JQ='
 def codetag: if test("^\\p{Nd}+$") then "[code, \(length) digits]" else "[code, \(length) characters]" end;
 def clen: if type == "string" then length else . end;
+# NP-1358 QA round 1 P1-1: --json prints only the fields named here (deny by default): no number, code, password, body, snippet or
+# link reaches stdout, also from a field the server adds later
+# QA round 2 R2-1: a named key keeps its value only when it is a scalar or a list of scalars; a nested object is printed only through
+# its own pick (`safe_app`, `safe_credential`, ...), so no field inside it passes unnamed
+def scalarish: (type | IN("string", "number", "boolean", "null")) or (type == "array" and all(.[]; type | IN("string", "number", "boolean", "null")));
+def pick($ks): . as $o | reduce $ks[] as $k ({}; if ($o | type) == "object" and ($o | has($k)) and ($o[$k] | scalarish) then . + {($k): $o[$k]} else . end);
+def safe_app: if type == "object" then pick(["project_app_id", "label", "package_id"]) else null end;
+def safe_number: pick(["id", "number_last4", "state", "release_outcome", "run_id", "session_id", "session_seq"]);
+def safe_phone: (pick(["id", "provider", "kind", "state", "service_name", "number_last4", "number_type", "cost_cents", "ends_at", "reusable_until",
+    "renew", "mock", "user_id", "project_id", "project_app_id", "run_id", "session_id", "session_seq", "credential_id", "created_at",
+    "updated_at", "sms_count", "last_code_at", "code_wait_until", "released_at", "release_reason", "release_outcome", "refund_cents"])
+  + {last_code_length: (.last_code | clen)});
+def safe_credential: pick(["credential_id", "address", "status", "kind", "note", "has_password", "project_id", "run_id", "session_id",
+    "session_seq", "session_ended_at", "created_at", "mail_count", "last_received_at", "last_code_at", "user_id"]) + {app: (.app | safe_app)};
+def safe_session: pick(["run_id", "seq", "session_id", "ended_at", "address", "phone_ids"]);
 # NP-924 QA round 2 (decision): stdout prints no email snippet or SMS text. A subject or sender keeps its words, with every link
 # (any `scheme://`, `www.`, `host.tld/path` and `host.tld?query`, hosts in any script) as `[link]`, the token after a code word
 # (code, PIN, OTP, passcode, verification, confirm...) and the token before "is your ... code" as `[code]`, every all-capital token
@@ -306,10 +321,11 @@ _mb_show() {
   cp "$addr" "$RESP"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --arg shown "$shown" --arg codes "$codes_file" "$MASK_JQ"'
-      ([.emails[].code | select(type == "string" and length > 0)] | unique | sort_by(-length)) as $cs
-      | .emails |= map(.subject |= mask_meta | .sender |= mask_meta
-          | .has_link = ((.link // "") != "") | .has_code = ((.code // "") != "") | .code_length = (.code | clen)
-          | .snippet_length = ((.snippet // "") | length) | del(.link, .code, .snippet))
+      {credential: (.credential | safe_credential), phones: ((.phones // []) | map(safe_phone)),
+        sessions: ((.sessions // []) | map(safe_session)), next_cursor,
+        emails: ((.emails // []) | map((pick(["id", "credential_id", "recipient", "received_at", "body_state", "spam_verdict", "virus_verdict"])
+          + {subject: (.subject | mask_meta), sender: (.sender | mask_meta), has_link: ((.link // "") != ""),
+             has_code: ((.code // "") != ""), code_length: (.code | clen), snippet_length: ((.snippet // "") | length)})))}
       | (if $shown == "clipboard" then . + {password_copied: true}
          elif $shown != "" then . + {password_file: $shown} else . end)
       | (if $codes != "" then . + {codes_file: $codes} else . end)' "$RESP"

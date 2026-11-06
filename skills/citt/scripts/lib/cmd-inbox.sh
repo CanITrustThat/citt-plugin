@@ -99,7 +99,11 @@ _ib_list() {
   local flags
   flags="$(jq -c '{addresses_on: (.addresses_on != false), addresses_off: .addresses_off, phones_on: (.phones_on != false)}' "$RESP")"
   if [ "$CITT_JSON" = 1 ]; then
-    jq -c --argjson f "$flags" "$IB_JQ"'{rows: map(del(.number) | .last_code |= clen)} + $f' "$all"
+    # NP-1358 QA round 1 P1-1: the fields named here only (deny by default); numbers as their last 4 digits, codes as their length
+    jq -c --argjson f "$flags" "$IB_JQ"'{rows: map(pick(["kind", "id", "address", "credential_id", "number_last4", "identity_kind", "provider",
+        "state", "release_outcome", "project_id", "run_id", "session_id", "session_seq", "persona_age", "count", "last_at",
+        "last_code_at", "created_at", "user_id", "has_password"])
+      + {app: (.app | safe_app), last_code: (.last_code | clen), numbers: ((.numbers // []) | map(safe_number))})} + $f' "$all"
     return 0
   fi
   jq -rn --argjson f "$flags" --arg k "$kind" '
@@ -155,7 +159,10 @@ _ib_phone() {
   fi
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --arg shown "$shown" --arg texts "$texts_file" "$IB_JQ"'
-      del(.number) | .last_code |= clen
+      (safe_phone + pick(["persona_age", "charged_cents", "refunded_cents"])
+        + {app: (.app | safe_app), credential: (if .credential then (.credential | pick(["credential_id", "address", "has_password"])) else null end),
+           refresh_error: (if .refresh_error then (.refresh_error | pick(["code"])) else null end), texts}
+        | .last_code = .last_code_length | del(.last_code_length))
       | .texts |= map({id, received_at, source, sender: (.sender | mask_meta), length: ((.content // "") | length),
           has_link: ((.content // "") | has_url), has_code: ((.code // "") != ""), code_length: (.code | clen)})
       | (if $shown == "clipboard" then . + {codes_copied: true} elif $shown != "" then . + {codes_file: $shown} else . end)

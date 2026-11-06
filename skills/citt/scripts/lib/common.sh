@@ -630,7 +630,10 @@ fail_http() {
         msg="CSV rejected${message:+: $message}; the file needs a package_id, play_store_url or app_store_url column (Google Play and Apple App Store headers are accepted)"
       else
         local unknown
-        unknown="$(body_field '(.unknown_apps // []) | join(", ") | select(. != "")')"
+        unknown="$(body_field '(.unknown_apps // []) | map(tostring) | join(", ") | select(. != "")')"
+        # NP-1358 QA round 2 R2-7: a masked command (citt inbox, citt mailbox) prints no listed value: the Inbox routes send none,
+        # and a value the server sent back could hold a number or a code
+        [ -z "${CITT_MASK_JQ:-}" ] || unknown=""
         # EPIC-18: a 400 `invalid_feedback` holds its reason in `detail`.
         [ -n "$message" ] || message="$(mask_server_text "$(body_field '.detail | strings')")"
         message="$(plain_message "$message")"
@@ -763,7 +766,8 @@ fail_out() {
     if [ -n "${CITT_MASK_JQ:-}" ] && jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
       # NP-924 QA round 3 R3-3: the error code and the masked message only, none of the body's other fields
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
-        '{error: ((.error | strings) // "http_error"), message: $m, http_status: (if $s == 0 then null else $s end)}' "$RESP"
+        '{error: ((.error | strings | select(test("^[a-z][a-z0-9_]{0,63}$"))) // "http_error"), message: $m,
+          http_status: (if $s == 0 then null else $s end)}' "$RESP"
     elif jq -e 'type == "object"' "$RESP" >/dev/null 2>&1; then
       jq -c --argjson s "${CODE#0}" --arg m "$msg" \
         '. + {http_status: (if $s == 0 then null else $s end)} | .message = $m | .error = (.error // "http_error")' "$RESP"
