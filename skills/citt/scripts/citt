@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search"
 
 top_help() {
   cat <<'EOF'
@@ -46,8 +46,13 @@ Commands:
   native           decompile an app's native binaries with Binary Ninja into its sources (--wait)
   tasks            submissions (scans, questions, captures, exports, native code) with status
   task             one task: status, parts, timeline and result link (--watch)
+  atlas-app        an app's atlas profile: detected SDKs and owner/key clusters (raw)
+  atlas-sdk        an SDK's corpus counts; --apps lists the apps carrying it
+  atlas-cluster    one config-ID cluster: counts, raw value, hidden-network, member apps
+  atlas-search     search the atlas app corpus
 
 Run citt <command> --help for its options. Every command takes --json.
+The atlas commands need an atlas-enabled account.
 EOF
 }
 
@@ -174,6 +179,10 @@ main() {
       # shellcheck source=lib/cmd-tasks.sh
       . "$CITT_LIB/cmd-tasks.sh"
       ;;
+    atlas-app | atlas-sdk | atlas-cluster | atlas-search)
+      # shellcheck source=lib/cmd-atlas.sh
+      . "$CITT_LIB/cmd-atlas.sh"
+      ;;
   esac
   # stdout passes through clean (app text can hold terminal control characters); auth prints the
   # sign-in link while it waits, so it writes directly.
@@ -191,6 +200,10 @@ main() {
     # search runs in this shell (TASK-642 QA Q4): the INT and TERM traps of a followed export then get a signal sent to the
     # citt process alone, not only one sent to its process group.
     search) cmd_search "$@" > >(clean) ;;
+    atlas-app) cmd_atlas_app "$@" | clean ;;
+    atlas-sdk) cmd_atlas_sdk "$@" | clean ;;
+    atlas-cluster) cmd_atlas_cluster "$@" | clean ;;
+    atlas-search) cmd_atlas_search "$@" | clean ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }

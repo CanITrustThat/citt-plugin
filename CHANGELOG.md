@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.31.0
+
+- `citt atlas-app PACKAGE`, `citt atlas-sdk NAME`, `citt atlas-cluster ID` and `citt atlas-search QUERY` read the research atlas corpus through the backend (`/api/research/v1/atlas/*`). `citt atlas-app` prints an app's detected SDKs grouped by category and its owner/key config-ID clusters (raw values, hidden-network clusters first); `citt atlas-sdk` prints an SDK's build and app counts, and `--apps` the apps carrying it, filterable by `--category` and `--installs-min`; `citt atlas-cluster` prints one cluster's counts, raw value, hidden-network flag and member apps, and `--hidden-network` the hidden-network family; `citt atlas-search` searches the app corpus by package, title or developer. Every list pages with `--limit`, `--cursor` and `--all`, and `--json` prints the backend envelope. The commands reuse the stored token and inherit the backend's atlas-enabled gate: an account without atlas access gets `atlas is not enabled for this account; contact support to request access` (exit 3), and an unavailable backend prints `atlas data unavailable, try again shortly` rather than a dead end. No new credential is stored (NP-1481).
+
 ## 2.30.0
 
 - `citt capture-watch` and `citt capture-start --wait` name a phone-disconnected gap when a run ends `done_with_gaps`: a session whose phone was disconnected keeps its own state, so a run can end with gaps and no failed session. The stderr line then reads `run N ended done_with_gaps: phone disconnected in session S for N s` (one clause per session), or `1 of 3 sessions failed; phone disconnected in session S for N s` when a session also failed (exit 13 in both cases) (NP-1414).

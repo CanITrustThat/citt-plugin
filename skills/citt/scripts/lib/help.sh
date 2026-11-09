@@ -597,3 +597,56 @@ parts (apps, checklist parts, sessions, binaries) and its timeline.
            gaps, 8 on failed, 14 on cancelled, 12 after --timeout (default 540)
 EOF
 }
+
+help_atlas_app() {
+  cat <<'EOF'
+citt atlas-app PACKAGE [--sdks | --clusters] [--limit N] [--cursor C] [--all] [--json]
+
+The app's atlas profile from the research corpus: its detected SDKs grouped by category with a
+confidence, and its owner/key config-ID clusters (raw values, hidden-network clusters first).
+  --sdks      page the full SDK list instead of the profile
+  --clusters  page the full cluster list instead of the profile
+  --limit N   page size (backend default 50, max 200)
+  --cursor C  the cursor a previous page printed
+  --all       follow every page
+An app with no analyzed build prints the reason and how to submit it. Needs an atlas-enabled account.
+EOF
+}
+
+help_atlas_sdk() {
+  cat <<'EOF'
+citt atlas-sdk NAME [--apps [--category C] [--installs-min N]] [--limit N] [--cursor C] [--all] [--json]
+
+The SDK's corpus counts (builds and apps carrying it). --apps lists the apps that carry it with
+their store metadata and the detection confidence.
+  --apps           list the apps carrying the SDK
+  --category C     with --apps, only apps in this Play-store category
+  --installs-min N with --apps, only apps with at least N installs
+  --limit/--cursor/--all  page the results
+A name not in the corpus prints the reason and a next action. Needs an atlas-enabled account.
+EOF
+}
+
+help_atlas_cluster() {
+  cat <<'EOF'
+citt atlas-cluster (ID | --hidden-network) [--limit N] [--cursor C] [--all] [--json]
+
+One config-ID cluster by its opaque ID: the raw value, its term, the app and developer counts,
+whether it is a hidden network, and its member apps. --hidden-network lists the hidden-network
+family instead.
+  --hidden-network  list the hidden-network clusters (no ID)
+  --limit/--cursor/--all  page the member apps (or the family)
+Needs an atlas-enabled account.
+EOF
+}
+
+help_atlas_search() {
+  cat <<'EOF'
+citt atlas-search QUERY [--limit N] [--cursor C] [--all] [--json]
+
+Search the atlas app corpus by package, title or developer. Each result shows the package, title,
+developer, Play-store category, installs band, whether it has an analysis, and the matched field.
+  --limit/--cursor/--all  page the results
+A no-match prints the reason and a next action. Needs an atlas-enabled account.
+EOF
+}

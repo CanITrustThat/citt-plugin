@@ -549,6 +549,10 @@ _retried_suffix() { [ "$RETRIED" -gt 0 ] && printf '; retried %s times' "$RETRIE
 CITT_NOT_ENTITLED_LINE="this needs a Researcher, Deep Researcher or Custom plan (in a shared project, its first owner's plan); on Pay as you go, scan one Android app with citt submit PACKAGE and ask about it with citt prompt; plans: $CITT_PRICING_URL"
 # `not_entitled` on a free submit (no project): what a free submit may hold.
 CITT_FREE_SUBMIT_LINE="a Pay as you go account scans one Android app per submit with the rule scan; several apps, a deep scan or a prompt need a Researcher, Deep Researcher or Custom plan: $CITT_PRICING_URL"
+# The fixed line for a 403 `atlas_not_enabled` on an atlas command (NP-1481, NP-1475). The backend
+# gate names the atlas access and the next action; the plugin owns the line so no staff-only string,
+# env var or command reaches the user (feedback-no-staff-copy-for-customers, feedback-no-dead-ends).
+CITT_ATLAS_DISABLED_LINE="atlas is not enabled for this account; contact support to request access"
 
 # _plan_name ID: the plan's name on the pricing page.
 _plan_name() {
@@ -660,6 +664,8 @@ fail_http() {
         msg="$CITT_FREE_SUBMIT_LINE"
       elif [ "$error" = not_entitled ]; then
         msg="$CITT_NOT_ENTITLED_LINE"
+      elif [ "$error" = atlas_not_enabled ]; then
+        msg="$CITT_ATLAS_DISABLED_LINE"
       else
         msg="$(plain_message "$message")"
         msg="${msg:-this account cannot do this}"
