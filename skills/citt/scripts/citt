@@ -8,7 +8,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search atlas-url"
 
 top_help() {
   cat <<'EOF'
@@ -50,6 +50,7 @@ Commands:
   atlas-sdk        an SDK's corpus counts; --apps lists the apps carrying it
   atlas-cluster    one config-ID cluster: counts, raw value, hidden-network, member apps
   atlas-search     search the atlas app corpus
+  atlas-url        search the URLs/strings indexed in every app build (--csv)
 
 Run citt <command> --help for its options. Every command takes --json.
 The atlas commands need an atlas-enabled account.
@@ -179,7 +180,7 @@ main() {
       # shellcheck source=lib/cmd-tasks.sh
       . "$CITT_LIB/cmd-tasks.sh"
       ;;
-    atlas-app | atlas-sdk | atlas-cluster | atlas-search)
+    atlas-app | atlas-sdk | atlas-cluster | atlas-search | atlas-url)
       # shellcheck source=lib/cmd-atlas.sh
       . "$CITT_LIB/cmd-atlas.sh"
       ;;
@@ -204,6 +205,7 @@ main() {
     atlas-sdk) cmd_atlas_sdk "$@" | clean ;;
     atlas-cluster) cmd_atlas_cluster "$@" | clean ;;
     atlas-search) cmd_atlas_search "$@" | clean ;;
+    atlas-url) cmd_atlas_url "$@" | clean ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }

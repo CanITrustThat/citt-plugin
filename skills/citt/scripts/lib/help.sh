@@ -650,3 +650,20 @@ developer, Play-store category, installs band, whether it has an analysis, and t
 A no-match prints the reason and a next action. Needs an atlas-enabled account.
 EOF
 }
+
+help_atlas_url() {
+  cat <<'EOF'
+citt atlas-url KEYWORD [--limit N] [--cursor C] [--all] [--json | --csv]
+
+Search the URLs and strings indexed in every app build for a keyword or substring (a tracking host,
+an endpoint path, a bucket name, any substring). Each result is an app whose latest build contains a
+matching value, with the package, title, developer, category, installs band, and one matched value.
+The keyword must be at least 4 characters; the raw indexed values are shown as found. A matching app
+contains the URL; it does not own it. This is the raw layer beneath the config-ID clusters, noisy by
+design.
+  --limit/--cursor/--all  page the results (a broad keyword can return many apps)
+  --csv                   write the full matching set as CSV to stdout (up to 10k rows)
+A no-match, an unavailable service and a too-broad keyword each print the reason and a next action.
+Needs an atlas-enabled account.
+EOF
+}

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.32.0
+
+- `citt atlas-url KEYWORD` searches the URLs and strings indexed in every app build (`GET /api/research/v1/atlas/urls/search`): each result is an app whose latest build contains a matching value, with the package, title, developer, category, installs band and one sample matched value. The keyword must be at least 4 characters and the raw indexed values are shown as found. `--limit`, `--cursor` and `--all` page the apps, `--json` prints the backend envelope, and `--csv` writes the full matching set as CSV (up to 10k rows). A no-match, an unavailable service and a too-broad keyword each print the reason and a next action (NP-1513).
+
 ## 2.31.0
 
 - `citt atlas-app PACKAGE`, `citt atlas-sdk NAME`, `citt atlas-cluster ID` and `citt atlas-search QUERY` read the research atlas corpus through the backend (`/api/research/v1/atlas/*`). `citt atlas-app` prints an app's detected SDKs grouped by category and its owner/key config-ID clusters (raw values, hidden-network clusters first); `citt atlas-sdk` prints an SDK's build and app counts, and `--apps` the apps carrying it, filterable by `--category` and `--installs-min`; `citt atlas-cluster` prints one cluster's counts, raw value, hidden-network flag and member apps, and `--hidden-network` the hidden-network family; `citt atlas-search` searches the app corpus by package, title or developer. Every list pages with `--limit`, `--cursor` and `--all`, and `--json` prints the backend envelope. The commands reuse the stored token and inherit the backend's atlas-enabled gate: an account without atlas access gets `atlas is not enabled for this account; contact support to request access` (exit 3), and an unavailable backend prints `atlas data unavailable, try again shortly` rather than a dead end. No new credential is stored (NP-1481).

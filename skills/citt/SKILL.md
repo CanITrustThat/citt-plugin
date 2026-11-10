@@ -64,7 +64,7 @@ With the older sandbox settings instead (`sandbox_mode = "workspace-write"`), se
 
 Every command prints its result on stdout and progress and errors on stderr. `--json` prints one JSON document on stdout, including on error (`{"error", "message", "http_status"}`). `--help` prints the synopsis. Project-scoped commands take `--project NAME` or `--project-id N`, exactly one. A Pay as you go account (no `research` entitlement) leaves both out of `submit`, `status`, `apps` and `app`: its scans are in its own project "Free scans", found from `GET /me`.
 
-The atlas commands `citt atlas-app`, `citt atlas-sdk`, `citt atlas-cluster` and `citt atlas-search` read the research atlas corpus through the backend and need an atlas-enabled account; their entries are at the end of this reference.
+The atlas commands `citt atlas-app`, `citt atlas-sdk`, `citt atlas-cluster`, `citt atlas-search` and `citt atlas-url` read the research atlas corpus through the backend and need an atlas-enabled account; their entries are at the end of this reference.
 
 ### citt auth
 
@@ -640,6 +640,14 @@ citt atlas-search QUERY [--limit N] [--cursor C] [--all] [--json]
 ```
 
 Search the atlas app corpus by package, title or developer (`GET /api/research/v1/atlas/search?q=QUERY`): each result shows the package, title, developer, Play-store category, installs band, whether it has an analysis, and the matched field. `--limit`, `--cursor` and `--all` page it. A no-match prints the reason and a next action. `--json` prints the backend envelope.
+
+### citt atlas-url
+
+```
+citt atlas-url KEYWORD [--limit N] [--cursor C] [--all] [--json | --csv]
+```
+
+Search the URLs and strings indexed in every app build for a keyword or substring (`GET /api/research/v1/atlas/urls/search?q=KEYWORD`): a tracking host, an endpoint path, a bucket name, any substring. Each result is an app whose latest build contains a matching value, with the package, title, developer, Play-store category, installs band, and one sample matched value (and `(+N more)` when the latest build holds more matching values). The keyword must be at least 4 characters; the raw indexed values are shown as found. A matching app contains the URL; it does not own it. This is the raw layer beneath the config-ID clusters, noisy by design. `--limit`, `--cursor` and `--all` page it (a broad keyword can return many apps); `--csv` writes the full matching set as CSV to stdout (`GET .../atlas/urls/search.csv`, up to 10k rows, enriched app columns plus the matched value). A no-match, an unavailable service and a too-broad keyword each print the reason and a next action. `--json` prints the backend envelope.
 
 The atlas commands reach the backend's `/api/research/v1/atlas/*` routes over the stored token (no new credential); the backend applies the atlas-enabled gate and reaches `citt-atlas` through the navigator. An account without atlas access gets `atlas is not enabled for this account; contact support to request access` (exit 3). When the backend returns the degrade state (`atlas_available: false`), the command prints `atlas data unavailable, try again shortly` with the reason and exits 8, not a dead end.
 

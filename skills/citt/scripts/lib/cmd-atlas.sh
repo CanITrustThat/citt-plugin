@@ -19,6 +19,7 @@ atlas_unavailable() {
     timeout) msg="atlas data unavailable, try again shortly (the service did not answer in time)" ;;
     unreachable) msg="atlas data unavailable, try again shortly (the service could not be reached)" ;;
     rate_limited) msg="atlas data unavailable, too many requests" ;;
+    search_timeout) msg="atlas data unavailable: the url search did not finish; try a longer or more specific keyword" ;;
     *) msg="atlas data unavailable, try again shortly" ;;
   esac
   if is_uint "$retry" && [ "$retry" -gt 0 ]; then msg="$msg; retry in $retry s"; fi
@@ -409,4 +410,72 @@ cmd_atlas_search() {
     + (if (.match_field // "") != "" then "  match:\(.match_field)" else "" end)' "$ATLAS_DATA"
   _atlas_fresh "$ATLAS_SNAP"
   _atlas_more "citt atlas-search $(shq "$query")"
+}
+
+# --- citt atlas-url ----------------------------------------------------------------------------
+
+# Search the indexed URLs/strings of every app build (fact_url) for a keyword; matching apps, one per
+# line, with a sample matched value. --csv writes the server CSV (NP-1513).
+cmd_atlas_url() {
+  local query="" all=0 limit="" cursor="" csv=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --csv) csv=1 ;;
+      --all) all=1 ;;
+      --limit)
+        need_value "$1" $#
+        limit="$2"
+        shift
+        ;;
+      --cursor)
+        need_value "$1" $#
+        cursor="$2"
+        shift
+        ;;
+      --json) CITT_JSON=1 ;;
+      --help | -h)
+        help_atlas_url
+        exit 0
+        ;;
+      -*) usage_error "unknown option $1" ;;
+      *)
+        [ -z "$query" ] || usage_error "one KEYWORD only (quote a multi-word keyword)"
+        query="$1"
+        ;;
+    esac
+    shift
+  done
+  [ -n "$query" ] || usage_error "give the KEYWORD"
+  [ "${#query}" -ge 4 ] || usage_error "the KEYWORD must be at least 4 characters"
+  [ "$csv" = 0 ] || [ "$CITT_JSON" = 0 ] || usage_error "use --json or --csv, not both"
+  [ -z "$limit" ] || is_uint "$limit" || usage_error "--limit needs a number"
+  need_auth
+
+  # --csv: the whole result set as the server CSV (10k cap, BOM, capped-filename), to stdout.
+  if [ "$csv" = 1 ]; then
+    atlas_call GET "$CITT_ATLAS_BASE/urls/search.csv$(query q "$query")"
+    cat "$RESP"
+    return 0
+  fi
+
+  ATLAS_QS=(q "$query")
+  ATLAS_ALL="$all"
+  ATLAS_LIMIT="$limit"
+  ATLAS_CURSOR="$cursor"
+  _atlas_pager "$CITT_ATLAS_BASE/urls/search"
+  if [ "$CITT_JSON" = 1 ]; then
+    _atlas_list_json
+    return 0
+  fi
+  if _atlas_empty_reason; then return 0; fi
+  jq -r '.[] | "\(.package)  \(.title // "-")"
+    + (if (.developer // "") != "" then " by \(.developer)" else "" end)
+    + "  (\(.category // "-"), \(.installs_band // "-"))"
+    + "  \(.matched_url // "-")"
+    + (if ((.match_count // 0) > 1) then "  (+\((.match_count - 1)) more)" else "" end)' "$ATLAS_DATA"
+  _atlas_fresh "$ATLAS_SNAP"
+  # Stated limits of the match set: the capped value count and the skipped very common values.
+  printf '%s' "${ATLAS_META:-{\}}" | jq -r 'select(.values_capped == true) | "note: the keyword matches more values than are expanded; " + (.next_action // "narrow the keyword")'
+  printf '%s' "${ATLAS_META:-{\}}" | jq -r '.common_values_note // empty | "note: " + .'
+  _atlas_more "citt atlas-url $(shq "$query")"
 }
