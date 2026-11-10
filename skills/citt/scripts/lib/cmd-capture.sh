@@ -33,7 +33,9 @@ CS_NET_STOP=3
 # jq: `ts` turns an RFC 3339 UTC time (any fraction, Z or +00:00) into epoch seconds with the fraction.
 CS_JQ_TS='def ts: if . == null or . == "" then 0 else
   (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)
-  + ((capture("\\.(?<f>[0-9]+)") | ("0." + .f) | tonumber) // 0) end;'
+  + ((capture("\\.(?<f>[0-9]+)") | ("0." + .f) | tonumber) // 0) end;
+def then_say($sep; $b): if $b == "" then . elif endswith(".") then . + " " + ($b[:1] | ascii_upcase) + $b[1:]
+  + (if ($b | endswith(".")) then "" else "." end) else . + $sep + $b end;'
 
 # --- small helpers -----------------------------------------------------------------
 
@@ -2270,13 +2272,14 @@ cmd_captures() {
     def ended: if $sort == "finished" then [.finished_at | lt] else [] end;
     [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
-        (.state // "-") + ({"service": " (CITT side)", "device": " (device side)", "app": " (app side)"}[.failure_cause // ""] // "")
-          + (if .status_reason then ": " + .status_reason else "" end)
-          + (if .device_locale then "; device language \(.device_locale)" else "" end)
-          + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
-          + (if .exit_redirected == true
-             then "; captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
-             else "" end),
+        # NP-1493 fix round 2: what follows a reason sentence (a full stop at its end) is its own sentence
+        (([(if .device_locale then "device language \(.device_locale)" else empty end),
+              (if .device_location then "location \(.device_location.lat),\(.device_location.lng)" else empty end),
+              (if .exit_redirected == true
+             then "captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
+             else empty end)] | join("; ")) as $more
+        | ((.state // "-") + ({"service": " (CITT side)", "device": " (device side)", "app": " (app side)"}[.failure_cause // ""] // "")
+          + (if .status_reason then ": " + .status_reason else "" end)) | then_say("; "; $more)),
         (.app_label // .package_id),
         (.device_name // "-"),
         (if .planned_sessions then "\(.finished_sessions // 0)/\(.planned_sessions)" else "\(.finished_sessions // .sessions // 0)" end)

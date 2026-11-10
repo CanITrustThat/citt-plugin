@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.33.0
+
+- `citt capture-start --phone` on a phone held for a reason other than its model settings prints the reason the service states, once, without "the run queues until it is fixed": for example `<phone>: This phone is paused for a software update on our side; runs booked on it start after the update. To start sooner, book the run on another phone.` `citt capture-options` prints the reason line of every held or offline phone, and `citt captures` and `citt capture-watch` print the reason of a run queued on one. The model-settings sentence ends with a full stop, which the clause "; the run queues until it is fixed" replaces. When the sentence says to book the run on another phone, `citt capture-start --phone` adds the line `list the other phones with: citt capture-options APP`; in `citt capture-watch`, `citt captures` and the no-free-phone list of `citt capture-start`, what follows a sentence starts a new sentence (`... book the run on another phone. 0 running, 1 queued.`) (NP-1493).
+
 ## 2.32.0
 
 - `citt atlas-url KEYWORD` searches the URLs and strings indexed in every app build (`GET /api/research/v1/atlas/urls/search`): each result is an app whose latest build contains a matching value, with the package, title, developer, category, installs band and one sample matched value. The keyword must be at least 4 characters and the raw indexed values are shown as found. `--limit`, `--cursor` and `--all` page the apps, `--json` prints the backend envelope, and `--csv` writes the full matching set as CSV (up to 10k rows). A no-match, an unavailable service and a too-broad keyword each print the reason and a next action (NP-1513).

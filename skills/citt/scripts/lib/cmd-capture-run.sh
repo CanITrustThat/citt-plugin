@@ -253,9 +253,15 @@ _cr_pick() {
          + [$d[] | select((.device_name // "" | ascii_downcase) == ($p | ascii_downcase))]) | first // empty' "$CR_OPTS")"
     [ -n "$sel" ] || die 4 "no phone \"$1\"; phones: $(jq -r '[.devices[] | "\(.device_name) (device \(.device_id))"] | join(", ") | if . == "" then "none registered" else . end' "$CR_OPTS")"
     # NP-890: a phone whose worker refused its model settings is `unavailable` with one sentence; the run queues until it is fixed.
-    # NP-1335: the sentence of a phone off adb (`unavailable_kind` `adb_offline`) states when booked runs start and is printed as it is
+    # NP-1335: the sentence of a phone off adb (`unavailable_kind` `adb_offline`) states when booked runs start and is printed as it is.
+    # NP-1493: so does the sentence of every other kind; the "until it is fixed" clause follows the model sentence only (`model_config`,
+    # or an API before NP-1335 fix round 1 that states no kind), with the sentence's full stop left out before the clause
     if [ -n "$(jq -r '.unavailable // empty' <<<"$sel")" ]; then
-      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r '.unavailable + (if .unavailable_kind == "adb_offline" then "" else "; the run queues until it is fixed" end)' <<<"$sel")"
+      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r 'if .unavailable_kind == "model_config" or .unavailable_kind == null then (.unavailable | rtrimstr(".")) + "; the run queues until it is fixed" else .unavailable end' <<<"$sel")"
+      # NP-1493 fix round 2: the sentence (also shown on the web) names no command; the plugin names its own
+      case "$(jq -r '.unavailable' <<<"$sel")" in
+        *"another phone"*) err "$CITT_CMD: list the other phones with: citt capture-options $pkg$(project_arg)" ;;
+      esac
     else case "$(jq -r '.status' <<<"$sel")" in
       busy) err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel") is busy ($(jq -r 'if (.running_runs | type) == "number" and (.queued_runs | type) == "number"
           then "\(.running_runs) running, \(.queued_runs) queued" else "\(.active_runs // 0) active runs" end' <<<"$sel")); the run queues behind them" ;;
@@ -265,13 +271,16 @@ _cr_pick() {
     sel="$(jq -c '[.devices[] | select(.status == "free")] | first // empty' "$CR_OPTS")"
     if [ -z "$sel" ]; then
       [ "$(jq '.devices | length' "$CR_OPTS")" != 0 ] || die 5 "no lab phone is registered"
-      die 5 "no free phone: $(jq -r 'def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
-        [.devices[] | "\(.device_name) (device \(.device_id)) \(.status)"
-          + (if .unavailable then ": " + .unavailable else "" end)
-          + (if (.active_runs // 0) == 0 then ""
+      # NP-1493 fix round 2: what follows a sentence of a phone (a full stop at its end) is its own sentence
+      die 5 "no free phone: $(jq -r "$CR_JQ"'
+        [.devices[] | (if (.active_runs // 0) == 0 then ""
              elif (.running_runs | type) == "number" and (.queued_runs | type) == "number"
-             then ", \(.running_runs) running, \(.queued_runs) queued"
-             else ", " + n(.active_runs; "active run"; "active runs") end)] | join("; ")' "$CR_OPTS"); give one with --phone NAME|ID to queue the run on it"
+             then "\(.running_runs) running, \(.queued_runs) queued"
+             else n(.active_runs; "active run"; "active runs") end) as $runs
+          | "\(.device_name) (device \(.device_id)) \(.status)" + (if .unavailable then ": " + .unavailable else "" end)
+          | then_say(", "; $runs)]
+        | reduce .[1:][] as $p (.[0] // ""; then_say("; "; $p))
+        | then_say("; "; "give one with --phone NAME|ID to queue the run on it")' "$CR_OPTS")"
     fi
   fi
   CR_DEV="$(jq -r '.device_id' <<<"$sel")"
@@ -868,18 +877,19 @@ _cr_watch() {
     fi
     now_state="$(jq -r '"\(.run.state)|\(.run.status_reason // "")"' "$RESP")"
     if [ "$now_state" != "$last" ] && [ "$CITT_JSON" != 1 ]; then
+      # NP-1493 fix round 2: after a reason sentence (a full stop at its end) the session count is its own sentence
       jq -r "$CR_JQ"' .run as $r
-        | "Run \($r.experiment_id) (\($r.run_key)): \($r.state)"
+        | ("Run \($r.experiment_id) (\($r.run_key)): \($r.state)"
           + ({"service": " (CITT side)", "device": " (device side)", "app": " (app side)"}[$r.failure_cause // ""] // "")
-          + (if $r.status_reason then ": \($r.status_reason)" else "" end)
-          + ", " + (if $r.planned_sessions then "\($r.finished_sessions // 0) of \(n($r.planned_sessions; "session"; "sessions"))"
+          + (if $r.status_reason then ": \($r.status_reason)" else "" end))
+        | then_say(", "; (if $r.planned_sessions then "\($r.finished_sessions // 0) of \(n($r.planned_sessions; "session"; "sessions"))"
                     else n($r.finished_sessions // 0; "session"; "sessions") end)
           + (if ($r.failed_sessions // 0) > 0 then ", \($r.failed_sessions) failed" else "" end)
           + (if ($r.flags // 0) > 0 then ", " + n($r.flags; "flag"; "flags") else "" end)
           + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)
           + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)
           + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)
-          + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)' "$RESP"
+          + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end))' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then
