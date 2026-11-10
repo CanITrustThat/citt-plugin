@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.35.0
+
+- `citt capture-start --help`, the citt skill and the reference state what a `--location` run does before the app starts: in every Android session the app is granted `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` with `pm grant`, each one its manifest declares, and the grant is read back. The record of each session, `persona.location.permission` in the session manifest and in `run.json`, now also holds `pregranted` (the list of `granted`) and `not_declared` (the list of `not_requested`: the location permissions absent from the app's manifest); `run.json` derives both for sessions stored before (export minor 11). `--location-always` adds `ACCESS_BACKGROUND_LOCATION` (NP-1490).
+
 ## 2.34.0
 
 - `citt capture-start --no-play-fallback` (no value) books a run whose scanned build, refused by Google Play's licence page ("Get this app from Play" or "Get this game from Play"), is not installed from the Play Store: the request body contains `play_fallback: false`, the run ends on the page with the reason, and the start line ends `; no Play Store fallback`. Without the flag the body has no `play_fallback` key, and the phone's worker installs the app from the Play Store on the same phone after the session that ended on the licence page and runs the next session; the run warning and `run.json` `run.install.fallback` state the scanned version and the Play Store version. `citt capture-start --help` lists the flag (NP-1505).

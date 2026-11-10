@@ -408,7 +408,9 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                device_locales; independent of the exit, whose time zone stays (default: the exit's language)
   --location   phone location of every session, LAT,LNG in decimal degrees, such as 39.7392,-104.9903; apps can detect it as
                simulated; independent of the exit, whose time zone stays; a session where the phone's real location is
-               readable by apps does not start the app (default: no location is set)
+               readable by apps does not start the app; the app's declared ACCESS_FINE_LOCATION and
+               ACCESS_COARSE_LOCATION are granted before the app starts (pm grant), recorded as
+               persona.location.permission pregranted and not_declared (default: no location is set)
   --location-always
                with --location: the app gets the "Allow all the time" location permission (background location) at the
                session start, Android phones only (default: location while the app is in use)
