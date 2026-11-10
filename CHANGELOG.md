@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.34.0
+
+- `citt capture-start --no-play-fallback` (no value) books a run whose scanned build, refused by Google Play's licence page ("Get this app from Play" or "Get this game from Play"), is not installed from the Play Store: the request body contains `play_fallback: false`, the run ends on the page with the reason, and the start line ends `; no Play Store fallback`. Without the flag the body has no `play_fallback` key, and the phone's worker installs the app from the Play Store on the same phone after the session that ended on the licence page and runs the next session; the run warning and `run.json` `run.install.fallback` state the scanned version and the Play Store version. `citt capture-start --help` lists the flag (NP-1505).
+
 ## 2.33.0
 
 - `citt capture-start --phone` on a phone held for a reason other than its model settings prints the reason the service states, once, without "the run queues until it is fixed": for example `<phone>: This phone is paused for a software update on our side; runs booked on it start after the update. To start sooner, book the run on another phone.` `citt capture-options` prints the reason line of every held or offline phone, and `citt captures` and `citt capture-watch` print the reason of a run queued on one. The model-settings sentence ends with a full stop, which the clause "; the run queues until it is fixed" replaces. When the sentence says to book the run on another phone, `citt capture-start --phone` adds the line `list the other phones with: citt capture-options APP`; in `citt capture-watch`, `citt captures` and the no-free-phone list of `citt capture-start`, what follows a sentence starts a new sentence (`... book the run on another phone. 0 running, 1 queued.`) (NP-1493).

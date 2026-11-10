@@ -509,7 +509,7 @@ cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
-  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup=""
+  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback=""
   CR_PT="" CR_PT_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
@@ -552,6 +552,7 @@ cmd_capture_start() {
       --state-fallback) fallback=any_state ;;
       --reset-gaid) reset_gaid=true ;;
       --allow-signup) allow_signup=true ;;
+      --no-play-fallback) no_play_fallback=true ;;
       --location-always) loc_always=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
@@ -673,6 +674,7 @@ cmd_capture_start() {
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
+  [ -z "$no_play_fallback" ] || hin="$hin|play_fallback=0"
   h="$(_cs_str_sha "$hin")"
   pend="$dir/$h.json"
   now="$(now_s)"
@@ -710,7 +712,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --argjson pr "$prompts_json" --arg su "$allow_signup" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -726,6 +728,7 @@ cmd_capture_start() {
      + (if $la == "" then {} else {location_permission: "all_the_time"} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
+     + (if $npf == "" then {} else {play_fallback: false} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
   HTTP_RETRY=yes
   http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
@@ -792,7 +795,8 @@ _cr_started() {
            + (if .prompts.conclusion then ", conclusion set" else ", no conclusion" end) else "" end)
       + (if .allow_signup == true then "; sign-up allowed" else "" end)
       + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
-      + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end),
+      + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end)
+      + (if .play_fallback == false then "; no Play Store fallback" else "" end),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"

@@ -389,7 +389,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
@@ -418,6 +418,11 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                uses the first that passes the exit check and the leak test. Replaces --state, --country and --state-fallback
   --split      session length (default: the options' default, or the longest that fits)
   --phone      phone name or device id; without it the first free phone; a busy phone queues
+  --no-play-fallback
+               a scanned build that Google Play refuses with its licence page ("Get this app from Play") is not installed
+               from the Play Store: the run ends on the page (default: the app is installed from the Play Store on the same
+               phone and the run goes on; the run warning and run.json state both versions); the start line ends
+               "no Play Store fallback"
   --age        persona age, 5 to 99 (default: the project's profile)
   --tracking   allow or refuse (default: the project's profile)
   --navigator  independent (never asks), stuck or unsure: the Visual LLM asks for a human
