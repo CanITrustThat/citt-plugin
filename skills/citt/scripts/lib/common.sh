@@ -707,6 +707,23 @@ fail_http() {
         not_ready)
           msg="$E_PACKAGE has no finished scan yet (status: $(body_field '.app_status')); run: citt status${E_PROJECT_REF:+ $E_PROJECT_REF} --wait"
           ;;
+        root_detected)
+          # NP-1535: this version of the app refused to run on a lab phone; the API's sentence and its next action as they are
+          msg="$(plain_message "$message")"
+          local next
+          next="$(mask_server_text "$(body_field '.next_action // .next // empty')")"
+          msg="${msg:-This version of the app refuses to run on our lab phones, so it cannot be booked.}${next:+ $next}"
+          # fix round 1 F4: an app with no stored build reopens at `offered_again_at`; the API's UTC time prints in local time
+          local again e utc
+          again="$(body_field '.offered_again_at // empty')"
+          if [ -n "$again" ]; then
+            e="$(jq -rn --arg t "$again" "$JQ_TS"' $t | ts | floor' 2>/dev/null)"
+            if [ -n "$e" ] && [ "$e" != 0 ]; then
+              utc="$(TZ=UTC date -d "@$e" '+%Y-%m-%d %H:%M UTC' 2>/dev/null || TZ=UTC date -r "$e" '+%Y-%m-%d %H:%M UTC')"
+              msg="${msg//"$utc"/"$(local_time "$e")"}"
+            fi
+          fi
+          ;;
         *)
           msg="$(plain_message "$message")"
           msg="${msg:+conflict: $msg}"

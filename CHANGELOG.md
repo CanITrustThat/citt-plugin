@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.36.0
+
+- `citt capture-start` on an app version that refused to run on our lab phones (it showed that it detects a modified, rooted or jailbroken phone) prints the service's reason and next action instead of a generic conflict; for an app with no stored build the time booking opens again is printed in local time (NP-1535).
+
 ## 2.35.0
 
 - `citt capture-start --help`, the citt skill and the reference state what a `--location` run does before the app starts: in every Android session the app is granted `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` with `pm grant`, each one its manifest declares, and the grant is read back. The record of each session, `persona.location.permission` in the session manifest and in `run.json`, now also holds `pregranted` (the list of `granted`) and `not_declared` (the list of `not_requested`: the location permissions absent from the app's manifest); `run.json` derives both for sessions stored before (export minor 11). `--location-always` adds `ACCESS_BACKGROUND_LOCATION` (NP-1490).
