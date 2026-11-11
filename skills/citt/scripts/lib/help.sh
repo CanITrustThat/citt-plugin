@@ -387,14 +387,20 @@ EOF
 
 help_capture_start() {
   cat <<'EOF'
-citt capture-start APP --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
+citt capture-start APP | --web-url URL --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
-on a lab device of its platform and prints the run id, run key, phone, state, planned sessions, estimated end and
+on a lab device of its platform, or of a web funnel (--web-url) on an Android lab phone, and prints the run id, run key, phone, state, planned sessions, estimated end and
 the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
+  --web-url URL  in place of APP: a web-funnel session with no app under test, in the project, on an Android lab phone: the
+               phone's browser (Chrome) is the app; each session clears Chrome's data (no cache, cookies or account from an
+               earlier session), opens URL and passes Chrome's first-run screens before its clock starts, answers cookie banners
+               by --tracking, and ends at a payment form, an ID upload or a selfie screen; it needs a goal (--goal or a
+               --prompts-file with a goal), which the navigator answers the pages from; every request of the phone is in
+               session.har; https with a DNS host, no user name or password, port 443 only; the start line names the funnel
   --duration   run length, 1m to 7d
   --state      US exit state code, such as CA (see: citt capture-options); the run is captured in it or fails naming it
   --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it

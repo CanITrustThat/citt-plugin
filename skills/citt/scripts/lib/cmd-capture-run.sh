@@ -96,9 +96,29 @@ _cr_not_allowed() {
   die 7 "$1 is not among the packages allowed for capture runs"
 }
 
-# _cr_options: GET the start options of CR_PAPP into CR_OPTS.
+# _cr_web_url URL: status 0 for an https URL with a DNS host (no IP address), no user name or password, port 443 only, at most
+# 2,048 characters and no whitespace (NP-1547; the service's `web_url` rule); 1 otherwise.
+_cr_web_url() {
+  local u="$1" rest host
+  [ "${#u}" -le 2048 ] || return 1
+  [[ "$u" =~ ^https://[^[:space:]]+$ ]] || return 1
+  rest="${u#https://}"
+  host="${rest%%[/?#]*}"
+  case "$host" in *@*) return 1 ;; esac
+  case "$host" in *:443) host="${host%:443}" ;; *:*) return 1 ;; esac
+  host="${host%.}"
+  [[ "$host" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]] || return 1
+  [[ "$host" =~ ^[0-9.]+$ ]] && return 1
+  return 0
+}
+
+# _cr_options: GET the start options of CR_PAPP (NP-1547: of the project's web sessions with CR_WEB) into CR_OPTS.
 _cr_options() {
-  call GET "$CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
+  if [ -n "${CR_WEB:-}" ]; then
+    call GET "$CITT_V1/projects/$PROJECT_ID/web-sessions/options"
+  else
+    call GET "$CITT_V1/project-apps/$CR_PAPP/ad-sessions/options"
+  fi
   CR_OPTS="$(tmpfile options.json)"
   cp "$RESP" "$CR_OPTS"
   jq -e 'type == "object"' "$CR_OPTS" >/dev/null 2>&1 || die 1 "unexpected response from the server"
@@ -509,8 +529,8 @@ cmd_capture_start() {
   local app="" pkg dur="" dur_s split="" split_s="" state="" country="" exit_key phone="" age="" tracking="" wait=0 timeout=540
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
-  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback=""
-  CR_PT="" CR_PT_N=0
+  local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
+  CR_PT="" CR_PT_N=0 CR_WEB=""
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
@@ -523,9 +543,10 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --location | --proxy-file | --platform)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --location | --proxy-file | --platform | --web-url)
         need_value "$1" $#
         case "$1" in
+          --web-url) web_url="$2" ;;
           --platform) platform="$2" ;;
           --language) language="$2" ;;
           --location) location="$2" ;;
@@ -567,8 +588,18 @@ cmd_capture_start() {
     esac
     shift
   done
-  [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
-  pkg="$(_cr_package "$app")" || exit $?
+  # NP-1547: --web-url books a web-funnel session in the project, with no app under test; the app is the phone's browser
+  if [ -n "$web_url" ]; then
+    [ -z "$app" ] || usage_error "--web-url replaces the app; give one or the other"
+    _cr_web_url "$web_url" \
+      || usage_error "--web-url takes an https URL with a DNS host, no user name or password and port 443 only, got: $web_url"
+    case "$platform" in '' | android) ;; *) usage_error "--web-url runs on Android lab phones; leave --platform out" ;; esac
+    CR_WEB=1
+    pkg=com.android.chrome
+  else
+    [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link, or --web-url URL"
+    pkg="$(_cr_package "$app")" || exit $?
+  fi
   _cr_platform "$platform"
   _cr_project_fix
   # NP-800: the session prompts of an orchestrated run, from the flags or from --prompts-file (JSON {goal, bring_me_in,
@@ -593,6 +624,10 @@ cmd_capture_start() {
   # NP-862: a sign-up session is an orchestrated session with a goal (the orchestrator decides the account steps)
   [ -z "$allow_signup" ] || [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ] \
     || usage_error "--allow-signup needs a goal: give --goal TEXT, or a --prompts-file with a goal"
+  # NP-1547 (review round 2): the orchestrated navigator answers a web funnel's pages from the goal; the service refuses a web
+  # session without one (400 web_session_needs_goal)
+  [ -z "$web_url" ] || [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ] \
+    || usage_error "--web-url needs a goal: give --goal TEXT, or a --prompts-file with a goal"
   if [ -z "$dur" ] && [ "$(jq -r 'has("goal")' <<<"$prompts_json")" = true ]; then
     dur=30m  # NP-800: a goal without --duration is one session of 30 minutes, as the API's default
     [ -n "$split" ] || split=30m
@@ -658,13 +693,20 @@ cmd_capture_start() {
   # CF-W11: --passthrough hosts (validated while the flags were read), as the request's passthrough_hosts
   [ -z "$CR_PT" ] || pt_json="$(printf '%s\n' "$CR_PT" | jq -R . | jq -sc .)"
   need_auth
-  _cr_app "$pkg" "$platform"
+  if [ -n "$CR_WEB" ]; then
+    E_KIND=project
+    resolve_project
+    CR_PAPP=""
+  else
+    _cr_app "$pkg" "$platform"
+  fi
 
   # A re-run of the same command within a day reuses the nonce, phone and session length of the
   # interrupted one, so the API returns the run that call may have created.
   local dir h pend nonce key now
   dir="$CITT_STATE/capture-start"
   local hin="v1|$CITT_HOST|$CR_PAPP|$phone|$exit_key|$dur_s|$split_s|$age|$tracking"
+  [ -z "$CR_WEB" ] || hin="$hin|web=$PROJECT_ID|$web_url"
   [ -z "$nav_mode" ] || hin="$hin|nav=$nav_mode|wait=$wait_s"
   [ -z "$fallback" ] || hin="$hin|fallback=$fallback"
   [ -z "$reset_gaid" ] || hin="$hin|reset_gaid=1"
@@ -713,7 +755,7 @@ cmd_capture_start() {
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
     --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
-    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" \
+    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
@@ -729,9 +771,14 @@ cmd_capture_start() {
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if $npf == "" then {} else {play_fallback: false} end)
-     + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)' >"$body"
+     + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)
+     + (if $web == "" then {} else {web_url: $web} end)' >"$body"
   HTTP_RETRY=yes
-  http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
+  if [ -n "$CR_WEB" ]; then
+    http POST "$CITT_V1/projects/$PROJECT_ID/web-sessions" "$body"
+  else
+    http POST "$CITT_V1/project-apps/$CR_PAPP/ad-sessions" "$body"
+  fi
   # With --wait the key is kept until the watch returns, so a re-run after a network or server
   # failure while watching gets the same run back and follows it.
   case "$CODE" in
@@ -778,6 +825,7 @@ _cr_started() {
   http GET "$CITT_V1/capture-runs/$2"
   if ok; then eta="$(jq -r "$CR_JQ"' .run.eta_at // empty | utc' "$RESP" 2>/dev/null)"; fi
   jq -r --arg eta "${eta:-unknown}" "$CR_JQ"'
+    (if .web_url then "Web funnel: \(.web_url) (no app under test; the app is the phone browser)" else empty end),
     "Run \(.experiment_id) (\(.run_key)): \(.status) on \(.device_name // "phone") (device \(.device_id))"
       + (if (.runs_ahead // 0) > 0 then ", " + n(.runs_ahead; "run ahead"; "runs ahead") else "" end)
       + (if .status_reason then ": \(.status_reason)" else "" end),

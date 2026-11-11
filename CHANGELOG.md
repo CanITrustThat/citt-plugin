@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.37.0
+
+- `citt capture-start --web-url URL` books a web-funnel session in the project with no app under test: the options come from `GET /projects/{id}/web-sessions/options` and the run from `POST /projects/{id}/web-sessions` with `web_url` and every other option of an app's run. The phone's browser is the app; each session clears Chrome's data, opens the URL and passes Chrome's first-run screens before its clock starts, answers cookie banners as `--tracking` says, and ends at a payment form, an ID upload or a selfie screen. A web session needs a goal (`--goal` or a `--prompts-file` with a goal), as the service does (400 `web_session_needs_goal`). An http URL, a URL with a user name, password or another port, `--web-url` without a goal or with an app, and `--platform ios` exit 2 before any request; the start lines begin `Web funnel: URL` (NP-1547).
+
 ## 2.36.0
 
 - `citt capture-start` on an app version that refused to run on our lab phones (it showed that it detects a modified, rooted or jailbroken phone) prints the service's reason and next action instead of a generic conflict; for an app with no stored build the time booking opens again is printed in local time (NP-1535).
