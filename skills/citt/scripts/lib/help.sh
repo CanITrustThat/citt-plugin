@@ -680,3 +680,38 @@ A no-match, an unavailable service and a too-broad keyword each print the reason
 Needs an atlas-enabled account.
 EOF
 }
+
+help_atlas_cohort() {
+  cat <<'EOF'
+citt atlas-cohort <subcommand> [selector...] [options]
+
+Select a cohort of apps by a fact (an SDK, a package-path prefix, a host, a permission, an identifier,
+a cert field, a manifest attr) or a boolean --where expression, optionally narrowed by app metadata,
+and work with the full raw records Atlas holds. Needs an atlas-enabled account.
+
+Subcommands:
+  count    <selector...>              the matched build and app counts and the SDK resolver expansion
+  preview  <selector...> [--limit N]  the first rows of the cohort in the chosen profile
+  export   <selector...> [options]    submit a bulk export, poll it, download the gzip file
+  jobs                                your recent export jobs (for link recovery)
+  status   JOB_ID                     one export job's state, and on ready its presigned URLs
+  sdk-resolve NAME                    where an --sdk name resolves (catalog or signature set)
+
+Selector flags (repeat to OR within a dimension; different flags AND across dimensions):
+  --sdk NAME            an SDK by friendly name (resolved to its ground-truth signatures)
+  --package-path PREFIX a class-package prefix (the precise form of --sdk)
+  --host H | --url T | --permission P | --component C | --native-lib L | --framework F
+  --identifier term[=value] | --manifest-attr term=value | --cert-field term=value
+  --where 'EXPR'        a boolean expression over kind:value atoms (mutually exclusive with the flags)
+  --any                 OR the top-level flag dimensions instead of AND
+App-metadata filters: --category, --installs-band, --min-installs N, --content-rating, --developer,
+  --developer-id, --platform, --state, --min-rating-count N, --best-rank-within N, --us-listed/--not-us-listed
+Grain and output: --by app|build, --on latest|any-build, --profile identity|adtech|privacy|full,
+  --fields a,b | --fields-only a,b, --format csv.gz|jsonl.gz (full is jsonl.gz only)
+Export options: --no-wait (submit and return the job id), --job-id N (resume polling a known job),
+  --out DIR (where the file lands, default ./citt-cohorts), --timeout S.
+The export data is raw and unmasked: developer_email, config IDs and secret-shaped strings are present
+as found in the APK bytes. A disabled account, an unavailable service and an empty cohort each print
+the reason and a next action.
+EOF
+}

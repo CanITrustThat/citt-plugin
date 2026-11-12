@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.38.0
+
+- `citt atlas-cohort` selects a cohort of apps by a fact (`--sdk`, `--package-path`, `--host`, `--permission`, `--identifier`, `--cert-field`, `--manifest-attr`, `--component`, `--native-lib`, `--framework`) or a boolean `--where` expression, narrowed by app-metadata filters (`--category`, `--min-installs`, `--developer`, `--us-listed`, and the rest), and works with the full raw records Atlas holds. `count` returns the matched build and app counts and the `--sdk` resolver expansion; `preview` shows the first rows in the chosen `--profile`; `export` submits a bulk job, polls it, and downloads one presigned OVH gzip file (`--by app|build`, `--on latest|any-build`, `--profile identity|adtech|privacy|full`, `--format csv.gz|jsonl.gz`, `--no-wait`, `--job-id`, `--out`, `--timeout`); `jobs` lists recent export jobs and `status JOB_ID` one job; `sdk-resolve NAME` shows where an SDK name resolves. The exported data is raw and unmasked: `developer_email`, config IDs and secret-shaped strings are present as found in the APK bytes. Needs an atlas-enabled account (TASK-711).
+
 ## 2.37.0
 
 - `citt capture-start --web-url URL` books a web-funnel session in the project with no app under test: the options come from `GET /projects/{id}/web-sessions/options` and the run from `POST /projects/{id}/web-sessions` with `web_url` and every other option of an app's run. The phone's browser is the app; each session clears Chrome's data, opens the URL and passes Chrome's first-run screens before its clock starts, answers cookie banners as `--tracking` says, and ends at a payment form, an ID upload or a selfie screen. A web session needs a goal (`--goal` or a `--prompts-file` with a goal), as the service does (400 `web_session_needs_goal`). An http URL, a URL with a user name, password or another port, `--web-url` without a goal or with an app, and `--platform ios` exit 2 before any request; the start lines begin `Web funnel: URL` (NP-1547).
