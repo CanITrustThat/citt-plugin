@@ -275,9 +275,10 @@ _cr_pick() {
     # NP-890: a phone whose worker refused its model settings is `unavailable` with one sentence; the run queues until it is fixed.
     # NP-1335: the sentence of a phone off adb (`unavailable_kind` `adb_offline`) states when booked runs start and is printed as it is.
     # NP-1493: so does the sentence of every other kind; the "until it is fixed" clause follows the model sentence only (`model_config`,
-    # or an API before NP-1335 fix round 1 that states no kind), with the sentence's full stop left out before the clause
+    # or an API before NP-1335 fix round 1 that states no kind), with the sentence's full stop left out before the clause.
+    # NP-1530: a model sentence that states when booked runs start (kind `model_config` from NP-1530 on) is printed as it is.
     if [ -n "$(jq -r '.unavailable // empty' <<<"$sel")" ]; then
-      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r 'if .unavailable_kind == "model_config" or .unavailable_kind == null then (.unavailable | rtrimstr(".")) + "; the run queues until it is fixed" else .unavailable end' <<<"$sel")"
+      err "$CITT_CMD: $(jq -r '.device_name' <<<"$sel"): $(jq -r 'if .unavailable_kind == null or (.unavailable_kind == "model_config" and (.unavailable | test("\\bstart\\b") | not)) then (.unavailable | rtrimstr(".")) + "; the run queues until it is fixed" else .unavailable end' <<<"$sel")"
       # NP-1493 fix round 2: the sentence (also shown on the web) names no command; the plugin names its own
       case "$(jq -r '.unavailable' <<<"$sel")" in
         *"another phone"*) err "$CITT_CMD: list the other phones with: citt capture-options $pkg$(project_arg)" ;;

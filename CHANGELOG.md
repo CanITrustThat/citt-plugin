@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.39.0
+
+- `citt capture-start --phone` on a phone whose AI model settings are being fixed prints the service's sentence as it is: `<phone>: The AI model settings of this phone are being fixed on our side; runs booked on it start when the fix is done. To start sooner, book the run on another phone.` A service before this one states no start, and the command still adds `; the run queues until it is fixed` to its sentence (NP-1530).
+- `citt capture-start --phone` on a phone held for a check (a changed setting, a location restart or reset that did not finish, or a check by our team) prints the service's sentence and `list the other phones with: citt capture-options PKG`; the reset sentence names another phone from this service on (NP-1530).
+
 ## 2.38.0
 
 - `citt atlas-cohort` selects a cohort of apps by a fact (`--sdk`, `--package-path`, `--host`, `--permission`, `--identifier`, `--cert-field`, `--manifest-attr`, `--component`, `--native-lib`, `--framework`) or a boolean `--where` expression, narrowed by app-metadata filters (`--category`, `--min-installs`, `--developer`, `--us-listed`, and the rest), and works with the full raw records Atlas holds. `count` returns the matched build and app counts and the `--sdk` resolver expansion; `preview` shows the first rows in the chosen `--profile`; `export` submits a bulk job, polls it, and downloads one presigned OVH gzip file (`--by app|build`, `--on latest|any-build`, `--profile identity|adtech|privacy|full`, `--format csv.gz|jsonl.gz`, `--no-wait`, `--job-id`, `--out`, `--timeout`); `jobs` lists recent export jobs and `status JOB_ID` one job; `sdk-resolve NAME` shows where an SDK name resolves. The exported data is raw and unmasked: `developer_email`, config IDs and secret-shaped strings are present as found in the APK bytes. Needs an atlas-enabled account (TASK-711).
