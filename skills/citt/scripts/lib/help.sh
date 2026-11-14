@@ -389,7 +389,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP | --web-url URL --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-cell] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
@@ -420,6 +420,13 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --location-always
                with --location: the app gets the "Allow all the time" location permission (background location) at the
                session start, Android phones only (default: location while the app is in use)
+  --mock-wifi  the app reads 3 Wi-Fi networks with random 12-letter names and router MAC addresses, new for each session:
+               one connected and two in the scan list; Android phones only; the values are in run.json
+               sessions[].persona.radio, and requests that send them are flagged (default: the phone's own Wi-Fi state)
+  --mock-cell  with --location: the app reads a real LTE cell tower near the location (OpenCelliD) as the serving cell, with 2
+               neighbour cells; searched within 5, 10, then 50 km; a session with no tower within 50 km runs without a
+               cell and its capture-watch line says so; Android phones only; the values are in run.json
+               sessions[].persona.radio (default: the phone's own cell state)
   --proxy-file your own proxies as the exit, one per line: http://user:pass@host:port, socks5://user:pass@host:port or
                host:port:user:pass (http); - reads stdin; # comments and blank lines skipped; at most 100 entries; a literal
                {session} in the user is replaced with a new id each session. Each session tries the entries first to last and

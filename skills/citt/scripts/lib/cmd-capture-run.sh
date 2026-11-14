@@ -11,7 +11,17 @@ CR_JQ="$CS_JQ_TS"'
 def short: (. | floor) as $s | if $s % 86400 == 0 then "\($s / 86400 | floor)d" elif $s % 3600 == 0 then "\($s / 3600 | floor)h"
   elif $s % 60 == 0 then "\($s / 60 | floor)m" else "\($s)s" end;
 def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
-def utc: ts | floor | strftime("%Y-%m-%d %H:%M UTC");'
+def utc: ts | floor | strftime("%Y-%m-%d %H:%M UTC");
+def radio_mode($sep): if type != "object" then ""
+  elif .wifi == true and .cell == true then "\($sep)mocked Wi-Fi and cell tower"
+  elif .wifi == true then "\($sep)mocked Wi-Fi" elif .cell == true then "\($sep)mocked cell tower" else "" end;
+def radio_session: if type != "object" then "" else
+  ([(.wifi.connected.ssid // null | if type == "string" then "Wi-Fi \(.)" else empty end),
+    (if (.cell | type) == "object" then "cell \(.cell.operator // "-") \(.cell.mcc // "?")-\(.cell.mnc // "?") TAC \(.cell.tac // "?") CI \(.cell.ci // "?")"
+     elif .cell_reason == "no_cell_within_50km" then "no cell tower within 50 km of the location"
+     elif (.cell_reason | type) == "string" then "no cell: \(.cell_reason)" else empty end),
+    (if .verified == false and ((.wifi | type) == "object" or (.cell | type) == "object") then "not verified on the phone" else empty end)] | join(", ")) as $t
+  | if $t == "" then "" else "; " + $t end end;'
 
 # --- arguments -------------------------------------------------------------------------
 
@@ -531,6 +541,7 @@ cmd_capture_start() {
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
+  local mock_wifi="" mock_cell="" radio_mode=""
   CR_PT="" CR_PT_N=0 CR_WEB=""
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
@@ -576,6 +587,8 @@ cmd_capture_start() {
       --allow-signup) allow_signup=true ;;
       --no-play-fallback) no_play_fallback=true ;;
       --location-always) loc_always=true ;;
+      --mock-wifi) mock_wifi=true ;;
+      --mock-cell) mock_cell=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -673,6 +686,14 @@ cmd_capture_start() {
   # NP-1354: "Allow all the time" location is the researcher's booking choice, for a run that sets the phone location
   [ -z "$loc_always" ] || [ -n "$location" ] \
     || usage_error "--location-always needs --location LAT,LNG: the \"Allow all the time\" location permission applies to a run that sets the phone location"
+  # NP-1700: --mock-wifi and --mock-cell show the app session-unique Wi-Fi networks and a real cell tower near --location; the
+  # radio hooks exist on Android lab phones only
+  if [ -n "$mock_wifi" ] || [ -n "$mock_cell" ]; then
+    [ "$platform" != ios ] || usage_error "--mock-wifi and --mock-cell run on Android lab phones; leave --platform ios out"
+    [ -z "$mock_cell" ] || [ -n "$location" ] \
+      || usage_error "--mock-cell needs --location LAT,LNG: cell towers are chosen near that point"
+    radio_mode="$(printf '%s\n' ${mock_wifi:+wifi} ${mock_cell:+cell} | paste -sd, -)"
+  fi
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -714,6 +735,7 @@ cmd_capture_start() {
   [ -z "$language" ] || hin="$hin|device_locale=$language"
   [ -z "$location" ] || hin="$hin|device_location=$location"
   [ -z "$loc_always" ] || hin="$hin|location_permission=all_the_time"
+  [ -z "$radio_mode" ] || hin="$hin|device_radio=$radio_mode"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -755,7 +777,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mc "$mock_cell" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -769,6 +791,7 @@ cmd_capture_start() {
      + (if $dl == "" then {} else {device_locale: $dl} end)
      + (if $loc == "" then {} else {device_location: ($loc | fromjson)} end)
      + (if $la == "" then {} else {location_permission: "all_the_time"} end)
+     + (if $mw == "" and $mc == "" then {} else {device_radio: {wifi: ($mw != ""), cell: ($mc != "")}} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if $npf == "" then {} else {play_fallback: false} end)
@@ -790,6 +813,14 @@ cmd_capture_start() {
   if [ "$CODE" = 422 ] && [ "$(body_field '.error')" = exit_country_unavailable ]; then
     die 4 "$(body_field '.message'); list the exit countries with: citt capture-options $pkg$(project_arg)"
   fi
+  # NP-1700: a radio mock the service refuses (an iOS app, a cell without a location) prints the service's sentence
+  case "$CODE:$(body_field '.error')" in
+    422:device_radio_*)
+      local radio_msg
+      radio_msg="$(plain_message "$(body_field '.message')")"
+      fail_out 7 "${radio_msg:-the service refused --mock-wifi or --mock-cell for this run; they run on Android lab phones, and --mock-cell needs --location}"
+      ;;
+  esac
   # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
   if [ "$CODE" = 503 ] && [ "$(body_field '.error')" = proxy_exit_unavailable ]; then
     rm -f "$pend"
@@ -845,6 +876,7 @@ _cr_started() {
       + (if .allow_signup == true then "; sign-up allowed" else "" end)
       + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
       + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end)
+      + (.device_radio | radio_mode("; "))
       + (if .play_fallback == false then "; no Play Store fallback" else "" end),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
@@ -903,7 +935,8 @@ _cr_watch() {
              + (if .time_zone then " · time zone \(.time_zone)" else "" end) else "" end)
         + (($s | .persona.location) // null | if type != "object" or .lat == null then ""
              elif .exposure.ok == false then "; location not set: \(.exposure.reason // "the phone'"'"'s real location is readable by apps")"
-             else "; location \(.lat),\(.lng) " + (if .verified == true then "verified on the phone" else "not verified" end) end)' "$RESP" 2>/dev/null)" \
+             else "; location \(.lat),\(.lng) " + (if .verified == true then "verified on the phone" else "not verified" end) end)
+        + (($s | .persona.radio) // null | radio_session)' "$RESP" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -942,7 +975,8 @@ _cr_watch() {
           + (if $r.eta_at then ", estimated end \($r.eta_at | utc)" else "" end)
           + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)
           + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)
-          + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end))' "$RESP"
+          + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)
+          + ($r.device_radio | radio_mode(", ")))' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then

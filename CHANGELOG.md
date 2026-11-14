@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.40.0
+
+- `citt capture-start --mock-wifi` makes the app read 3 Wi-Fi networks with random 12-letter names and router MAC addresses, new for each session (one connected, two more in the scan list); `--mock-cell` with `--location` makes the app read a real LTE cell tower near the location (OpenCelliD) as the serving cell, with 2 neighbour cells. The request body contains `device_radio` (`{"wifi": true, "cell": true}`, each true for its flag), and both flags are part of the idempotency key. `--mock-cell` without `--location` exits 2 before any request with `--mock-cell needs --location LAT,LNG: cell towers are chosen near that point`, and either flag with `--platform ios` exits 2. The start line ends `; mocked Wi-Fi and cell tower` (or `; mocked Wi-Fi`, `; mocked cell tower`), `citt captures` and the `citt capture-watch` run line name the same, and each `citt capture-watch` session line adds the connected network name and the serving cell (`; Wi-Fi QwErTyUiOpAs, cell T-Mobile 310-260 TAC 25602 CI 21794573`) or `no cell tower within 50 km of the location`. Every value is in `run.json` `sessions[].persona.radio` (export minor 12) (NP-1700).
+
 ## 2.39.0
 
 - `citt capture-start --phone` on a phone whose AI model settings are being fixed prints the service's sentence as it is: `<phone>: The AI model settings of this phone are being fixed on our side; runs booked on it start when the fix is done. To start sooner, book the run on another phone.` A service before this one states no start, and the command still adds `; the run queues until it is fixed` to its sentence (NP-1530).

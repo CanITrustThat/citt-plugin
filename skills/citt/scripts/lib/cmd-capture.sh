@@ -2275,6 +2275,9 @@ cmd_captures() {
         # NP-1493 fix round 2: what follows a reason sentence (a full stop at its end) is its own sentence
         (([(if .device_locale then "device language \(.device_locale)" else empty end),
               (if .device_location then "location \(.device_location.lat),\(.device_location.lng)" else empty end),
+              (.device_radio // null | if type != "object" then empty
+                 elif .wifi == true and .cell == true then "mocked Wi-Fi and cell tower"
+                 elif .wifi == true then "mocked Wi-Fi" elif .cell == true then "mocked cell tower" else empty end),
               (if .exit_redirected == true
              then "captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
              else empty end)] | join("; ")) as $more
