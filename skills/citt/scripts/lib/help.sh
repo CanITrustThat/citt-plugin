@@ -389,7 +389,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP | --web-url URL --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-cell] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-cell] [--grant-permissions] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
@@ -427,6 +427,13 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                neighbour cells; searched within 5, 10, then 50 km; a session with no tower within 50 km runs without a
                cell and its capture-watch line says so; Android phones only; the values are in run.json
                sessions[].persona.radio (default: the phone's own cell state)
+  --grant-permissions  before the app starts in each session, the app is granted (pm grant) the permissions of this list its
+               manifest declares: Phone (READ_PHONE_STATE), Notifications (POST_NOTIFICATIONS), Physical activity
+               (ACTIVITY_RECOGNITION), and with --mock-wifi also Nearby devices (NEARBY_WIFI_DEVICES, BLUETOOTH_SCAN,
+               BLUETOOTH_CONNECT, BLUETOOTH_ADVERTISE); its battery use is set to Unrestricted; every other declared
+               permission is not granted and is listed with its group (location follows --location and --location-always);
+               each session's result is in run.json sessions[].persona.permissions and its capture-watch line; Android phones
+               only (default: no permission is granted before the app starts)
   --proxy-file your own proxies as the exit, one per line: http://user:pass@host:port, socks5://user:pass@host:port or
                host:port:user:pass (http); - reads stdin; # comments and blank lines skipped; at most 100 entries; a literal
                {session} in the user is replaced with a new id each session. Each session tries the entries first to last and

@@ -21,7 +21,14 @@ def radio_session: if type != "object" then "" else
      elif .cell_reason == "no_cell_within_50km" then "no cell tower within 50 km of the location"
      elif (.cell_reason | type) == "string" then "no cell: \(.cell_reason)" else empty end),
     (if .verified == false and ((.wifi | type) == "object" or (.cell | type) == "object") then "not verified on the phone" else empty end)] | join(", ")) as $t
-  | if $t == "" then "" else "; " + $t end end;'
+  | if $t == "" then "" else "; " + $t end end;
+def permissions_session: if type != "object" then "" else
+  "; \(n((.granted // []) | length; "app permission"; "app permissions")) granted"
+  + ((.not_granted // []) as $ng | if ($ng | length) > 0
+     then ", \($ng | length) not granted (" + ([$ng[] | "\(.permission): \({"special_access": "special access"}[.reason] // .reason)"] | join(", ")) + ")"
+     else "" end)
+  + (if (.battery | type) != "object" then "" elif .battery.unrestricted == true then ", battery Unrestricted"
+     else ", battery not Unrestricted" end) end;'
 
 # --- arguments -------------------------------------------------------------------------
 
@@ -215,10 +222,22 @@ cmd_capture_options() {
     printf 'Phones: none registered\n'
   else
     # NP-1335: the active runs as running and queued when the API states both
-    jq -c '[["Phone", "Device", "Status", "Active runs"]] + [.devices[] | [.device_name, .device_id, .status,
+    # NP-1785: the radio mock of each phone (`device_radio`) as a column when the API states it (an API before NP-1785 states none)
+    jq -c '(any(.devices[]; has("device_radio"))) as $radio
+      | [["Phone", "Device", "Status", "Active runs"] + (if $radio then ["Radio mock"] else [] end)]
+      + [.devices[] | [.device_name, .device_id, .status,
       (if (.active_runs // 0) > 0 and (.running_runs | type) == "number" and (.queued_runs | type) == "number"
-       then "\(.active_runs) (\(.running_runs) running, \(.queued_runs) queued)" else (.active_runs // 0) end)]]' "$CR_OPTS" | table
+       then "\(.active_runs) (\(.running_runs) running, \(.queued_runs) queued)" else (.active_runs // 0) end)]
+        + (if $radio then [.device_radio | if type != "object" then "not reported"
+             elif .wifi == true and .cell == true then "Wi-Fi, cell" elif .wifi == true then "Wi-Fi"
+             elif .cell == true then "cell" else "none" end] else [] end)]' "$CR_OPTS" | table
     jq -r '.devices[] | select(.unavailable) | "\(.device_name): \(.unavailable)"' "$CR_OPTS"
+    jq -r 'select(any(.devices[]; has("device_radio")))
+      | [.devices[] | select(.device_radio.wifi == true or .device_radio.cell == true) | .device_name] as $with
+      | [.devices[] | select(.device_radio == null) | .device_name] as $unreported
+      | if ($with | length) > 0 then "Radio mock: --mock-wifi and --mock-cell run on \($with | join(", ")); a phone with none refuses a run with either flag"
+        elif ($unreported | length) > 0 then "Radio mock: not reported yet by \($unreported | join(", ")); a run with --mock-wifi or --mock-cell can be booked on them and waits until the phone states it"
+        else "Radio mock: no phone runs --mock-wifi or --mock-cell now" end' "$CR_OPTS"
   fi
   # NP-634: the stated limits of the app's platform, then each device's (an Android app and an older API state none)
   jq -r '(.limits // [])[] | "Limit: \(.text)"' "$CR_OPTS"
@@ -242,6 +261,8 @@ cmd_capture_options() {
        "Device languages (--language, default the exit'"'"'s language): " + ([.device_locales[].tag] | join(", ")) else empty end),
     (if .device_location then .device_location as $l
        | "Location (--location LAT,LNG, default none): decimal degrees, latitude \($l.lat_min) to \($l.lat_max), longitude \($l.lng_min) to \($l.lng_max), at most \($l.max_decimals) decimals, such as \($l.example.lat),\($l.example.lng)" else empty end),
+    (if .grant_permissions == true then "App permissions (--grant-permissions): available; before the app starts in each session, Phone, Notifications and Physical activity (with --mock-wifi also Nearby devices) are granted when the app declares them, and its battery use is set to Unrestricted"
+     elif .grant_permissions == false then "App permissions (--grant-permissions): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
     "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
@@ -541,7 +562,7 @@ cmd_capture_start() {
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
-  local mock_wifi="" mock_cell="" radio_mode=""
+  local mock_wifi="" mock_cell="" radio_mode="" grant=""
   CR_PT="" CR_PT_N=0 CR_WEB=""
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
@@ -589,6 +610,7 @@ cmd_capture_start() {
       --location-always) loc_always=true ;;
       --mock-wifi) mock_wifi=true ;;
       --mock-cell) mock_cell=true ;;
+      --grant-permissions) grant=true ;;
       --json) CITT_JSON=1 ;;
       --help | -h)
         help_capture_start
@@ -694,6 +716,14 @@ cmd_capture_start() {
       || usage_error "--mock-cell needs --location LAT,LNG: cell towers are chosen near that point"
     radio_mode="$(printf '%s\n' ${mock_wifi:+wifi} ${mock_cell:+cell} | paste -sd, -)"
   fi
+  # NP-1784: the grant of the app's runtime permissions and Unrestricted battery use before the app starts runs on Android lab
+  # phones, for an app's run
+  if [ -n "$grant" ]; then
+    [ "$platform" != ios ] \
+      || usage_error "--grant-permissions runs on Android lab phones only: iOS has no grant before the app starts; leave --platform ios out"
+    [ -z "$web_url" ] \
+      || usage_error "--grant-permissions applies to an app's run; a web-funnel session opens the phone's browser, whose permissions stay as they are"
+  fi
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -736,6 +766,7 @@ cmd_capture_start() {
   [ -z "$location" ] || hin="$hin|device_location=$location"
   [ -z "$loc_always" ] || hin="$hin|location_permission=all_the_time"
   [ -z "$radio_mode" ] || hin="$hin|device_radio=$radio_mode"
+  [ -z "$grant" ] || hin="$hin|grant_permissions=true"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -777,7 +808,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mc "$mock_cell" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mc "$mock_cell" --arg gp "$grant" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -792,6 +823,7 @@ cmd_capture_start() {
      + (if $loc == "" then {} else {device_location: ($loc | fromjson)} end)
      + (if $la == "" then {} else {location_permission: "all_the_time"} end)
      + (if $mw == "" and $mc == "" then {} else {device_radio: {wifi: ($mw != ""), cell: ($mc != "")}} end)
+     + (if $gp == "" then {} else {grant_permissions: true} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if $npf == "" then {} else {play_fallback: false} end)
@@ -819,6 +851,12 @@ cmd_capture_start() {
       local radio_msg
       radio_msg="$(plain_message "$(body_field '.message')")"
       fail_out 7 "${radio_msg:-the service refused --mock-wifi or --mock-cell for this run; they run on Android lab phones, and --mock-cell needs --location}"
+      ;;
+    422:grant_permissions_*)
+      # NP-1784: an iOS app or a web-funnel session
+      local grant_msg
+      grant_msg="$(plain_message "$(body_field '.message')")"
+      fail_out 7 "${grant_msg:-the service refused --grant-permissions for this run; it runs on Android lab phones, for the run of an app}"
       ;;
   esac
   # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
@@ -877,6 +915,7 @@ _cr_started() {
       + (if .device_location then "; location \(.device_location.lat),\(.device_location.lng)" else "" end)
       + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end)
       + (.device_radio | radio_mode("; "))
+      + (if .grant_permissions == true then "; app permissions granted before launch" else "" end)
       + (if .play_fallback == false then "; no Play Store fallback" else "" end),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
@@ -936,7 +975,8 @@ _cr_watch() {
         + (($s | .persona.location) // null | if type != "object" or .lat == null then ""
              elif .exposure.ok == false then "; location not set: \(.exposure.reason // "the phone'"'"'s real location is readable by apps")"
              else "; location \(.lat),\(.lng) " + (if .verified == true then "verified on the phone" else "not verified" end) end)
-        + (($s | .persona.radio) // null | radio_session)' "$RESP" 2>/dev/null)" \
+        + (($s | .persona.radio) // null | radio_session)
+        + (($s | .persona.permissions) // null | permissions_session)' "$RESP" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -976,7 +1016,8 @@ _cr_watch() {
           + (if $r.device_locale then ", device language \($r.device_locale)" else "" end)
           + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)
           + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)
-          + ($r.device_radio | radio_mode(", ")))' "$RESP"
+          + ($r.device_radio | radio_mode(", "))
+          + (if $r.grant_permissions == true then ", app permissions granted before launch" else "" end))' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then
