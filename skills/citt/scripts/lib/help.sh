@@ -420,9 +420,15 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
   --location-always
                with --location: the app gets the "Allow all the time" location permission (background location) at the
                session start, Android phones only (default: location while the app is in use)
-  --mock-wifi  the app reads 3 Wi-Fi networks with random 12-letter names and router MAC addresses, new for each session:
-               one connected and two in the scan list; Android phones only; the values are in run.json
-               sessions[].persona.radio, and requests that send them are flagged (default: the phone's own Wi-Fi state)
+  --mock-wifi  the app reads mocked Wi-Fi networks, one connected and the others in the scan list; Android phones only;
+               with --location, the connected network is the nearest open public Wi-Fi venue within 100 m (a cafe, shop,
+               library, station or city hotspot from OpenStreetMap, All The Places, LinkNYC or city open data), with the
+               BSSIDs a source recorded for it, else synthesized ones; the scan list holds the other venues, the networks
+               WiGLE has mapped within 200 m (residential ones included) and 2 random networks; with no open venue within
+               100 m the connected network is random; without --location, or with nothing mapped within 200 m, 3 random
+               networks with 12-letter names are used; each capture-watch session line names the venue and its source,
+               or why random networks were used; the values are in run.json sessions[].persona.radio, and requests that
+               send them are flagged (default: the phone's own Wi-Fi state)
   --mock-cell  with --location: the app reads a real LTE cell tower near the location (OpenCelliD) as the serving cell, with 2
                neighbour cells; searched within 5, 10, then 50 km; a session with no tower within 50 km runs without a
                cell and its capture-watch line says so; Android phones only; the values are in run.json

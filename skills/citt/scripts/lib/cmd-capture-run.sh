@@ -15,8 +15,37 @@ def utc: ts | floor | strftime("%Y-%m-%d %H:%M UTC");
 def radio_mode($sep): if type != "object" then ""
   elif .wifi == true and .cell == true then "\($sep)mocked Wi-Fi and cell tower"
   elif .wifi == true then "\($sep)mocked Wi-Fi" elif .cell == true then "\($sep)mocked cell tower" else "" end;
+def oneline: tostring | explode | map(if . < 32 or . == 127 then 32 else . end) | implode;
+def wifi_reason_text: if type != "string" then null
+  elif . == "no_point" then "the run has no --location, so no venue is looked up"
+  elif . == "no_venue_within_200m" then "no public Wi-Fi venue or mapped network within 200 m of the location"
+  elif . == "no_venue_within_100m" then "no open public Wi-Fi venue within 100 m of the location"
+  elif . == "venue_wifi_off" then "venue Wi-Fi is turned off on our side"
+  elif . == "venue_connect_off" then "connecting to venue networks is turned off on our side"
+  elif . == "venue_wifi_no_seed_key" then "venue Wi-Fi is not set up on our side"
+  elif . == "radio_apk_without_wifi_security" then "this phone'"'"'s radio app cannot show an open network yet"
+  elif startswith("wifi_lookup_failed: ") then "the venue lookup failed (\(ltrimstr("wifi_lookup_failed: ") | oneline))"
+  else oneline end;
+def wifi_session: . as $r | (.wifi.connected // null) as $c
+  | if ($c | type) != "object" or ($c.ssid | type) != "string" then empty else
+    ([($r.wifi.neighbors // []) | if type == "array" then .[] else empty end | select(type == "object" and .kind == "residential")] | length) as $res
+    | (if $res > 0 then n($res; "residential network"; "residential networks") + " nearby" else null end) as $rt
+    | "Wi-Fi \($c.ssid | oneline)"
+    + (if ($c.source | type) == "string" and $c.source != "" then
+        ([$c.venue_name, $c.brand] | map(select(type == "string" and . != "")) | first // null) as $at
+        | ([([({"osm": "OpenStreetMap", "atp": "All The Places", "wigle": "WiGLE", "linknyc": "LinkNYC", "nyc": "NYC Open Data"}[$c.source] // $c.source),
+               ($c.source_id | select(type == "string" and . != ""))] | map(oneline) | join(" ")),
+            ({"observed": "BSSID observed", "observed_derived": "BSSID derived from an observed BSSID", "synthesized": "BSSID synthesized"}[$c.bssid_basis | strings] // empty),
+            ($c.distance_m | numbers | "\(round) m from the location")] | join(", ")) as $d
+        | (if $at then " at \($at | oneline)" else "" end) + " (" + $d + (if $rt then "; \($rt)" else "" end) + ")"
+       elif ($r.wifi_source | type) == "string" and $r.wifi_source != "venue" then
+        [($r.wifi_reason | wifi_reason_text),
+         ({"random_fallback": "random networks used", "random_no_venue_in_range": "random connected network, nearby networks in the scan list",
+           "random_old_radio_apk": "random connected network, nearby networks in the scan list"}[$r.wifi_source] // null), $rt]
+        | map(select(. != null)) | if length > 0 then " (" + join("; ") + ")" else "" end
+       else "" end) end;
 def radio_session: if type != "object" then "" else
-  ([(.wifi.connected.ssid // null | if type == "string" then "Wi-Fi \(.)" else empty end),
+  ([wifi_session,
     (if (.cell | type) == "object" then "cell \(.cell.operator // "-") \(.cell.mcc // "?")-\(.cell.mnc // "?") TAC \(.cell.tac // "?") CI \(.cell.ci // "?")"
      elif .cell_reason == "no_cell_within_50km" then "no cell tower within 50 km of the location"
      elif (.cell_reason | type) == "string" then "no cell: \(.cell_reason)" else empty end),
