@@ -13,6 +13,8 @@ def short: (. | floor) as $s | if $s % 86400 == 0 then "\($s / 86400 | floor)d" 
 def n($k; $one; $many): if $k == 1 then "1 \($one)" else "\($k) \($many)" end;
 def utc: ts | floor | strftime("%Y-%m-%d %H:%M UTC");
 def radio_mode($sep): if type != "object" then ""
+  elif .wifi == true and .wifi_private == true and .cell == true then "\($sep)mocked Wi-Fi, private network first, and cell tower"
+  elif .wifi == true and .wifi_private == true then "\($sep)mocked Wi-Fi, private network first"
   elif .wifi == true and .cell == true then "\($sep)mocked Wi-Fi and cell tower"
   elif .wifi == true then "\($sep)mocked Wi-Fi" elif .cell == true then "\($sep)mocked cell tower" else "" end;
 def oneline: tostring | explode | map(if . < 32 or . == 127 then 32 else . end) | implode;
@@ -26,9 +28,17 @@ def wifi_reason_text: if type != "string" then null
   elif . == "radio_apk_without_wifi_security" then "this phone'"'"'s radio app cannot show an open network yet"
   elif startswith("wifi_lookup_failed: ") then "the venue lookup failed (\(ltrimstr("wifi_lookup_failed: ") | oneline))"
   else oneline end;
+# NP-1874: why a run with --mock-wifi-private connected no private network (persona.radio.wifi_prefer_reason, NP-1870 P7)
+# $src: wifi_source; the public-network clause only when a venue network was connected (a random one is not public).
+def wifi_prefer_text($src): if type != "string" then null
+  elif . == "no_private_within_100m" then "no private Wi-Fi network mapped within 100 m of the location"
+    + (if $src == "venue" then ", so a public network was connected" else "" end)
+  elif . == "radio_apk_without_wifi_security" then "this phone'"'"'s radio app cannot show the open private network yet"
+  else wifi_reason_text end;
 def wifi_session: . as $r | (.wifi.connected // null) as $c
   | if ($c | type) != "object" or ($c.ssid | type) != "string" then empty else
-    ([($r.wifi.neighbors // []) | if type == "array" then .[] else empty end | select(type == "object" and .kind == "residential")] | length) as $res
+    ([($r.wifi.neighbors // []) | if type == "array" then .[] else empty end
+      | select(type == "object" and .kind == "residential" and .connected_ap != true and .bssid != $c.bssid)] | length) as $res
     | (if $res > 0 then n($res; "residential network"; "residential networks") + " nearby" else null end) as $rt
     | "Wi-Fi \($c.ssid | oneline)"
     + (if ($c.source | type) == "string" and $c.source != "" then
@@ -37,13 +47,17 @@ def wifi_session: . as $r | (.wifi.connected // null) as $c
                ($c.source_id | select(type == "string" and . != ""))] | map(oneline) | join(" ")),
             ({"observed": "BSSID observed", "observed_derived": "BSSID derived from an observed BSSID", "synthesized": "BSSID synthesized"}[$c.bssid_basis | strings] // empty),
             ($c.distance_m | numbers | "\(round) m from the location")] | join(", ")) as $d
-        | (if $at then " at \($at | oneline)" else "" end) + " (" + $d + (if $rt then "; \($rt)" else "" end) + ")"
+        | (if $r.wifi_source == "private" then ", private network" elif $at then " at \($at | oneline)" else "" end)
+          + " (" + $d + (if $rt then "; \($rt)" else "" end) + ")"
        elif ($r.wifi_source | type) == "string" and $r.wifi_source != "venue" then
         [($r.wifi_reason | wifi_reason_text),
          ({"random_fallback": "random networks used", "random_no_venue_in_range": "random connected network, nearby networks in the scan list",
            "random_old_radio_apk": "random connected network, nearby networks in the scan list"}[$r.wifi_source] // null), $rt]
         | map(select(. != null)) | if length > 0 then " (" + join("; ") + ")" else "" end
-       else "" end) end;
+       else "" end)
+    + (if $r.wifi_prefer == "private" and $r.wifi_source != "private" and ($r.wifi_prefer_reason | type) == "string"
+          and ($r.wifi_prefer_reason | wifi_prefer_text($r.wifi_source)) != ($r.wifi_reason | wifi_reason_text)
+       then "; " + ($r.wifi_prefer_reason | wifi_prefer_text($r.wifi_source)) else "" end) end;
 def radio_session: if type != "object" then "" else
   ([wifi_session,
     (if (.cell | type) == "object" then "cell \(.cell.operator // "-") \(.cell.mcc // "?")-\(.cell.mnc // "?") TAC \(.cell.tac // "?") CI \(.cell.ci // "?")"
@@ -591,7 +605,7 @@ cmd_capture_start() {
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
-  local mock_wifi="" mock_cell="" radio_mode="" grant=""
+  local mock_wifi="" mock_wifi_private="" mock_cell="" radio_mode="" grant=""
   CR_PT="" CR_PT_N=0 CR_WEB=""
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
@@ -638,6 +652,7 @@ cmd_capture_start() {
       --no-play-fallback) no_play_fallback=true ;;
       --location-always) loc_always=true ;;
       --mock-wifi) mock_wifi=true ;;
+      --mock-wifi-private) mock_wifi=true mock_wifi_private=true ;;
       --mock-cell) mock_cell=true ;;
       --grant-permissions) grant=true ;;
       --json) CITT_JSON=1 ;;
@@ -740,10 +755,13 @@ cmd_capture_start() {
   # NP-1700: --mock-wifi and --mock-cell show the app session-unique Wi-Fi networks and a real cell tower near --location; the
   # radio hooks exist on Android lab phones only
   if [ -n "$mock_wifi" ] || [ -n "$mock_cell" ]; then
-    [ "$platform" != ios ] || usage_error "--mock-wifi and --mock-cell run on Android lab phones; leave --platform ios out"
+    [ "$platform" != ios ] || usage_error "--mock-wifi, --mock-wifi-private and --mock-cell run on Android lab phones; leave --platform ios out"
+    # NP-1874: --mock-wifi-private implies --mock-wifi; a private (residential) network near --location is connected first
+    [ -z "$mock_wifi_private" ] || [ -n "$location" ] \
+      || usage_error "--mock-wifi-private needs --location LAT,LNG: private Wi-Fi networks are chosen near that point"
     [ -z "$mock_cell" ] || [ -n "$location" ] \
       || usage_error "--mock-cell needs --location LAT,LNG: cell towers are chosen near that point"
-    radio_mode="$(printf '%s\n' ${mock_wifi:+wifi} ${mock_cell:+cell} | paste -sd, -)"
+    radio_mode="$(printf '%s\n' ${mock_wifi:+wifi} ${mock_wifi_private:+wifi_private} ${mock_cell:+cell} | paste -sd, -)"
   fi
   # NP-1784: the grant of the app's runtime permissions and Unrestricted battery use before the app starts runs on Android lab
   # phones, for an app's run
@@ -837,7 +855,7 @@ cmd_capture_start() {
   local body
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
-    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mc "$mock_cell" --arg gp "$grant" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
+    --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mwp "$mock_wifi_private" --arg mc "$mock_cell" --arg gp "$grant" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
     --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
@@ -851,7 +869,7 @@ cmd_capture_start() {
      + (if $dl == "" then {} else {device_locale: $dl} end)
      + (if $loc == "" then {} else {device_location: ($loc | fromjson)} end)
      + (if $la == "" then {} else {location_permission: "all_the_time"} end)
-     + (if $mw == "" and $mc == "" then {} else {device_radio: {wifi: ($mw != ""), cell: ($mc != "")}} end)
+     + (if $mw == "" and $mc == "" then {} else {device_radio: ({wifi: ($mw != ""), cell: ($mc != "")} + (if $mwp == "" then {} else {wifi_private: true} end))} end)
      + (if $gp == "" then {} else {grant_permissions: true} end)
      + $pr
      + (if $su == "" then {} else {allow_signup: true} end)
@@ -879,7 +897,7 @@ cmd_capture_start() {
     422:device_radio_*)
       local radio_msg
       radio_msg="$(plain_message "$(body_field '.message')")"
-      fail_out 7 "${radio_msg:-the service refused --mock-wifi or --mock-cell for this run; they run on Android lab phones, and --mock-cell needs --location}"
+      fail_out 7 "${radio_msg:-the service refused --mock-wifi, --mock-wifi-private or --mock-cell for this run; they run on Android lab phones, and --mock-wifi-private and --mock-cell need --location}"
       ;;
     422:grant_permissions_*)
       # NP-1784: an iOS app or a web-funnel session

@@ -392,7 +392,7 @@ help_capture_start() {
   cat <<'EOF'
 citt capture-start APP | --web-url URL --project NAME|ID --duration D (--state XX | --country CC | --proxy-file PATH|-) [--platform android|ios] [--split S] [--phone NAME|ID]
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
-                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-cell] [--grant-permissions] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
+                   [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-wifi-private] [--mock-cell] [--grant-permissions] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
@@ -432,6 +432,11 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                networks with 12-letter names are used; each capture-watch session line names the venue and its source,
                or why random networks were used; the values are in run.json sessions[].persona.radio, and requests that
                send them are flagged (default: the phone's own Wi-Fi state)
+  --mock-wifi-private
+               the connected network is a private (residential) network WiGLE has mapped within 100 m of --location,
+               secured ones first; Android phones only; implies --mock-wifi and needs --location; with none within 100 m
+               the network is chosen as with --mock-wifi (venue, else random), and the reason (persona.radio.wifi_prefer_reason, such
+               as no_private_within_100m) is shown on each capture-watch session line (default: public networks only)
   --mock-cell  with --location: the app reads a real LTE cell tower near the location (OpenCelliD) as the serving cell, with 2
                neighbour cells; searched within 5, 10, then 50 km; a session with no tower within 50 km runs without a
                cell and its capture-watch line says so; Android phones only; the values are in run.json
