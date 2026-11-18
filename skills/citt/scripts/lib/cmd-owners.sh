@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# lib/cmd-owners.sh: citt owners.
+# lib/cmd-owners.sh: citt owners. TASK-781a: --add shows the inviter warning of decision E1 (lib/invite-ack.sh) and invites
+# only with --confirm; the invite carries the acknowledgment of the service's current warning version.
 # shellcheck shell=bash disable=SC2034
 
 cmd_owners() {
-  local n op email
-  local -a ops
+  local n op email confirm=0
+  local -a ops adds
   ops=()
+  adds=()
   while [ $# -gt 0 ]; do
     take_project_flag "$@"
     n=$?
@@ -17,6 +19,12 @@ cmd_owners() {
       --add | --remove)
         need_value "$1" $#
         ops+=("$1 $2")
+        shift
+        ;;
+      --confirm) confirm=1 ;;
+      --ack-version)
+        need_value "$1" $#
+        INVITE_ACK_ACCEPT="$2"
         shift
         ;;
       --json) CITT_JSON=1 ;;
@@ -37,10 +45,15 @@ cmd_owners() {
         *@*) ;;
         *) usage_error "not an email address: $email" ;;
       esac
+      case "$op" in --add*) adds+=("$email") ;; esac
     done
+  fi
+  if [ "${#adds[@]}" -gt 0 ] && [ "$confirm" = 0 ]; then
+    invite_ack_refuse ${adds[@]+"${adds[@]}"}
   fi
   need_auth
   resolve_project
+  [ "${#adds[@]}" -eq 0 ] || invite_ack_fetch ${adds[@]+"${adds[@]}"}
   if [ "${#ops[@]}" -eq 0 ]; then
     call GET "$CITT_V1/projects/$PROJECT_ID/owners"
   else
@@ -51,7 +64,7 @@ cmd_owners() {
       E_EMAIL="$email"
       case "$op" in
         --add*)
-          jq -nc --arg e "$email" '{email: $e}' >"$body"
+          jq -nc --arg e "$email" --arg v "$INVITE_ACK_TEXT_VERSION" '{email: $e, ack: {text_version: $v, confirmed: true}}' >"$body"
           call POST "$CITT_V1/projects/$PROJECT_ID/owners" "$body"
           ;;
         *)

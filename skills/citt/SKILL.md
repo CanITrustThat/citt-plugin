@@ -229,10 +229,12 @@ Writes `<out>/sources/<platform>/<package>/` with `app.json`, `<package>.apk`, `
 ### citt owners
 
 ```
-citt owners (--project NAME | --project-id N) [--add EMAIL]... [--remove EMAIL]... [--json]
+citt owners (--project NAME | --project-id N) [--add EMAIL]... [--remove EMAIL]... [--confirm [--ack-version V]] [--json]
 ```
 
 Lists the owners, or adds and removes them in argument order, stopping at the first error. Every owner has full rights on the project.
+
+An `--add` needs `--confirm` (TASK-781a). Without it the command prints, for each address, `Before you invite EMAIL:` and the warning `EMAIL will see everything in this project: recordings, network records, findings and exports. You are responsible for inviting only people who are allowed to see it.`, exits 2 and sends no request. Show the warning to the user and run the command again with `--confirm` only after the user confirms it. With `--confirm` the command reads the current warning (`GET /invite-ack-text`) and sends its version with each invite; the service records who confirmed it, when, and the version. When the service has a newer warning, the command prints it and exits 2 with the command to run after reading it (`--confirm --ack-version V`). `--remove` needs no confirmation.
 
 ### citt usage
 

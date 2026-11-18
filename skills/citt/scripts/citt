@@ -136,6 +136,8 @@ main() {
       . "$CITT_LIB/cmd-prompt.sh"
       ;;
     owners)
+      # shellcheck source=lib/invite-ack.sh
+      . "$CITT_LIB/invite-ack.sh"
       # shellcheck source=lib/cmd-owners.sh
       . "$CITT_LIB/cmd-owners.sh"
       ;;

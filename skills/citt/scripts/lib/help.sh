@@ -214,9 +214,12 @@ EOF
 
 help_owners() {
   cat <<'EOF'
-citt owners (--project NAME | --project-id N) [--add EMAIL]... [--remove EMAIL]... [--json]
+citt owners (--project NAME | --project-id N) [--add EMAIL]... [--remove EMAIL]... [--confirm [--ack-version V]] [--json]
 
 Lists the owners, or adds and removes them in argument order.
+  --confirm      an --add first prints the warning about what the person will see and invites no one; with --confirm
+                 it invites and records the confirmation (who, when, the warning's version)
+  --ack-version  confirm a newer warning than the one this plugin prints, after reading it (the command prints it)
 EOF
 }
 

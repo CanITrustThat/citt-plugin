@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.44.0
+
+- `citt owners --add EMAIL` shows the inviter warning before it invites: without `--confirm` it prints `Before you invite EMAIL:` and `EMAIL will see everything in this project: recordings, network records, findings and exports. You are responsible for inviting only people who are allowed to see it.`, exits 2 and sends no request; with `--confirm` it reads the current warning (`GET /invite-ack-text`) and sends `ack: {text_version, confirmed: true}` with the invite, which the service records with the inviter, the time and the client (TASK-781a). A newer warning on the service is printed, and the invite waits for `--confirm --ack-version V`. `--remove` is unchanged.
+
 ## 2.43.0
 
 - `citt capture-start --mock-wifi` with `--location` shows the app real Wi-Fi networks near the location: the connected network is the nearest open public Wi-Fi venue within 100 m (OpenStreetMap, All The Places, LinkNYC or city open data), with the BSSIDs a public source recorded for it, else synthesized ones, and the scan list holds the other venues and the networks WiGLE has mapped within 200 m, residential ones included. No flag is added; the `--mock-wifi` help states the behaviour. Each `citt capture-watch` session line names the venue, its source and record id, the basis of the BSSID, the distance and the count of residential networks nearby (`; Wi-Fi Starbucks WiFi at Starbucks (OpenStreetMap n581276462, BSSID synthesized, 32 m from the location; 2 residential networks nearby)`), or, for a random connected network, the reason and what was used (`; Wi-Fi QwErTyUiOpAs (no public Wi-Fi venue or mapped network within 200 m of the location; random networks used)`), including a run without `--location`, venue Wi-Fi turned off on our side, a failed venue lookup and a phone whose radio app cannot show an open network yet. Sessions recorded before this change print as before (NP-1806).
