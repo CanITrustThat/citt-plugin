@@ -147,6 +147,7 @@ CS_EXPIRY_MARGIN=300
 CS_RATE=""
 CS_DRY=0
 CS_VERIFY=0
+CS_SCRIPTS=0 # NP-1952: --scripts also downloads each synced run's script outputs (citt script-pull)
 CS_EVERY=""
 CS_PROJECTS=""
 CS_RUNS=""
@@ -303,6 +304,7 @@ cmd_capture_sync() {
         ;;
       --dry-run) CS_DRY=1 ;;
       --verify) CS_VERIFY=1 ;;
+      --scripts) CS_SCRIPTS=1 ;;
       --watch | --install-timer | --uninstall-timer | --status | --print-cron)
         [ "$mode" = sync ] || usage_error "use one of --watch, --install-timer, --uninstall-timer, --status and --print-cron"
         mode="${1#--}"
@@ -605,6 +607,10 @@ _cs_dlist_get() {
     return 1
   fi
   mv -f "$_CITT_TMP/dl.$sid.new" "$_CITT_TMP/dl.$sid"
+  # NP-1952: the run's stored script outputs, their own entries of the list (never among the session files)
+  jq -r --arg rid "$rid" --arg rk "$rk" '.script_outputs[]? | select((.script_run_id | type) == "number")
+    | [$rid, (if (.session | type) == "string" then "\($rk)/\(.session)" else $rk end), (.script_run_id | tostring), .bundle, (.size | tostring), .sha256] | @tsv' "$RESP" \
+    >"$_CITT_TMP/so.$rid" 2>/dev/null || rm -f "$_CITT_TMP/so.$rid"
   printf '%s' "$exp" >"$_CITT_TMP/dlexp.$sid"
   now_s >"$_CITT_TMP/dlat.$sid"
   return 0
@@ -1627,6 +1633,66 @@ _cs_run_netfail() {
   _cs_neterr "run $1 $3" "$cls" "$RETRIED" "$NET_RC" "$NET_REASON" "" "$1"
 }
 
+# _cs_scripts: NP-1952. The script outputs of a run are their own archive, downloaded apart from the session files. Without
+# --scripts the sync lists those of the runs it touched (from their download lists) with size and sha256; with --scripts it
+# runs `citt script-pull RUN --dir DIR` for every run of the folder (of --run when given), which writes
+# DIR/<run key>/<session>/script-outputs/<name>@<version>/ into each session folder (D16, NP-1965: one script run per
+# session). A run with no script run, and a session with no output, is skipped.
+CS_SO_LISTED=0
+CS_SO_PULLED=0
+CS_SO_FAILED=0
+_cs_scripts() {
+  local f id rk srid b size sha out rc line
+  : >"$_CITT_TMP/so.lines"
+  if [ "$CS_SCRIPTS" != 1 ]; then
+    for f in "$_CITT_TMP"/so.*; do
+      if [ ! -f "$f" ] || [ "$f" = "$_CITT_TMP/so.lines" ]; then continue; fi
+      while IFS=$'\t' read -r id rk srid b size sha; do
+        [ -n "$id" ] || continue
+        CS_SO_LISTED=$((CS_SO_LISTED + 1))
+        printf 'Script output of %s: %s, %s bytes, sha256 %s; not downloaded; get it: citt script-pull %s --dir %s (or sync with --scripts)\n' \
+          "$rk" "$b" "$size" "$sha" "$id" "$(shq "$CS_DIR")" >>"$_CITT_TMP/so.lines"
+      done <"$f"
+    done
+    return 0
+  fi
+  # shellcheck source=lib/cmd-script.sh disable=SC1091
+  [ "$(type -t cmd_script_pull)" = function ] || . "$CITT_LIB/cmd-script.sh"
+  for id in $(jq -r --arg rids "$CS_RIDS" '($rids | split("\n") | map(select(. != ""))) as $only
+      | [(.runs // {} | keys[]), (.runs_pending // {} | keys[])] | unique[]
+      | select(($only | length) == 0 or (. as $i | $only | index($i)))' "$CS_ST"); do
+    out="$( (
+      CITT_JSON=0 RESP="$_CITT_TMP/so.resp" HDRS="$_CITT_TMP/so.hdrs" HTTP_OUT="" HTTP_RESUME=0 HTTP_EXTRA_ARGS="" \
+        HTTP_HEADERS="" HTTP_RETRY=auto HTTP_DEADLINE="" HTTP_MAX_TIME=""
+      : >"$HDRS"
+      cmd_script_pull "$id" --dir "$CS_DIR"
+    ) 2>"$_CITT_TMP/so.err")"
+    rc=$?
+    # NP-1965: one Wrote line per session pulled (exit 0, or 5 when another session of the run has no output)
+    while IFS= read -r line; do
+      case "$line" in
+        Wrote*)
+          CS_SO_PULLED=$((CS_SO_PULLED + 1))
+          printf 'Script output: %s\n' "$line" >>"$_CITT_TMP/so.lines"
+          ;;
+      esac
+    done <<<"$out"
+    case "$rc" in
+      0)
+        case "$out" in
+          *Wrote*) ;;
+        esac
+        ;;
+      4 | 5) ;; # no script run, or a session with no stored output (its status names why: citt script-status RUN)
+      *)
+        CS_SO_FAILED=$((CS_SO_FAILED + 1))
+        CS_SERVER_ERR=$((CS_SERVER_ERR + 1))
+        err "$CITT_CMD: the script output of run $id: $(tail -n1 "$_CITT_TMP/so.err" | sed 's/^citt script-pull: //')"
+        ;;
+    esac
+  done
+}
+
 # _cs_runs RESET: refreshes the run-level files of every run touched in this sync, of every run in runs_pending (a run
 # whose files a sync has not fetched in full, NP-1340), and of every local run whose run_etag moved in
 # GET /capture-runs?changed_after=.
@@ -1844,6 +1910,7 @@ _cs_sync() {
 
   [ "$CS_ABORT" != 0 ] || _cs_runs "$reset"
   _cs_save
+  [ "$CS_ABORT" != 0 ] || [ "$CS_DRY" = 1 ] || _cs_scripts
 
   # Summary, log line and exit code.
   local secs code=0 summary nfail
@@ -1872,8 +1939,9 @@ _cs_sync() {
     --argjson files "$CS_FILES" --argjson bytes "$CS_BYTES" --argjson secs "$secs" --argjson failed "$nfail" \
     --arg hw "$(jq -r '.high_water // empty' "$CS_ST")" --arg summary "$summary" --arg abort "$CS_ABORT_MSG" \
     --argjson errors "$errors" --argjson dropped "$dropped" --argjson verify "$CS_VERIFY" --argjson neterrs "$neterrs" \
-    --argjson pending "$pending" \
-    '{at: $at, exit: $code, new: $new, updated: $upd, files: $files, bytes: $bytes, seconds: $secs, failed: $failed,
+    --argjson pending "$pending" --argjson so_listed "$CS_SO_LISTED" --argjson so_pulled "$CS_SO_PULLED" \
+    --argjson so_failed "$CS_SO_FAILED" --argjson so_on "$CS_SCRIPTS" \
+    '{at: $at, script_outputs: {scripts: ($so_on == 1), listed: $so_listed, pulled: $so_pulled, failed: $so_failed}, exit: $code, new: $new, updated: $upd, files: $files, bytes: $bytes, seconds: $secs, failed: $failed,
       high_water: (if $hw == "" then null else $hw end), summary: $summary, error: (if $abort == "" then null else $abort end),
       verify: ($verify == 1), failures: $errors, kept_files: $dropped, network_errors: $neterrs, runs_pending: $pending}' >>"$CS_META/log.jsonl"
 
@@ -1881,6 +1949,7 @@ _cs_sync() {
     tail -n1 "$CS_META/log.jsonl" | jq -c --arg d "$CS_DIR" '{schema: "citt.plugin.capture-sync/1", dir: $d} + .'
   else
     printf '%s\n' "$summary"
+    [ ! -s "$_CITT_TMP/so.lines" ] || cat "$_CITT_TMP/so.lines"
     if [ "$CS_VERIFY" = 1 ]; then
       printf 'Verified %s, %s; %s downloaded again.\n' "$(_cs_n "$CS_VER_SESS" session sessions)" "$(_cs_n "$CS_VER_FILES" file files)" "$(_cs_n "$CS_FILES" file files)"
     fi

@@ -333,7 +333,7 @@ help_capture_sync() {
   cat <<'EOF'
 citt capture-sync [--dir DIR] [--project NAME|ID]... [--run KEY|ID]... [--session ID]... [--groups LIST]
                   [--exclude GLOB]... [--no-unpack] [--since DATE] [--parallel N] [--via api] [--limit-rate RATE]
-                  [--dry-run | --verify] [--json]
+                  [--dry-run | --verify] [--scripts] [--json]
 citt capture-sync [--dir DIR] [options] --watch [--every 15m]
 citt capture-sync [--dir DIR] [options] --install-timer [--every 15m]
 citt capture-sync [--dir DIR] (--status | --uninstall-timer | --print-cron [--every 15m])
@@ -362,6 +362,9 @@ session folder at the paths of a layout 1 session (network/session.har, data/fra
   --via api       download every file through the API instead of its presigned storage URL
   --limit-rate    bandwidth cap passed to curl, such as 2M
   --dry-run       list the sessions, files and bytes to download; write nothing
+  --scripts       also download each run's script outputs (as citt script-pull RUN does) into
+                  DIR/<run key>/script-outputs/<name>@<version>/; without it the sync lists them with
+                  their size and sha256 and leaves them out
   --verify        hash the local files of the synced sessions (of --run when given) again and download
                   any that differ (layout 2: the archive of a differing file); the cursor, filters and
                   recorded groups stay as they are. A plain sync hashes only files whose size or
@@ -742,4 +745,192 @@ The export data is raw and unmasked: developer_email, config IDs and secret-shap
 as found in the APK bytes. A disabled account, an unavailable service and an empty cohort each print
 the reason and a next action.
 EOF
+}
+
+# --- customer post-capture scripts (NP-1908, NP-1909) ------------------------------------------
+
+help_scripts() {
+  cat <<'HELP'
+citt scripts (--project NAME | --project-id N) [--name NAME] [--json]
+
+The script versions of a project: name, version, status, image state (none, building, ready,
+failed), whether the version rebuilt its image (build/ changed) or reused the previous one,
+when it was pushed, and which version is active. --name lists one script's versions.
+HELP
+}
+
+help_script_push() {
+  cat <<'HELP'
+citt script-push DIR (--project NAME | --project-id N) --name NAME [--activate] [--timeout SEC] [--json]
+
+Checks, packs and uploads the script folder DIR as the next version of NAME in the project.
+DIR holds citt-script.json (schema citt.script.v1), build/Dockerfile with the files it copies,
+and the entrypoint and other files anywhere outside build/. The script runs once per session of
+a capture run: its input folder /work/run-output holds that session's files and analysis/
+(read-only), its output folder is /work/script-outputs, and it reads CITT_RUN_OUTPUT,
+CITT_SCRIPT_OUTPUTS, CITT_RUN_KEY, CITT_SESSION and CITT_SCRIPT_RUN_ID. No secret is offered:
+reference data and decryption code ship in the bundle.
+Refused before the upload, with the path and the fix (exit 7): symbolic or hard links, FIFOs,
+sockets and devices, a folder that is itself a link, names with a backslash or a control
+character, names over 255 bytes or paths over 1024, names equal ignoring letter case, more than
+10,000 entries, 2 GiB unpacked or 256 MiB packed, a missing manifest or build/Dockerfile, a
+manifest with a secrets key.
+The archive is a tar.gz with owner 0:0, time 0 and modes 0644 or 0755, so the same folder gives
+the same archive. The answer names the version, whether the image is rebuilt or reused, the
+image state, the service's warnings, limits lowered to the ceiling, and the next command. A refusal by the service prints the reason code, the path and the fix (exit 7).
+NAME takes lowercase letters, digits, dot, underscore and hyphen, starts with a letter or digit,
+at most 64 characters.
+  --activate   also make this version the project's active version
+  --timeout    seconds to wait for the service's check of the bundle (default 540), then exit 12
+               with a re-run line that registers the uploaded bundle without uploading it again
+HELP
+}
+
+help_script_activate() {
+  cat <<'HELP'
+citt script-activate NAME@VERSION (--project NAME | --project-id N) [--pending] [--json]
+
+Makes NAME@VERSION the project's active script: it runs once after each capture run booked in
+the project from now on, against the run's files.
+  --pending   also re-point runs booked earlier whose script run has not started
+HELP
+}
+
+help_script_deactivate() {
+  cat <<'HELP'
+citt script-deactivate (--project NAME | --project-id N) [--json]
+
+Clears the project's active script: capture runs booked from now on run no script.
+HELP
+}
+
+help_script_build() {
+  cat <<'HELP'
+citt script-build NAME@VERSION (--project NAME | --project-id N) [--timeout SEC] [--no-wait] [--json]
+
+Builds the image of NAME@VERSION as a build-only job and follows it every 15 s: image_ready
+(exit 0) with the activation command, or the build failure with the build log written to
+./script-run-ID-build.log (exit 13). After --timeout (default 540) it exits 12 with
+re-run: citt script-status --script-run ID --watch.
+  --no-wait   print the job and return
+HELP
+}
+
+help_script_egress() {
+  cat <<'HELP'
+citt script-egress (--project NAME | --project-id N) [--json]
+
+The hosts an image build of the project can reach through our proxy: the list every project has
+and the additions for this project with their reason. The script run itself has no network.
+HELP
+}
+
+help_script_status() {
+  cat <<'HELP'
+citt script-status (RUN [--session S] | --script-run ID) [--watch] [--timeout SEC] [--json]
+
+A script runs once per session of a capture run: its input is that session's folder and its
+output one folder per session. citt script-status RUN prints the run's counts per status and one
+line per session (session folder, status, the plain sentence and the next command); --json
+prints the whole set. --session S (a session folder such as s0001_2026-10-11T2044Z) or
+--script-run ID (such as an image build) prints one script run: its state and reason, the queue
+position and estimated start in local time while queued, the output size and sha256 once stored,
+the evidence and the next command.
+Exit 0 while a script run is still open or when all succeeded, 13 for failed, timed_out or skipped
+on the script's side, 8 for failed on our side (service_error), 14 for cancelled.
+  --watch     poll every 15 s and print each change until every script run of the run (or the one
+              named) ends; after --timeout (default 540) exit 12 with the re-run line
+HELP
+}
+
+help_script_logs() {
+  cat <<'HELP'
+citt script-logs (RUN [--session S] | --script-run ID) --stream build|run [--out FILE]
+
+Writes the build or run log of one session's script run to FILE (default
+./<run_key>-<session>-<stream>.log, or ./script-run-ID-<stream>.log for an image build) and prints
+only the path: log text is the script's own output and is never printed to the terminal. A run of
+more than one session needs --session S (see: citt script-status RUN).
+HELP
+}
+
+help_script_pull() {
+  cat <<'HELP'
+citt script-pull (RUN [--session S] | --script-run ID) [--dir DIR] [--json]
+
+Downloads the output archive of each succeeded session's script run of RUN and unpacks it into
+DIR/<run_key>/<session>/script-outputs/<name>@<version>/ (DIR defaults to the current folder),
+beside the session folders citt capture-sync writes. --session S pulls one session, --script-run
+ID one script run. A session without output is listed with its status and next command; the exit
+is 0 when every session with a script run was pulled and 5 when one has no output. Each download
+resumes from its .part file, uses the storage link when its host is canitrustthat.com and the
+service otherwise, and is checked against the sha256 recorded when the output was stored (exit
+11 on a difference). Before anything is unpacked, every member must be a regular file or folder
+with a plain relative name (exit 11 otherwise); files are unpacked with your user as owner and
+without setuid bits. A second pull of the same output prints the folder and downloads nothing.
+A session whose run key or session name is not a plain folder name ([A-Za-z0-9._-], not . or ..)
+is listed and not pulled; the other sessions are still pulled and the exit is 11.
+HELP
+}
+
+help_script_run() {
+  cat <<'HELP'
+citt script-run RUN --script NAME@VERSION [--session S] [--project NAME | --project-id N] [--json]
+
+Runs NAME@VERSION once for each session of capture run RUN that has no script run yet (or for
+session S only), such as a run booked before the script was active. Each session's script run
+starts once that session is stored and analysed; the run's end is not awaited. A session that
+has one keeps it and nothing new is created. The project is the run's project unless given.
+HELP
+}
+
+help_campaign() {
+  cat <<'TXT'
+citt campaign draft --name NAME --project P (--apps A,B | --apps-file FILE) --phones LIST --goal TEXT
+                    --duration S [--split S] [--state ST] [--country CC] [--template FIELD=VALUE]...
+                    [--look-for KIND:VALUE]... [--rerun-states CSV] [--page-size N] [--platform android|ios]
+                    (--deadline TIME | --run-until-stopped) [--zone IANA] --out FILE
+citt campaign check FILE
+citt campaign create FILE [--start-now [--wait-first] [--timeout S]] [--idempotency-key K]
+citt campaign list [--project NAME | --project-id N] [--state STATE]
+citt campaign show ID [--app PACKAGE]
+citt campaign pause|resume ID
+citt campaign stop ID [--now]
+citt campaign edit ID [--deadline TIME [--zone IANA] | --run-until-stopped] [--phones LIST]
+                      [--rerun-states CSV] [--template FIELD=VALUE]... [--goal TEXT]
+citt campaign app restore|hold ID PACKAGE
+citt campaign review-run ID RUN
+citt campaign report ID [--wait] [--timeout S]
+citt campaign pull ID [--hits-only] [--out DIR] [--groups G]
+citt campaign watch ID [--timeout S]
+
+A campaign runs apps on lab phones with the capture template until a deadline: CITT plans which
+apps run on which phones, books the runs, reviews each run when it ends, books more runs where
+more data answers the goal and drops apps it judges done, with the reason of every step in the
+campaign report. Your computer can be off meanwhile.
+  draft       writes the spec FILE from the flags; exit 2 lists each missing required field.
+              --duration and --split take seconds, 30m or 2h; --state is the exit state;
+              --template sets any other run option (navigator=independent, help_wait_s=600);
+              --deadline is a time with its UTC offset; --zone defaults to this computer's zone
+  check       the spec as CITT reads it: refusals with reason, evidence and next action (exit 7),
+              the phones with their status, the latest start of a run and the device hours
+  create      creates the campaign (exit 3 not enabled for the account, 5 name taken, 7 refused);
+              --start-now starts it (or queues it behind your running campaigns); --wait-first
+              then waits for the first plan and the first run review and prints the report so far
+  show        state, next action, phones (idle ones too) and app counts; --app adds one app's
+              state, waves and runs with each decision and its reason
+  stop        exit 14; runs in flight end as they do, --now stops them too
+  edit        writes a new spec version; template edits apply to later bookings; FIELD= removes
+              a template field
+  app         restore a dropped, refused or held app, or hold one (no new runs of it)
+  review-run  reviews an ended run again
+  report      the campaign report in Markdown, live while the campaign runs; --wait waits until
+              it is final (exit 12 after --timeout, default 540 s, with the re-run line)
+  pull        writes campaign.json, decisions.jsonl and report.md into DIR (default
+              ./citt-campaigns/ID), then syncs the runs into DIR/runs with citt capture-sync
+              (--hits-only: the runs of apps with a hit); exit codes as capture-sync
+  watch       prints state changes and decisions with their reasons once each; exit 0 when the
+              campaign is done, 12 after --timeout (default 540 s) with the re-run line
+Every subcommand takes --json.
+TXT
 }

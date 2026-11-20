@@ -7,6 +7,12 @@
 TUS_CHUNK=33554432
 TUS_HDR="Tus-Resumable: 1.0.0"
 
+# Set before tus_upload: TUS_META_EXTRA, more Upload-Metadata pairs ("key base64,key base64", NP-1908 purpose and
+# project_id of a script bundle); TUS_SETTLE=0 skips the validation poll of GET /uploads/{id} (a script bundle is
+# validated at its registration, which answers 409 upload_not_validated meanwhile).
+TUS_META_EXTRA=""
+TUS_SETTLE=1
+
 # Set by tus_upload.
 UPLOAD_ID=""
 UPLOAD_URL=""
@@ -60,7 +66,7 @@ _tus_offset() {
 # _tus_create SIZE NAME: POST /uploads; sets UPLOAD_URL.
 _tus_create() {
   local loc meta
-  meta="filename $(printf '%s' "$2" | base64 | tr -d '\n')"
+  meta="filename $(printf '%s' "$2" | base64 | tr -d '\n')${TUS_META_EXTRA:+,$TUS_META_EXTRA}"
   HTTP_HEADERS="$TUS_HDR
 Upload-Length: $1
 Upload-Metadata: $meta"
@@ -179,7 +185,7 @@ tus_upload() {
       rm -f "$state"
       continue
     fi
-    if _tus_settle "$timeout"; then
+    if [ "$TUS_SETTLE" = 0 ] || _tus_settle "$timeout"; then
       rm -f "$state"
       return 0
     fi

@@ -104,8 +104,9 @@ tmpfile() {
   printf '%s' "$_CITT_TMP/$1"
 }
 
-# clean: drops terminal control characters (all but tab and newline) from app and server text.
-clean() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }
+# clean: drops terminal control characters (all but tab and newline) from app and server text, and the C1 controls
+# U+0080 to U+009F in their UTF-8 form (bytes C2 80 to C2 9F; U+009B is the 8-bit CSI, NP-1909 RT-20).
+clean() { LC_ALL=C tr -d '\000-\010\013-\037\177' | LC_ALL=C sed $'s/\xc2[\x80-\x9f]//g'; }
 
 err() { printf '%s\n' "$*" | clean >&2; }
 
@@ -553,6 +554,12 @@ CITT_FREE_SUBMIT_LINE="a Pay as you go account scans one Android app per submit 
 # gate names the atlas access and the next action; the plugin owns the line so no staff-only string,
 # env var or command reaches the user (feedback-no-staff-copy-for-customers, feedback-no-dead-ends).
 CITT_ATLAS_DISABLED_LINE="atlas is not enabled for this account; contact support to request access"
+# NP-1908 AC-07.7 (PO-14): the fixed lines of the customer script routes: 403 `scripts_not_in_plan`, 403
+# `scripts_disabled` (exit 3), 503 `scripts_paused` (exit 9), 404 `capture_scripts_off` (exit 10).
+CITT_SCRIPTS_NOT_IN_PLAN_LINE="scripts are not enabled for this account; contact support to request access"
+CITT_SCRIPTS_DISABLED_LINE="scripts are disabled for this account or project; contact support to have them enabled again"
+CITT_SCRIPTS_PAUSED_LINE="scripts are paused on our side"
+CITT_SCRIPTS_OFF_LINE="scripts are not offered on this server"
 
 # _plan_name ID: the plan's name on the pricing page.
 _plan_name() {
@@ -666,6 +673,10 @@ fail_http() {
         msg="$CITT_NOT_ENTITLED_LINE"
       elif [ "$error" = atlas_not_enabled ]; then
         msg="$CITT_ATLAS_DISABLED_LINE"
+      elif [ "$error" = scripts_not_in_plan ]; then
+        msg="$CITT_SCRIPTS_NOT_IN_PLAN_LINE"
+      elif [ "$error" = scripts_disabled ]; then
+        msg="$CITT_SCRIPTS_DISABLED_LINE"
       else
         msg="$(plain_message "$message")"
         msg="${msg:-this account cannot do this}"
@@ -676,6 +687,9 @@ fail_http() {
     404 | 405)
       if [ -z "$error" ]; then
         msg="$CITT_NO_ROUTE_LINE"
+        code=10
+      elif [ "$error" = capture_scripts_off ]; then
+        msg="$CITT_SCRIPTS_OFF_LINE"
         code=10
       else
         case "$E_KIND" in
@@ -739,6 +753,20 @@ fail_http() {
     429)
       if [ "$E_KIND" = feedback ]; then
         msg="the daily feedback limit is reached (20 per account in 24 hours); send it again later"
+      elif [ "$error" = upload_rate_limit ]; then
+        # NP-1920: the hourly upload cap of POST /uploads (script bundles too), not a usage limit of the plan
+        local _ra _pm
+        _ra="$(body_field '.retry_after')"
+        _pm="$(plain_message "$message")"
+        msg="upload limit reached: ${_pm:-too many uploads created this hour}"
+        case "$_ra" in
+          '' | *[!0-9]*) msg="$msg; try again later" ;;
+          *)
+            # NP-1948: 1 minute, N minutes
+            _pm=$(((_ra + 59) / 60))
+            if [ "$_pm" -eq 1 ]; then msg="$msg; try again in 1 minute"; else msg="$msg; try again in $_pm minutes"; fi
+            ;;
+        esac
       else
         msg="$(_limit_line)"
       fi
@@ -754,12 +782,18 @@ fail_http() {
       ;;
     5??)
       # NP-1340: nginx answers 503 service_restarting while the service restarts (a deploy).
+      code=8
       if [ "$CODE" = 503 ] && [ "$error" = service_restarting ]; then
         msg="the service is restarting; try again in a minute"
+      elif [ "$CODE" = 503 ] && [ "$error" = scripts_paused ]; then
+        # NP-1908 AC-07.7: the pause reason and time of the service's sentence, when it names no internal.
+        message="$(plain_message "$message")"
+        msg="$CITT_SCRIPTS_PAUSED_LINE${message:+: $message} Try again after that time."
+        [ -n "$message" ] || msg="$CITT_SCRIPTS_PAUSED_LINE; try again later"
+        code=9
       else
         msg="$CITT_SERVER_LINE"
       fi
-      code=8
       ;;
     *)
       msg="$CITT_SERVER_LINE"

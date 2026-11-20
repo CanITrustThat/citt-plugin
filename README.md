@@ -80,6 +80,7 @@ In Claude Code each command is also a slash command, `/citt:<command>`. In Codex
 | `native` | decompile an app's native binaries with Binary Ninja into its sources; `--wait` follows the run |
 | `tasks`, `task` | submissions with status, progress and timeline; `--running` for what runs now, `--watch` to follow |
 | `usage` | this month's counts and limits |
+| `campaign` | a campaign of capture runs that CITT books and reviews until a deadline: `draft`, `check`, `create`, `watch`, `report`, `pull` and the controls; switched on per account |
 
 `citt <command> --help` prints each command's options. `--json` prints one JSON document, also on error.
 

@@ -2,13 +2,14 @@
 # citt: the citt plugin. Projects of Android apps scanned by the CITT research
 # service: submit, status, apps, findings, scrutiny, Researcher verdicts, feedback, custom prompts, exports, owners, usage,
 # network capture runs (start, watch, stop), the capture sync of their sessions, lab mail addresses,
-# native code runs and tasks.
+# native code runs and tasks, customer post-capture scripts (push, activate, status, logs, pull), and campaigns of
+# capture runs (NP-2012).
 # shellcheck source-path=SCRIPTDIR
 set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search atlas-url atlas-cohort"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search atlas-url atlas-cohort scripts script-push script-activate script-deactivate script-build script-egress script-status script-logs script-pull script-run campaign"
 
 top_help() {
   cat <<'EOF'
@@ -52,9 +53,20 @@ Commands:
   atlas-search     search the atlas app corpus
   atlas-url        search the URLs/strings indexed in every app build (--csv)
   atlas-cohort     select a cohort by SDK/fact and export its full raw records (count, preview, export)
+  scripts          the script versions of a project with their image state and the active one
+  script-push      check, pack and upload a script folder as the next version of a script
+  script-activate  run a script version on each session of the capture runs of a project (--pending)
+  script-deactivate  stop running a script after the capture runs of a project
+  script-build     build the image of a script version before a capture run needs it
+  script-egress    the hosts an image build of a project can reach
+  script-status    the state of a run's script runs, one per session, with the reason and next step (--watch)
+  script-logs      write the build or run log of a session's script run to a file
+  script-pull      download and unpack the output of each session's script run of a run
+  script-run       run a script version on the sessions of a capture run that have none
+  campaign         campaigns of capture runs that CITT books and reviews until a deadline (draft, check, create, watch, report, pull)
 
 Run citt <command> --help for its options. Every command takes --json.
-The atlas commands need an atlas-enabled account.
+The atlas commands need an atlas-enabled account. The script commands need scripts enabled for the account.
 EOF
 }
 
@@ -191,6 +203,16 @@ main() {
       # shellcheck source=lib/cmd-atlas-cohort.sh
       . "$CITT_LIB/cmd-atlas-cohort.sh"
       ;;
+    scripts | script-*)
+      # shellcheck source=lib/tus.sh
+      . "$CITT_LIB/tus.sh"
+      # shellcheck source=lib/cmd-script.sh
+      . "$CITT_LIB/cmd-script.sh"
+      ;;
+    campaign)
+      # shellcheck source=lib/cmd-campaign.sh
+      . "$CITT_LIB/cmd-campaign.sh"
+      ;;
   esac
   # stdout passes through clean (app text can hold terminal control characters); auth prints the
   # sign-in link while it waits, so it writes directly.
@@ -214,6 +236,15 @@ main() {
     atlas-search) cmd_atlas_search "$@" | clean ;;
     atlas-url) cmd_atlas_url "$@" | clean ;;
     atlas-cohort) cmd_atlas_cohort "$@" | clean ;;
+    script-push) cmd_script_push "$@" | clean ;;
+    script-activate) cmd_script_activate "$@" | clean ;;
+    script-deactivate) cmd_script_deactivate "$@" | clean ;;
+    script-build) cmd_script_build "$@" | clean ;;
+    script-egress) cmd_script_egress "$@" | clean ;;
+    script-status) cmd_script_status "$@" | clean ;;
+    script-logs) cmd_script_logs "$@" | clean ;;
+    script-pull) cmd_script_pull "$@" | clean ;;
+    script-run) cmd_script_run "$@" | clean ;;
     *) "cmd_$cmd" "$@" | clean ;;
   esac
 }
