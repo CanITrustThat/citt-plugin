@@ -42,6 +42,11 @@ CM_REQUIRED='--name|the campaign'"'"'s name, unique in the project (1 to 80 char
 --deadline or --run-until-stopped|the time every run should end by, with its UTC offset (2026-11-20T10:00-06:00), or no deadline
 --zone|the IANA time zone of the deadline and the report, such as America/Chicago'
 
+# NP-2040: the session lengths (seconds) and the US exit states a run start takes, the research service's SPLIT_OPTIONS_S and
+# US_STATES (services/research/crates/api/src/capture_launch.rs; tests/np2040_campaign_draft_fields.bats checks they agree).
+CM_SPLITS='300 900 1800 3600 7200 10800 21600'
+CM_STATES='AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY'
+
 CM_DEADLINE_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?(Z|[+-][0-9]{2}:[0-9]{2})$'
 CM_WAIT_DEFAULT=540
 
@@ -108,19 +113,35 @@ _cm_id() {
   printf '%s' "$1"
 }
 
-# _cm_secs VALUE: seconds of N, Ns, Nm or Nh; empty when VALUE is none of them.
+# _cm_secs VALUE: seconds of N, Ns, Nm, Nh or Nd (NP-2040: the forms of capture-start); empty when VALUE is none of them.
 _cm_secs() {
   case "$1" in
-    *[!0-9smh]* | '' | [smh]*) return 0 ;;
+    *[!0-9smhd]* | '' | [smhd]*) return 0 ;;
   esac
-  local n="${1%[smh]}"
+  local n="${1%[smhd]}"
   is_uint "$n" || return 0
   case "$1" in
-    *m) printf '%s' $((n * 60)) ;;
-    *h) printf '%s' $((n * 3600)) ;;
-    *) printf '%s' "$n" ;;
+    *m) printf '%s' $((10#$n * 60)) ;;
+    *h) printf '%s' $((10#$n * 3600)) ;;
+    *d) printf '%s' $((10#$n * 86400)) ;;
+    *) printf '%s' "$((10#$n))" ;;
   esac
 }
+
+# _cm_short SECONDS: 5m, 1h (NP-2040: the session lengths in the words of capture-options).
+_cm_short() {
+  if [ $(($1 % 3600)) = 0 ]; then printf '%sh' $(($1 / 3600)); else printf '%sm' $(($1 / 60)); fi
+}
+
+# _cm_splits_words: the session lengths the server takes, as "5m, 15m, ...".
+_cm_splits_words() {
+  local s out=""
+  for s in $CM_SPLITS; do out="$out${out:+, }$(_cm_short "$s")"; done
+  printf '%s' "$out"
+}
+
+# _cm_states_words: the US exit state codes, as "AL, AK, ...".
+_cm_states_words() { printf '%s' "$CM_STATES" | sed 's/ /, /g'; }
 
 # _cm_value TEXT: TEXT as JSON when it parses as a JSON value, else as a JSON string.
 _cm_value() {
@@ -267,17 +288,19 @@ _cm_no_staff() {
 # --- draft ---------------------------------------------------------------------------------------------------------------
 
 _cm_draft() {
-  local name="" project="" goal="" apps="" apps_file="" platform="" page="" phones="" duration="" split="" state="" country=""
-  local deadline="" until=0 zone="" out="" rerun="" template='{}' look='[]' t k v
+  local name="" project="" project_id="" goal="" apps="" apps_file="" platform="" page="" phones="" duration="" split="" state=""
+  local country="" age="" tracking="" deadline="" until=0 zone="" out="" rerun="" template='{}' look='[]' t k v
   while [ $# -gt 0 ]; do
     ! _cm_common_flag "$1" || { shift; continue; }
     case "$1" in
-      --name | --project | --goal | --apps | --apps-file | --platform | --page-size | --phones | --duration | --split | --state | \
-        --country | --deadline | --zone | --out | --rerun-states | --template | --look-for)
+      --name | --project | --project-id | --goal | --apps | --apps-file | --platform | --page-size | --phones | --duration | \
+        --split | --state | --exit-state | --country | --age | --tracking | --deadline | --zone | --out | --rerun-states | \
+        --template | --look-for)
         need_value "$1" $#
         case "$1" in
           --name) name="$2" ;;
           --project) project="$2" ;;
+          --project-id) project_id="$2" ;;
           --goal) goal="$2" ;;
           --apps) apps="$2" ;;
           --apps-file) apps_file="$2" ;;
@@ -286,7 +309,9 @@ _cm_draft() {
           --phones) phones="$2" ;;
           --duration) duration="$2" ;;
           --split) split="$2" ;;
-          --state) state="$2" ;;
+          --state | --exit-state) state="$2" ;;
+          --age) age="$2" ;;
+          --tracking) tracking="$2" ;;
           --country) country="$2" ;;
           --deadline) deadline="$2" ;;
           --zone) zone="$2" ;;
@@ -315,19 +340,44 @@ _cm_draft() {
     shift
   done
   [ -n "$out" ] || usage_error "give --out FILE, the spec file to write"
+  # NP-2040: --project-id is --project, as in the other commands
+  if [ -n "$project_id" ]; then
+    [ -z "$project" ] || [ "$project" = "$project_id" ] || usage_error "give --project or --project-id, not both"
+    project="$project_id"
+  fi
+  [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
+  case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
+  if [ -n "$state" ]; then
+    state="$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')"
+    case " $CM_STATES " in
+      *" $state "*) ;;
+      *) usage_error "--exit-state takes a two-letter US state code ($(_cm_states_words)), got: $state" ;;
+    esac
+    case "$country" in
+      '' | US | us) ;;
+      *) usage_error "--exit-state applies to a US exit; leave it out for --country $(printf '%s' "$country" | tr '[:lower:]' '[:upper:]')" ;;
+    esac
+  fi
   [ -z "$deadline" ] || [ "$until" = 0 ] || usage_error "give --deadline or --run-until-stopped, not both"
   if [ -n "$deadline" ] && ! printf '%s' "$deadline" | grep -Eq "$CM_DEADLINE_RE"; then
     usage_error "--deadline needs a time with its UTC offset, such as 2026-11-20T10:00-06:00; got: $deadline"
   fi
   case "$platform" in '' | android | ios) ;; *) usage_error "--platform takes android or ios, got: $platform" ;; esac
   [ -z "$page" ] || is_uint "$page" || usage_error "--page-size takes a number of apps, got: $page"
+  local split_raw="$split"
   for t in duration split; do
     eval "v=\$$t"
     [ -n "$v" ] || continue
     k="$(_cm_secs "$v")"
-    [ -n "$k" ] || usage_error "--$t takes seconds or a duration such as 30m or 2h, got: $v"
+    [ -n "$k" ] || usage_error "--$t takes seconds or a duration such as 30m, 2h or 1d, got: $v"
     eval "$t=\$k"
   done
+  if [ -n "$split" ]; then
+    case " $CM_SPLITS " in
+      *" $split "*) ;;
+      *) usage_error "--split takes one of $(_cm_splits_words), got: $split_raw" ;;
+    esac
+  fi
   local list='[]'
   [ -z "$apps" ] || list="$(_cm_list_json "$apps")"
   if [ -n "$apps_file" ]; then
@@ -336,10 +386,23 @@ _cm_draft() {
       '$l + ($f | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "" and (startswith("#") | not))))')"
   fi
   [ -n "$zone" ] || zone="$(_cm_zone)"
+  # NP-2040 QA 4: a flag and --template that set the same template field; the template would replace the flag's value
+  if [ -n "$age" ] && jq -e 'has("age") or has("persona_age")' <<<"$template" >/dev/null; then
+    usage_error "give the age once: --age N, or --template age=N, or --template persona_age=N"
+  fi
+  local fv
+  for fv in "duration_s|--duration|$duration" "split_s|--split|$split" "exit_state|--exit-state|$state" \
+    "exit_country|--country|$country" "tracking|--tracking|$tracking"; do
+    IFS='|' read -r k t v <<<"$fv"
+    if [ -n "$v" ] && jq -e --arg k "$k" 'has($k)' <<<"$template" >/dev/null; then
+      usage_error "give $k once: $t or --template $k=VALUE"
+    fi
+  done
   local spec
   spec="$(jq -nc --arg name "$name" --arg project "$project" --arg goal "$goal" --argjson look "$look" --argjson list "$list" \
     --arg platform "$platform" --arg page "$page" --argjson phones "$(_cm_list_json "$phones" 1)" --arg dur "$duration" \
-    --arg split "$split" --arg state "$state" --arg country "$country" --argjson tpl "$template" \
+    --arg split "$split" --arg state "$state" --arg country "$country" --arg age "$age" --arg tracking "$tracking" \
+    --argjson tpl "$template" \
     --argjson rerun "$(_cm_list_json "$rerun" | jq -c 'map(ascii_upcase)')" --arg deadline "$deadline" --argjson until "$until" \
     --arg zone "$zone" '
     {}
@@ -353,12 +416,25 @@ _cm_draft() {
     + ((({} + (if $dur != "" then {duration_s: ($dur | tonumber)} else {} end)
           + (if $split != "" then {split_s: ($split | tonumber)} else {} end)
           + (if $state != "" then {exit_state: ($state | ascii_upcase)} else {} end)
-          + (if $country != "" then {exit_country: ($country | ascii_upcase)} else {} end)) + $tpl) as $t
+          + (if $country != "" then {exit_country: ($country | ascii_upcase)} else {} end)
+          + (if $age != "" then {persona_age: ($age | tonumber)} else {} end)
+          + (if $tracking != "" then {tracking: $tracking} else {} end)) + $tpl
+        | with_entries(if (.key == "exit_country" or .key == "exit_state") and (.value | type) == "string"
+            then .value |= ascii_upcase else . end)) as $t
         | if ($t | length) > 0 then {template: $t} else {} end)
     + (if ($rerun | length) > 0 then {rerun_states: $rerun} else {} end)
     + (if $deadline != "" then {deadline: $deadline} else {} end)
     + (if $until == 1 then {run_until_stopped: true} else {} end)
     + (if $zone != "" then {zone: $zone} else {} end)')" || die 1 "the spec could not be written"
+  # NP-2040 QA 2 and 3: the conflicts of the flags with --template that the server refuses
+  local tc
+  tc="$(jq -r '.template.exit_country // empty | tostring | ascii_upcase' <<<"$spec")"
+  if jq -e '.template.exit_state' <<<"$spec" >/dev/null && [ -n "$tc" ] && [ "$tc" != US ]; then
+    usage_error "exit_state applies to a US exit; leave it out for exit_country $tc"
+  fi
+  if [ "$(jq '[.template // {} | has("age", "persona_age") | select(.)] | length' <<<"$spec")" = 2 ]; then
+    usage_error "give the age once: --age N, or --template age=N, or --template persona_age=N"
+  fi
   (umask 077 && jq . <<<"$spec" >"$out") || die 1 "cannot write $out"
   local missing=""
   while IFS='|' read -r k v; do
@@ -373,14 +449,27 @@ _cm_draft() {
       --zone) [ -n "$zone" ] || missing="$missing  $k: $v"$'\n' ;;
     esac
   done <<<"$CM_REQUIRED"
+  # NP-2040 (F1): the session length and the exit, with the values the server takes; a template with a goal takes the server's
+  # one-session default
+  local allowed='{}'
+  if ! jq -e '.template.split_s // .template.goal' <<<"$spec" >/dev/null; then
+    missing="$missing  --split: the length of one session of a run, one of $(_cm_splits_words)"$'\n'
+    allowed="$(jq -c --arg s "$CM_SPLITS" '. + {"--split": ($s | split(" ") | map(tonumber))}' <<<"$allowed")"
+  fi
+  # a US exit is booked by state: exit_country US without exit_state is refused by the server (QA 1)
+  if ! jq -e '.template.exit_state // (.template.exit_country | select(. != null and (tostring | ascii_upcase) != "US"))' \
+    <<<"$spec" >/dev/null; then
+    missing="$missing  --exit-state or --country: the exit of the runs, a two-letter US state code ($(_cm_states_words)), or a two-letter country code outside the US (citt capture-options lists the countries)"$'\n'
+    allowed="$(jq -c --arg s "$CM_STATES" '. + {"--exit-state or --country": ($s | split(" "))}' <<<"$allowed")"
+  fi
   if [ -n "$missing" ]; then
     err "$CITT_CMD: wrote $out; missing required fields:"
     printf '%s' "$missing" | clean >&2
     err "$CITT_CMD: run citt campaign draft again with every field and --out $(shq "$out"), then check it with citt campaign check $(shq "$out")"
     if [ "$CITT_JSON" = 1 ]; then
-      jq -nc --arg m "missing required fields" --arg miss "$missing" --argjson spec "$spec" --arg out "$out" \
+      jq -nc --arg m "missing required fields" --arg miss "$missing" --argjson spec "$spec" --arg out "$out" --argjson allowed "$allowed" \
         '{error: "missing_fields", message: $m, missing: ($miss | split("\n") | map(select(. != "") | sub("^  "; "") | split(": ")[0])),
-          file: $out, spec: $spec}'
+          allowed: $allowed, file: $out, spec: $spec}'
     fi
     exit 2
   fi
@@ -432,6 +521,11 @@ _cm_check() {
         (if $e.device_hours_available != null then "Device hours available before the deadline: \($e.device_hours_available)"
           + (if $e.device_hours_basis then " (\($e.device_hours_basis | one))" else "" end) else empty end),
         (if $e.latest_start then "\($e.latest_start.text): \($e.latest_start.at)" else empty end),
+        (if $e.profile then $e.profile as $p
+          | def from: if . == "template" then "the template" elif . == "project_last_run" then "the project'"'"'s last run"
+              else "the default" end;
+          "Profile of the runs: age \($p.persona_age | one) (\($p.persona_age_from | from)), tracking \($p.tracking | one) (\($p.tracking_from | from))"
+         else empty end),
         (if $e.measured_call_costs.note then $e.measured_call_costs.note
           + ([("review", "plan", "question") as $k | $e.measured_call_costs[$k] | select(. != null and .mean_usd != null)
               | " \($k) mean $\(.mean_usd)"] | join(",")) else empty end)' "$RESP" | clean
@@ -629,6 +723,9 @@ _cm_show() {
           | if . == "" then "none" else . end),
       "Apps: " + ([.apps.counts | to_entries[] | "\(.value) \(.key)"] | join(", ") | if . == "" then "none" else . end),
       (if ($rep.measured.runs_by_state // {}) | length > 0 then "Runs: " + ([$rep.measured.runs_by_state | to_entries[] | "\(.value) \(.key)"] | join(", ")) else empty end),
+      ($rep.measured // {} | if .device_hours_booked != null then "Device hours: \(.device_hours_booked) booked"
+        + (if .device_hours_booked_now != null then ", \(.device_hours_booked_now) booked now (pending and running)" else "" end)
+        + ", \(.device_hours_used // 0) used" else empty end),
       (if .next_action then "Next: \(.next_action)" else empty end)' "$doc" | clean
   [ -n "$app" ] || return 0
   printf '\n'

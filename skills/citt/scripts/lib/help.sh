@@ -878,7 +878,8 @@ help_script_run() {
 citt script-run RUN --script NAME@VERSION [--session S] [--project NAME | --project-id N] [--json]
 
 Runs NAME@VERSION once for each session of capture run RUN that has no script run yet (or for
-session S only), such as a run booked before the script was active. Each session's script run
+session S only: its folder name, such as s0002_2026-11-20T1724Z, or its key, such as s0002),
+such as a run booked before the script was active. Each session's script run
 starts once that session is stored and analysed; the run's end is not awaited. A session that
 has one keeps it and nothing new is created. The project is the run's project unless given.
 HELP
@@ -886,9 +887,10 @@ HELP
 
 help_campaign() {
   cat <<'TXT'
-citt campaign draft --name NAME --project P (--apps A,B | --apps-file FILE) --phones LIST --goal TEXT
-                    --duration S [--split S] [--state ST] [--country CC] [--template FIELD=VALUE]...
-                    [--look-for KIND:VALUE]... [--rerun-states CSV] [--page-size N] [--platform android|ios]
+citt campaign draft --name NAME (--project P | --project-id N) (--apps A,B | --apps-file FILE) --phones LIST
+                    --goal TEXT --duration S --split S (--exit-state ST | --country CC) [--age N]
+                    [--tracking allow|refuse] [--template FIELD=VALUE]... [--look-for KIND:VALUE]...
+                    [--rerun-states CSV] [--page-size N] [--platform android|ios]
                     (--deadline TIME | --run-until-stopped) [--zone IANA] --out FILE
 citt campaign check FILE
 citt campaign create FILE [--start-now [--wait-first] [--timeout S]] [--idempotency-key K]
@@ -909,11 +911,15 @@ apps run on which phones, books the runs, reviews each run when it ends, books m
 more data answers the goal and drops apps it judges done, with the reason of every step in the
 campaign report. Your computer can be off meanwhile.
   draft       writes the spec FILE from the flags; exit 2 lists each missing required field.
-              --duration and --split take seconds, 30m or 2h; --state is the exit state;
+              --duration and --split take seconds, 30m, 2h or 1d; --split is one of 5m, 15m,
+              30m, 1h, 2h, 3h, 6h; --exit-state (or --state) is the US exit state, which a US exit
+              needs; --country is an exit country outside the US; --age (5 to 99)
+              and --tracking set the profile of the runs (default: the project's last run);
               --template sets any other run option (navigator=independent, help_wait_s=600);
               --deadline is a time with its UTC offset; --zone defaults to this computer's zone
   check       the spec as CITT reads it: refusals with reason, evidence and next action (exit 7),
-              the phones with their status, the latest start of a run and the device hours
+              the phones with their status, the latest start of a run, the device hours and
+              the profile (age, tracking) the runs take
   create      creates the campaign (exit 3 not enabled for the account, 5 name taken, 7 refused);
               --start-now starts it (or queues it behind your running campaigns); --wait-first
               then waits for the first plan and the first run review and prints the report so far
