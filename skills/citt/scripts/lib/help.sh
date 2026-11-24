@@ -747,6 +747,40 @@ the reason and a next action.
 EOF
 }
 
+help_code_search() {
+  cat <<'EOF'
+citt code-search QUERY [--regex | --literal] [--case-sensitive] [--corpus C]... [--package PKG]...
+                 [--build-id ID]... [--count] [--limit N] [--cursor C] [--all] [--out FILE.csv]
+                 [--time-limit-ms MS] [--json]
+
+Search the decompiled app corpus for a string or a pattern across every indexed build. The query is a
+literal substring by default, or a regular expression with --regex; --case-sensitive makes the match
+case-sensitive (insensitive by default). Each hit is one line of one build, with the package, corpus,
+path:line and the matched snippet.
+  --corpus C     restrict to a corpus (repeatable): java resource manifest string asset native js hermes dart
+  --package PKG  restrict to exact package names (repeatable); the cheap way to narrow a broad query
+  --build-id ID  restrict to builds by 64-hex id (repeatable)
+  --count        how many first: an upper-bound estimate of candidate files, no rows fetched
+  --limit N      rows per page, 1 to 200 (a larger N is capped at 200)
+  --cursor C     fetch the page at cursor C (a page prints a next: line carrying the next cursor)
+  --all          follow every page to the end, up to a 50-page cap, then a narrow-the-query line
+  --out FILE.csv write every fetched row to FILE.csv (header package,corpus,path,line,text); implies --all
+  --time-limit-ms MS  the per-search time budget on the engine
+A count is an upper bound from the trigram prefilter; the true match count is lower. A result cut short
+by the time budget is stated as a floor, never as zero. A no-match, an unavailable service, a timed-out
+estimate, a stale cursor and an unwritable --out file each print the reason and a next action. In the
+CSV, a snippet that begins with =, +, @ or - is prefixed with a single quote (a spreadsheet
+formula-injection guard), so such a cell reads with a leading '. --all stops at a 50-page cap, named in
+the output; with --json the last envelope's page.next_cursor is the resume point (re-run with --cursor).
+Every page with more results prints the --cursor line of the next page, the first page too. A search
+with no match says whether every candidate file was scanned or the search stopped at the time limit
+(then: narrow with --package or --corpus, or raise --time-limit-ms, up to 30000). Too many searches in
+a short time are refused with the wait in seconds and a next action (exit 6); --all and --out wait
+that time and continue with the same page, up to 3 waits per page.
+--json prints the backend body. Needs an atlas-enabled account.
+EOF
+}
+
 # --- customer post-capture scripts (NP-1908, NP-1909) ------------------------------------------
 
 help_scripts() {
