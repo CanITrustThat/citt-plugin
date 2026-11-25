@@ -14,7 +14,11 @@
 # TASK-1506 fix round 1 (the answers of TASK-1505 fix round 1): an app scan answers calls with no row, one cursor and
 # counts that grow until the call that ends it, so a walk follows the cursor and stops only after 3 calls in a row
 # with the same cursor and the same counts, at --max-rows or at --max-empty-pages; in the footer next: is a command
-# and hint: a sentence. citt code-file (lib/cmd-code-file.sh) uses code_call of this file. Design:
+# and hint: a sentence. TASK-1508 (acceptance run of 2026-11-25): the case mode in the matches line, a walk that
+# stops after 3 requests with no row and no change and then prints no continuing command, the number of files to read
+# in the hint of a time stop, "none found so far" for a lower bound of 0, --append for the continuation file, the
+# sentence and hint of no match under filters, and the time limit that applied in the complete: line.
+# citt code-file (lib/cmd-code-file.sh) uses code_call of this file. Design:
 # /data2/atlas-reports/deep-atlas-code-search-plan.md (sections 2, 3, 5 Phase 1).
 # shellcheck shell=bash disable=SC2034,SC2016,SC2015,SC2153
 
@@ -257,6 +261,14 @@ _code_fresh() {
 CODE_CORPORA="java resource manifest string asset native js hermes dart"
 # The largest --time-limit-ms: of a service with the contract fields, and of one without (TASK-1462).
 CODE_TLM_MAX=120000
+# The time limit of a request without --time-limit-ms (src_search/shape.rs DEFAULT_BUDGET_MS of the backend).
+CODE_TLM_DEFAULT=30000
+# Requests in a row with no row, the same cursor and the same numbers after which a walk stops (TASK-1508: 3).
+CODE_STALL_REQUESTS=3
+# The same for an --apps walk (QA round 1): one more than the 3 calls with no moved position after which the service
+# ends an app scan itself with an answer that has no cursor (src_search/walk.rs STALL_CALLS), so the service decides
+# the end of a scan and this stop is for a service that repeats one answer without end.
+CODE_STALL_REQUESTS_APPS=4
 CODE_TLM_MAX_LEGACY=30000
 # The row window of a service without the contract fields (its CITT_SRC_WINDOW_SIZE).
 CODE_LEGACY_WINDOW=1000
@@ -331,10 +343,11 @@ _code_norm() {
 
 # _code_cmd VARIANT TIME_LIMIT CURSOR: the full command of a next step: the query and the flags of this call in a
 # fixed order, with TIME_LIMIT and CURSOR (each left out when empty). VARIANT same: this call; search: without
-# --count; cont: a walk continued at CURSOR, whose --out file is FILE.next.csv so the rows written stay; noctx
+# --count; cont: a walk continued at CURSOR, whose --out file is FILE.next.csv so the rows written stay (with
+# --append when the file of this call is the continuation file already); noctx
 # and nopath: this call without --context, or without --path; plain: without both (TASK-1506).
 _code_cmd() {
-  local variant="$1" tlm="$2" cursor="$3" w="$CS_FILTERS" o
+  local variant="$1" tlm="$2" cursor="$3" w="$CS_FILTERS" o a
   [ "$variant" = nopath ] || [ "$variant" = plain ] || w="$w$CS_PATHS_W"
   [ "$variant" = noctx ] || [ "$variant" = plain ] || [ "$CS_CTX" = 0 ] || w="$w --context $CS_CTX"
   [ "$CS_APPS" != 1 ] || w="$w --apps"
@@ -343,10 +356,18 @@ _code_cmd() {
   [ "$CS_ALL" != 1 ] || w="$w --all"
   if [ -n "$CS_OUT" ]; then
     o="$CS_OUT"
-    if [ "$variant" = cont ]; then
-      case "$o" in *.csv) o="${o%.csv}.next.csv" ;; *) o="$o.next" ;; esac
+    a="$CS_APPEND"
+    # TASK-1508: the rows of every continuation are in one file. The first continuation of FILE.csv writes
+    # FILE.next.csv; a continuation of a file with that ending, or of a file opened with --append, adds to it.
+    if [ "$variant" = cont ] && [ "$a" != 1 ]; then
+      case "$o" in
+        *.next.csv | *.next) a=1 ;;
+        *.csv) o="${o%.csv}.next.csv" ;;
+        *) o="$o.next" ;;
+      esac
     fi
     w="$w --out $(shq "$o")"
+    [ "$a" != 1 ] || w="$w --append"
   fi
   [ -z "$CS_MAXROWS_ARG" ] || w="$w --max-rows $CS_MAXROWS_ARG"
   [ -z "$CS_MAXEMPTY_ARG" ] || w="$w --max-empty-pages $CS_MAXEMPTY_ARG"
@@ -359,10 +380,69 @@ _code_cmd() {
   esac
 }
 
+# _code_limit_secs: the time limit that applied to the last request, in seconds ("30", "1.5"): --time-limit-ms, else
+# the default of the service, and the largest limit of the service when its sentence names a lower one. Nothing for a
+# service without the contract fields and when the service states that a longer limit does not change the stop (the
+# limit that applied is then not in the answer).
+_code_limit_secs() {
+  local ms="${CS_TLM:-$CODE_TLM_DEFAULT}"
+  [ "${N_CONTRACT:-}" = true ] && [ "${N_NORAISE:-}" != true ] || return 0
+  if is_uint "${N_TMAX:-}" && [ "$N_TMAX" -ge 1000 ] && [ "$N_TMAX" -lt "$ms" ]; then ms="$N_TMAX"; fi
+  if [ $((ms % 1000)) = 0 ]; then
+    printf '%s' $((ms / 1000))
+  else
+    printf '%s.%s' $((ms / 1000)) $(((ms % 1000) / 100))
+  fi
+}
+
+# _code_cost_hint: the hint of a time stop when the answer has the number of files the query has to read
+# (TASK-1508), or nothing. Under --count the scan cost line is above the hint.
+_code_cost_hint() {
+  local how="a longer or rarer string reads fewer (--count shows the number)"
+  is_uint "$N_CF" && [ "$N_CF" -gt 0 ] || return 0
+  [ "$CS_COUNT" != 1 ] || how="a longer or rarer string reads fewer"
+  printf 'this query has to read about %s files; %s, or limit it with --package or --corpus' "$N_CF" "$how"
+}
+
+# _code_join LAST ITEM...: the items joined by ", " and the last one by LAST.
+_code_join() {
+  local last="$1" out="" n i=0 e
+  shift
+  n=$#
+  for e in "$@"; do
+    i=$((i + 1))
+    if [ "$i" = 1 ]; then
+      out="$e"
+    elif [ "$i" = "$n" ]; then
+      out="$out$last$e"
+    else
+      out="$out, $e"
+    fi
+  done
+  printf '%s' "$out"
+}
+
+# _code_empty_hint: the hint of a complete search with no match: only what applies to this command (TASK-1508).
+_code_empty_hint() {
+  set -- "check the spelling"
+  [ "$CS_REGEX" = 1 ] || set -- "$@" "try --regex for a pattern"
+  # shellcheck disable=SC2086
+  [ -z "$CS_DROPS" ] || set -- "$@" "drop $(_code_join " or " $CS_DROPS)"
+  _code_join ", or " "$@"
+}
+
 # _code_reason_text REASON: the plain words of an incomplete answer.
 _code_reason_text() {
+  local secs
   case "$1" in
-    time_limit) printf 'the search stopped at the time limit before every candidate file was scanned' ;;
+    time_limit)
+      secs="$(_code_limit_secs)"
+      if [ -n "$secs" ]; then
+        printf 'the search stopped at its %s s time limit before every candidate file was scanned' "$secs"
+      else
+        printf 'the search stopped at the time limit before every candidate file was scanned'
+      fi
+      ;;
     row_cap)
       if [ "${N_APPBOUND:-}" = true ]; then
         printf 'the app list is at its largest size and more apps have a match; the matches of its rows are lower bounds'
@@ -402,10 +482,10 @@ _code_service_hint() {
 # V_COMPLETE (yes or no), V_REASON, V_NEXT, V_HINT and V_EXIT. V_NEXT is a command to run as printed, or empty;
 # V_HINT is a sentence (TASK-1506 fix round 1: before, V_NEXT was a command or a sentence and V_OR a second choice).
 # Exit 0: a complete answer, a cursor that continues it, or a walk stopped at a bound of the plugin. Exit 12:
-# incomplete with no cursor, or a walk that ended before its end with no bound. A refused page keeps the exit code
-# of its refusal.
+# incomplete with no cursor, or a walk that ended before its end with no bound (no command continues a walk whose
+# last 3 requests changed nothing). A refused page keeps the exit code of its refusal.
 _code_verdict() {
-  local tmax="$CODE_TLM_MAX"
+  local tmax="$CODE_TLM_MAX" cost=""
   [ "$N_CONTRACT" = true ] || tmax="$CODE_TLM_MAX_LEGACY"
   V_COMPLETE=yes
   V_REASON=""
@@ -427,14 +507,14 @@ _code_verdict() {
     V_EXIT=12
     return 0
   fi
-  # 3 calls in a row with no row, the cursor that was sent and the counts of the call before: the rows fetched are
-  # kept and the command continues at the cursor.
+  # 3 requests in a row with no row, the same cursor and the same numbers: the rows fetched are kept. TASK-1508: no
+  # command continues at that cursor (run as printed on prod it took 216 s and ended with the same line); the hint
+  # has the number of files the query has to read when the answer has it.
   if [ "$CS_STOP" = stalled ]; then
     V_COMPLETE=no
     V_REASON="$(_code_reason_text "$N_REASON")"
-    V_NEXT="$(_code_cmd cont "$CS_TLM" "$N_CURSOR")"
-    V_HINT="the last 3 requests brought no row and no change of the counts; $CODE_NARROW_TIME"
-    [ "$N_REASON" != time_limit ] || V_HINT="$CODE_NARROW_TIME"
+    [ "$N_REASON" != time_limit ] || cost="$(_code_cost_hint)"
+    V_HINT="the last $CS_STALL_N requests brought no row and no change of the numbers; ${cost:-$CODE_NARROW_TIME}"
     V_EXIT=12
     return 0
   fi
@@ -462,7 +542,7 @@ _code_verdict() {
   fi
   if [ "$N_COMPLETE" = true ]; then
     if [ "$N_MV" = 0 ]; then
-      V_HINT="check the spelling, try --regex for a pattern, or drop --package, --corpus or --build-id"
+      V_HINT="$(_code_empty_hint)"
     elif [ "$CS_COUNT" = 1 ]; then
       V_NEXT="$(_code_cmd search "" "")"
     fi
@@ -473,7 +553,9 @@ _code_verdict() {
     time_limit)
       # The service searches with at most its own limit, which may be below CODE_TLM_MAX: the value of the
       # command is the maximum of the service's sentence when it has one.
-      V_HINT="$CODE_NARROW_TIME"
+      # TASK-1508: with the number of files to read in the answer, the hint names it.
+      V_HINT="$(_code_cost_hint)"
+      V_HINT="${V_HINT:-$CODE_NARROW_TIME}"
       if [ "$N_NOPROG" = true ]; then
         # No progress (TASK-1505): the sentence of the service; a longer time limit only when it names one.
         V_HINT="$(_code_service_hint)"
@@ -501,7 +583,12 @@ _code_no_match() {
   if is_uint "$N_ELAPSED" && [ "$N_ELAPSED" -ge 500 ]; then secs=" in $(((N_ELAPSED + 500) / 1000)) s"; fi
   # TASK-1506 fix round 1: an answer with no row that a cursor continues, and a call that made no progress: the
   # rows are not at their end, so "no more matches" is not printed.
-  if [ "$N_COMPLETE" != true ] && [ -n "$N_CURSOR" ] && [ "$CS_APPS" = 1 ]; then
+  if [ "$N_COMPLETE" != true ] && [ -n "$N_CURSOR" ] && [ -z "$V_NEXT" ] && [ "$CS_APPS" = 1 ]; then
+    # TASK-1508: a walk that stopped with no continuing command.
+    printf 'no app row yet for "%s": the scan stopped before it ended, so no app is listed\n' "$CS_QUERY"
+  elif [ "$N_COMPLETE" != true ] && [ -n "$N_CURSOR" ] && [ -z "$V_NEXT" ]; then
+    printf 'no matching line for "%s" in the files read so far\n' "$CS_QUERY"
+  elif [ "$N_COMPLETE" != true ] && [ -n "$N_CURSOR" ] && [ "$CS_APPS" = 1 ]; then
     printf 'no app row yet for "%s": the rows are listed when the scan has ended, and the next: command continues the scan\n' "$CS_QUERY"
   elif [ "$N_COMPLETE" != true ] && [ -n "$N_CURSOR" ]; then
     printf 'no matching line for "%s" in the files read by this request; the next: command continues the search\n' "$CS_QUERY"
@@ -510,6 +597,9 @@ _code_no_match() {
     printf 'no further match for "%s" in the files read by this request: %s\n' "$CS_QUERY" "$V_REASON"
   elif is_uint "$N_TOTAL" && [ "$N_TOTAL" -gt 0 ]; then
     printf 'no more matches for "%s": all %s matches collected for this search were shown\n' "$CS_QUERY" "$N_TOTAL"
+  elif [ "$N_COMPLETE" = true ] && [ "$CS_FILTERED" = 1 ]; then
+    # TASK-1508: under --package, --build-id, --corpus or --path the search covered a part of the apps and files.
+    printf 'no code matches "%s" in the apps and paths of this search\n' "$CS_QUERY"
   elif [ "$N_COMPLETE" = true ]; then
     printf 'no code matches "%s" in any indexed app (every candidate file was scanned)\n' "$CS_QUERY"
   elif [ "$N_REASON" = shard_failed ]; then
@@ -519,20 +609,46 @@ _code_no_match() {
   fi
 }
 
-# _code_count_line LABEL VALUE EXACT: "matches: N (exact)" or "matches: at least N".
+# _code_count_line LABEL VALUE EXACT [NOTE]: "matches: N (exact)", "matches: at least N", or for a lower bound of 0
+# "matches: none found so far" (TASK-1508: "0 (exact)" is absent, a lower bound of 0 is not reached yet). NOTE is
+# added in brackets: the case mode of a --case-sensitive search.
 _code_count_line() {
+  local note="${4:-}"
   if [ "$3" = true ]; then
-    printf '%s: %s (exact)\n' "$1" "$2"
+    printf '%s: %s (exact%s)\n' "$1" "$2" "${note:+, $note}"
+  elif [ "$2" = 0 ]; then
+    printf '%s: none found so far%s\n' "$1" "${note:+ ($note)}"
   else
-    printf '%s: at least %s\n' "$1" "$2"
+    printf '%s: at least %s%s\n' "$1" "$2" "${note:+ ($note)}"
   fi
+}
+
+# _code_append_guard: QA round 1 finding 2. A walk with --append whose next: command has no --cursor (a stop that no
+# cursor continues: the time limit, a part of the index that did not answer, results that changed) would read the
+# search from its first page and add the rows of the file again. No command is printed then; the hint says what the
+# file has and how to search from the first page.
+_code_append_guard() {
+  local how="" t
+  [ "$CS_APPEND" = 1 ] && [ -n "$V_NEXT" ] || return 0
+  case "$V_NEXT" in *" --cursor "*) return 0 ;; esac
+  case "$V_NEXT" in
+    *" --time-limit-ms "*)
+      t="${V_NEXT##* --time-limit-ms }"
+      t="${t%% *}"
+      ! is_uint "$t" || [ "$t" = "$CS_TLM" ] || how=" (with --time-limit-ms $t for a longer time limit)"
+      ;;
+  esac
+  V_NEXT=""
+  V_HINT="$CS_OUT has the rows of this search up to this stop, and the same command from the first page would add them again; to search from the first page, give --out a new file without --append$how"
 }
 
 # _code_footer [SHOWN_LINE]: the labelled lines of every answer: matches, apps, the shown or written line, complete,
 # the scan cost of a count, next (a command) and hint (a sentence). Needs _code_verdict.
 _code_footer() {
+  local note=""
+  [ "$CS_CASE" != 1 ] || note="case-sensitive"
   if [ -n "$N_MV" ]; then
-    _code_count_line matches "$N_MV" "$N_ME"
+    _code_count_line matches "$N_MV" "$N_ME" "$note"
   else
     printf 'matches: unknown (this server counts candidate files only)\n'
   fi
@@ -567,14 +683,32 @@ _code_json_incomplete() {
 
 # --- pages -------------------------------------------------------------------------------------
 
+# _code_progress PAGES: the progress line of a walk on stderr, with the matches found so far (TASK-1508), so that a
+# scan with no row yet shows its movement.
+_code_progress() {
+  local m=""
+  if is_uint "$N_MV"; then
+    if [ "$N_ME" = true ]; then
+      m=", $N_MV matches found"
+    elif [ "$N_MV" = 0 ]; then
+      m=", no match found so far"
+    else
+      m=", at least $N_MV matches found"
+    fi
+  fi
+  err "$CITT_CMD: page $1 fetched, $CS_ROWS rows so far$m"
+}
+
 # _code_pager BASEBODY STARTCURSOR: POSTs the search with the base body plus the cursor of each page: one page, or
 # under CS_WALK every page until the answer has no cursor (TASK-1502: no page cap), the rows reach CS_MAXROWS, or
-# CS_MAXEMPTY pages in a row had no row (CS_STOP=empty_pages), or 3 calls in a row changed nothing (stalled).
+# CS_MAXEMPTY pages in a row had no row (CS_STOP=empty_pages), or 3 requests in a row changed nothing (stalled).
 # The rows are appended to $CODE_DATA (one JSON row per line), the last answer is kept in $CODE_LAST and read into
 # the N_* variables. A page after the first that is refused ends the walk with the rows fetched (CS_STOP=refused,
 # CS_STOP_RC its exit code, CS_STOP_CURSOR its cursor); the refusal lines are on stderr.
 _code_pager() {
   local basebody="$1" cursor="$2" start="$2" pages=0 body n rc restarts=0 sent empty=0 same=0 key prev="" d
+  CS_STALL_N="$CODE_STALL_REQUESTS"
+  [ "$CS_APPS" != 1 ] || CS_STALL_N="$CODE_STALL_REQUESTS_APPS"
   CODE_DATA="$(tmpfile code_data)"
   CODE_LAST="$(tmpfile code_last)"
   CS_ROWS=0
@@ -649,19 +783,24 @@ _code_pager() {
     cursor="$N_CURSOR"
     # TASK-1506 fix round 1: a page with no row and a cursor. The backend of TASK-1505 ends a search that makes no
     # progress itself (no cursor), and an app scan answers calls with no row, one cursor and counts that grow until
-    # the call that ends it. So the walk follows the cursor; it is stalled only after 3 calls in a row that answer
-    # the cursor they were sent with the counts of the call before, and it is bounded by --max-empty-pages.
-    key="$cursor|$N_MV|$N_AV"
+    # the call that ends it. So the walk follows the cursor; it is stalled only after 3 requests in a row with no row,
+    # one cursor and the same counts, and it is bounded by --max-empty-pages.
+    # QA round 1: the number of files read is in the key. A call of an app scan that moved forward and found no new
+    # app answers the cursor and the counts of the call before (appscan.rs), and the files read are summed over the
+    # steps of every call (walk.rs Summary::apply), so they grow with each step the service got an answer for.
+    key="$cursor|$N_MV|$N_AV|$N_CF"
     if [ "$n" = 0 ] && [ "$N_COMPLETE" != true ] && [ -n "$cursor" ]; then
       empty=$((empty + 1))
       if [ "$cursor" = "$sent" ] && [ "$key" = "$prev" ]; then same=$((same + 1)); else same=0; fi
-      if [ "$CS_WALK" = 1 ] && [ "$same" -ge 3 ]; then
-        err "$CITT_CMD: page $pages fetched, $CS_ROWS rows so far"
+      # TASK-1508: `same` counts the repeats of an answer, so CODE_STALL_REQUESTS requests are 1 answer and its
+      # repeats (before: 3 repeats, 4 requests).
+      if [ "$CS_WALK" = 1 ] && [ "$same" -ge $((CS_STALL_N - 1)) ]; then
+        _code_progress "$pages"
         CS_STOP=stalled
         break
       fi
       if [ "$CS_WALK" = 1 ] && [ "$CS_MAXEMPTY" -gt 0 ] && [ "$empty" -ge "$CS_MAXEMPTY" ]; then
-        err "$CITT_CMD: page $pages fetched, $CS_ROWS rows so far"
+        _code_progress "$pages"
         CS_STOP=empty_pages
         break
       fi
@@ -671,7 +810,7 @@ _code_pager() {
     fi
     prev="$key"
     [ "$CS_WALK" = 1 ] || break
-    err "$CITT_CMD: page $pages fetched, $CS_ROWS rows so far"
+    _code_progress "$pages"
     [ -n "$cursor" ] || break
     if [ "$CS_MAXROWS" -gt 0 ] && [ "$CS_ROWS" -ge "$CS_MAXROWS" ]; then
       CS_STOP=max_rows
@@ -707,27 +846,48 @@ _code_pager() {
   fi
 }
 
-# _code_write_csv FILE: the fetched rows as CSV, each cell RFC-4180 escaped through JQ_CSV: package,corpus,path,
+# _code_csv_header: the header line of the CSV of this search. _code_csv_rows: its rows. _code_write_csv FILE: the
+# header and the fetched rows as CSV, each cell RFC-4180 escaped through JQ_CSV: package,corpus,path,
 # line,text per line row (with --context also context_before,context_after), or
 # package,matches,builds,corpus,path,line,text,builds_exact per app row (--apps; builds_exact is true, false, or
 # empty for a service row with no such field: false marks a builds number that is a lower bound). Returns non-zero
 # when the file cannot be written; its stderr is suppressed so no script path or line number reaches the user.
+_code_csv_header() {
+  if [ "$CS_APPS" = 1 ]; then
+    printf 'package,matches,builds,corpus,path,line,text,builds_exact'
+  elif [ "$CS_CTX" != 0 ]; then
+    printf 'package,corpus,path,line,text,context_before,context_after'
+  else
+    printf 'package,corpus,path,line,text'
+  fi
+}
+
 _code_write_csv() {
+  # TASK-1508: --append adds the rows to a file that has its header line; a missing or empty file is written whole.
+  if [ "$CS_APPEND" = 1 ] && [ -s "$1" ]; then
+    _code_csv_rows >>"$1" 2>/dev/null
+    return
+  fi
+  {
+    _code_csv_header
+    printf '\n'
+    _code_csv_rows
+  } >"$1" 2>/dev/null
+}
+
+_code_csv_rows() {
   {
     if [ "$CS_APPS" = 1 ]; then
-      printf 'package,matches,builds,corpus,path,line,text,builds_exact\n'
       jq -r "$JQ_CSV"'[.package, .matches, .builds, .sample.corpus, .sample.path, .sample.line, .sample.text,
                       (if (.builds_exact | type) == "boolean" then (.builds_exact | tostring) else "" end)] | csvrow' "$CODE_DATA"
     elif [ "$CS_CTX" != 0 ]; then
       # TASK-1506: the lines of each context cell are joined by a newline inside the quoted cell.
-      printf 'package,corpus,path,line,text,context_before,context_after\n'
       jq -r "$JQ_CSV"'[.package, .corpus, .path, .line, .text, ((.context_before // []) | join("\n")),
                       ((.context_after // []) | join("\n"))] | csvrow' "$CODE_DATA"
     else
-      printf 'package,corpus,path,line,text\n'
       jq -r "$JQ_CSV"'[.package, .corpus, .path, .line, .text] | csvrow' "$CODE_DATA"
     fi
-  } >"$1" 2>/dev/null
+  }
 }
 
 # _code_out_fail FILE: the plain reason and next action for a CSV that cannot be written (no internal
@@ -776,7 +936,7 @@ _code_value() {
 
 cmd_code_search() {
   local query="" have_query=0 mode="" count=0 case_sensitive=false limit="" time_limit=""
-  local cursor="" all=0 out="" apps=0 max_rows="" max_empty="" opts=1 c context=""
+  local cursor="" all=0 out="" apps=0 max_rows="" max_empty="" opts=1 c context="" append=0
   local corpora=() packages=() buildids=() paths=()
   CS_FILTERS=""
   CS_LIMIT=""
@@ -852,6 +1012,7 @@ cmd_code_search() {
         out="$2"
         shift
         ;;
+      --append) append=1 ;;
       --max-rows)
         _code_value "$1" $# "${2:-}"
         max_rows="$2"
@@ -893,6 +1054,7 @@ cmd_code_search() {
   fi
   [ "$count" = 0 ] || [ "$apps" = 0 ] || usage_error "--count prints the app count; use --apps or --count, not both"
   [ -z "$out" ] || [ "$CITT_JSON" = 0 ] || usage_error "use --out FILE.csv or --json, not both"
+  [ "$append" = 0 ] || [ -n "$out" ] || usage_error "--append adds the rows to the file of --out; give --out FILE.csv"
   if [ -n "$context" ] && [ "$context" != 0 ]; then
     [ "$count" = 0 ] && [ "$apps" = 0 ] || usage_error "--context prints the lines around each matching line; drop --apps or --count (or drop --context)"
     CS_CTX="$context"
@@ -944,12 +1106,24 @@ cmd_code_search() {
   CS_MAXROWS="$max_rows"
   CS_MAXEMPTY="$max_empty"
   CS_HAS_CORPUS=0
+  CS_APPEND="$append"
+  CS_REGEX=0
+  CS_CASE=0
+  CS_FILTERED=0
+  CS_DROPS=""
   CS_STOP=""
   CS_ROWS=0
   CS_WALK=0
   [ "$all" = 0 ] && [ -z "$out" ] || CS_WALK=1
-  [ "$mode" != regex ] || CS_FILTERS="$CS_FILTERS --regex"
-  [ "$case_sensitive" != true ] || CS_FILTERS="$CS_FILTERS --case-sensitive"
+  if [ "$mode" = regex ]; then
+    CS_FILTERS="$CS_FILTERS --regex"
+    CS_REGEX=1
+  fi
+  if [ "$case_sensitive" = true ]; then
+    CS_FILTERS="$CS_FILTERS --case-sensitive"
+    CS_CASE=1
+    CS_DROPS="$CS_DROPS --case-sensitive"
+  fi
   for c in ${corpora[@]+"${corpora[@]}"}; do
     CS_FILTERS="$CS_FILTERS --corpus $c"
     CS_HAS_CORPUS=1
@@ -957,6 +1131,12 @@ cmd_code_search() {
   for c in ${packages[@]+"${packages[@]}"}; do CS_FILTERS="$CS_FILTERS --package $(shq "$c")"; done
   for c in ${buildids[@]+"${buildids[@]}"}; do CS_FILTERS="$CS_FILTERS --build-id $(shq "$c")"; done
   for c in ${paths[@]+"${paths[@]}"}; do CS_PATHS_W="$CS_PATHS_W --path $(shq "$c")"; done
+  # TASK-1508: the flags of this command that a search with no match can drop, in the order of the hint.
+  [ "${#packages[@]}" = 0 ] || CS_DROPS="$CS_DROPS --package"
+  [ "$CS_HAS_CORPUS" = 0 ] || CS_DROPS="$CS_DROPS --corpus"
+  [ "${#buildids[@]}" = 0 ] || CS_DROPS="$CS_DROPS --build-id"
+  [ "${#paths[@]}" = 0 ] || CS_DROPS="$CS_DROPS --path"
+  case "$CS_DROPS" in *--package* | *--corpus* | *--build-id* | *--path*) CS_FILTERED=1 ;; esac
   [ -n "$mode" ] || mode=literal
 
   # --out: refuse a target that cannot be written before any request, so a bad path costs no request and leaks no
@@ -967,6 +1147,12 @@ cmd_code_search() {
     else
       c="$(dirname -- "$out")"
       [ -d "$c" ] && [ -w "$c" ] || _code_out_fail "$out"
+    fi
+    # TASK-1508: --append adds rows under the header line of the file, so the file has the columns of this search.
+    if [ "$append" = 1 ] && [ -s "$out" ] && [ "$(head -n 1 -- "$out" 2>/dev/null)" != "$(_code_csv_header)" ]; then
+      err "$CITT_CMD: cannot add rows to $out: its header line is not the one of this search"
+      err "next: give --out another file, or run the command without --append to replace the file"
+      exit 1
     fi
   fi
   need_auth
@@ -1014,6 +1200,7 @@ cmd_code_search() {
   CODE_ALL="$CS_WALK"
   _code_pager "$body" "$cursor"
   _code_verdict
+  _code_append_guard
 
   if [ "$CITT_JSON" = 1 ]; then
     # One page: the service body unchanged. --all: the body of the last page with the rows of every page.
@@ -1027,14 +1214,20 @@ cmd_code_search() {
     return "$V_EXIT"
   fi
 
-  local shown="" unit=rows
+  local shown="" unit=rows verb=written
   [ "$apps" != 1 ] || unit=apps
+  [ "$append" != 1 ] || verb=added
   if [ -n "$out" ]; then
     _code_write_csv "$out" || _code_out_fail "$out"
-    if [ "$apps" = 1 ]; then
-      shown="$CS_ROWS apps written to $out"
+    # TASK-1508: a walk with no row says so; "0 apps written" for a file with a header line only is not printed.
+    if [ "$CS_ROWS" = 0 ] && [ "$append" = 1 ]; then
+      shown="no row added to $out"
+    elif [ "$CS_ROWS" = 0 ]; then
+      shown="no row written to $out (the file has its header line only)"
+    elif [ "$apps" = 1 ]; then
+      shown="$CS_ROWS apps $verb to $out"
     else
-      shown="$CS_ROWS rows across $(jq -s '[.[].package] | unique | length' "$CODE_DATA") apps written to $out"
+      shown="$CS_ROWS rows across $(jq -s '[.[].package] | unique | length' "$CODE_DATA") apps $verb to $out"
     fi
   elif [ "$CS_ROWS" != 0 ]; then
     _code_table

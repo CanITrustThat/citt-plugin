@@ -763,13 +763,14 @@ help_code_search() {
   cat <<'EOF'
 citt code-search QUERY [--regex | --literal] [--case-sensitive] [--corpus C]... [--package PKG]...
                  [--build-id ID]... [--path GLOB]... [--context N] [--apps] [--count] [--limit N]
-                 [--cursor C] [--all] [--out FILE.csv] [--max-rows N] [--max-empty-pages N]
+                 [--cursor C] [--all] [--out FILE.csv] [--append] [--max-rows N] [--max-empty-pages N]
                  [--time-limit-ms MS] [--json] [-- QUERY]
 
 Search the decompiled code of every indexed app build for a string or a pattern. The query is a literal
-substring by default, or a regular expression with --regex; --case-sensitive makes the match
-case-sensitive (insensitive by default). A row is one line of one build: package, corpus, path:line and
-the matched line.
+substring by default, or a regular expression with --regex. The match ignores case by default, so
+caramelads also finds s4eCaramelAds; search that way first. --case-sensitive narrows a search that
+stops at the time limit, and then misses the other casings of the string. A row is one line of one
+build: package, corpus, path:line and the matched line.
   --corpus C     restrict to a corpus (repeatable): java resource manifest string asset native js hermes dart
   --package PKG  restrict to exact package names (repeatable); the way to read one app
   --build-id ID  restrict to builds by 64-hex id (repeatable)
@@ -784,36 +785,56 @@ the matched line.
                  number of candidate files read, never a result count
   --limit N      rows per page, 1 to 200 (a larger N is capped at 200)
   --cursor C     fetch the page at cursor C
-  --all          follow every page to the end, or to --max-rows; a progress line per page on stderr
+  --all          follow every page to the end, or to --max-rows, with no --cursor value copied by
+                 hand; a progress line per page on stderr (rows so far, matches found so far)
   --out FILE.csv write every fetched row to FILE.csv (header package,corpus,path,line,text; with --apps
                  package,matches,builds,corpus,path,line,text,builds_exact, where builds_exact false
                  marks a builds number that is a lower bound); implies --all
+  --append       with --out: add the rows to the end of the file, under its header line (a missing or
+                 empty file gets the header line first; a file with another header is refused);
+                 without --append, --out replaces an existing file, also when the search has no row
   --max-rows N   stop --all or --out after the page with which the rows reach N (default 10000;
                  0 is no bound: the walk ends with the last page)
   --max-empty-pages N  stop --all or --out after N pages in a row with no row (default 50; 0 is no
                  bound); the next: command continues at that page
-  --time-limit-ms MS  the time limit of the search: 1000 or more, up to 120000; the service may apply a lower limit
+  --time-limit-ms MS  the time limit of each request: 30000 without the flag (a page, --count, and each
+                 request of --all and --out), 1000 or more, up to 120000; the service may apply a lower limit
+                 (its largest is 90000 by default). The limit is a ceiling: a search ends as soon as its files
+                 are read. A search with neither --package nor --build-id is read in steps of at
+                 most 30000 each.
   --             ends the options: a QUERY that starts with - goes after it
 Every answer ends with labelled lines:
-  matches: N (exact)   or   matches: at least N        apps: the same two forms
+  matches: N (exact)   or   matches: at least N   or   matches: none found so far
+  apps: the same three forms
   shown: N rows        (or the written line of --out)
   complete: yes        or   complete: no (<reason>)
   next: <the full command to run next>        hint: <a sentence, for example how to narrow>
+With --case-sensitive the matches line names the mode: matches: N (exact, case-sensitive).
+0 (exact) means absent; none found so far means the search stopped before a match was reached.
 A line that starts with next: is a command: run it as printed. A line that starts with hint: is
 advice in words. complete: yes means every candidate file was scanned; a count is exact only then. complete: no names
-the reason: more rows follow on the next page, the time limit, the row cap of one search, a part of
-the index that did not answer, a stop at --max-rows, or a refused page. A page with more rows prints
-the command of the next page (--cursor included) and exits 0; --all and --out follow the pages to
-complete: yes. A page can have no row and a next: command: the search read files with no match, or
-the list of --apps is not ready (its rows are listed by the call that ends the scan, and the calls
-before it print the numbers found so far as at least N). --all and --out follow such pages; they stop
-after 3 requests in a row with no row, the same cursor and the same numbers (exit 12, next: continues
-at that page), after --max-empty-pages pages in a row with no row, or at --max-rows (both exit 0).
+the reason: more rows follow on the next page, the time limit (with its seconds), the row cap of one
+search, a part of the index that did not answer, a stop at --max-rows, or a refused page. A page with
+more rows prints the command of the next page (--cursor included) and exits 0; --all and --out follow
+the pages to complete: yes. A page can have no row and a next: command: the search read files with no
+match, or the list of --apps is not ready (its rows are listed by the call that ends the scan, and the
+calls before it print the numbers found so far as at least N). --all and --out follow such pages; they
+stop after 3 requests in a row with no row, the same cursor and the same numbers (4 with --apps;
+exit 12, no next: line: a repeat would end the same way), after --max-empty-pages pages in a row with no row, or at
+--max-rows (both exit 0, with the next: command of that page).
 An incomplete answer that no cursor continues exits 12: its next: line, when it has one, is the same
 search again or the search with the longest time limit of the service, and its hint: line says how to
-narrow (--package, --corpus, a more specific query). A search with no row prints its
-cause above the footer, never a bare zero. Rows fetched before a refused page are printed or written,
-and the next: command continues at that page (for --out, into FILE.next.csv).
+narrow. After a stop at the time limit the hint: line has the number of files the query has to read
+when the service sent it: a longer or rarer string reads fewer, and --package or --corpus limit it
+(--count prints the number). A search
+with no row prints its cause above the footer, never a bare zero; under --package, --build-id,
+--corpus or --path the cause is no match in the apps and paths of this search, and the hint names
+the flags of the command that can be dropped.
+Rows fetched before a refused page are printed or written, and the next: command continues at that
+page. The next: command of --out FILE.csv writes FILE.next.csv, and the next: command of that one
+adds to FILE.next.csv with --append, so the rows of every continuation are in one file. After a stop
+of an --append run that no cursor continues there is no next: line: the file has the rows, and the
+hint: line says how to search from the first page into a new file.
 When the results change while --all or --out reads the pages (another search of the same query ran),
 the walk starts again from the first page once; after a second change the rows of the current walk
 are printed or written with complete: no and exit 12. A single --cursor page of changed results
@@ -845,8 +866,11 @@ and the other builds with the file are listed.
   --             ends the options: a PATH that starts with - goes after it
 The output ends with labelled lines:
   file: PATH (build ID), lines A-B of T
-  complete: yes        or   complete: no (<reason>)
+  complete: yes   or   complete: yes (the requested lines)   or   complete: no (<reason>)
   next: <the command of the range that follows>
+complete: is about the lines asked for. complete: yes: the whole file was printed. complete: yes (the
+requested lines): --lines A-B was printed in full and is a part of the file (T is the number of lines
+of the file); when lines follow, next: is the command of the next range of the same length.
 complete: no means the answer was cut at the size limit of one request; run the next: command for
 the lines that follow (exit 0). A cut with no following range exits 12. An unknown file prints the
 reason and the search that lists the paths of the app (exit 4). A server without the file read prints

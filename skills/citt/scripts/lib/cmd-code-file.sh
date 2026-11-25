@@ -2,7 +2,8 @@
 # lib/cmd-code-file.sh: citt code-file (TASK-1506, epic TASK-1500 "Phase 2 contract"). The lines of one file of an
 # indexed app build: POST /api/research/v1/atlas/code/file (TASK-1505) with {package, path, build_id?, corpus?,
 # lines?: [first, last]}. The answer is printed as numbered lines and a footer of labelled lines (file, complete,
-# next); a truncated answer prints the command of the range that follows. The refusals are those of code_call in
+# next); a truncated answer prints the command of the range that follows, and so does a --lines range that ends
+# before the last line of the file (TASK-1508: complete: yes (the requested lines)). The refusals are those of code_call in
 # lib/cmd-atlas-code.sh (the code_search entitlement, the limits on searches at once, a service without the file
 # read), and the 404 code_file_not_found, which prints its reason and the way to list the paths of an app.
 # shellcheck shell=bash disable=SC2034,SC2016,SC2015,SC2153
@@ -149,7 +150,7 @@ cmd_code_file() {
   need_auth
 
   local body text requests=0 rfirst="$first" rbuild="$build" rcorpus="$corpus" shown_first="" shown_n=0 others=""
-  local refused=0 refused_from="" cut_seen=0
+  local refused=0 refused_from="" cut_seen=0 fresh="" note="" span
   body="$(tmpfile code_file_body)"
   text="$(tmpfile code_file_text)"
   while :; do
@@ -176,6 +177,7 @@ cmd_code_file() {
     _cf_read "$RESP"
     [ -n "$shown_first" ] || shown_first="$F_FIRST"
     if [ "$requests" = 1 ]; then
+      fresh="$(jq -r '(.refs_refreshed_at | strings) // empty' "$RESP")"
       others="$(jq -r '(.other_builds // []) | if length == 0 then empty else
         "other builds with this file: \(length) (the latest was read; --build-id ID reads another): "
         + ([.[0:5][] | (.build_id // "-") + (if .version_code != null then " (version \(.version_code))" else "" end)] | join(", "))
@@ -232,11 +234,22 @@ cmd_code_file() {
     if [ "$rc" != 0 ]; then err "$CITT_CMD: the answer is incomplete: $reason"; fi
     return "$rc"
   fi
+  # TASK-1508: --lines A-B that is a part of the file. complete: yes is then about the requested lines, and the
+  # command of the following range (the same number of lines, cut at the last line of the file) is the next: line.
+  end=$((shown_first + shown_n - 1))
+  if [ "$complete" = yes ] && [ -n "$lines" ] && [ "$shown_n" -gt 0 ] && is_uint "$F_TOTAL"; then
+    if [ "$shown_first" -gt 1 ] || [ "$end" -lt "$F_TOTAL" ]; then note=" (the requested lines)"; fi
+    if [ "$end" -lt "$F_TOTAL" ]; then
+      span=$((end - shown_first + 1))
+      to=$((end + span))
+      [ "$to" -le "$F_TOTAL" ] || to="$F_TOTAL"
+      next="$(_cf_cmd $((end + 1)) "$to" "$F_BUILD" "$F_CORPUS")"
+    fi
+  fi
   if [ -n "$out" ]; then
     cat "$text" >"$out" 2>/dev/null || _code_out_fail "$out"
     printf '%s lines written to %s\n' "$shown_n" "$out"
   fi
-  end=$((shown_first + shown_n - 1))
   if [ "$shown_n" = 0 ]; then
     printf 'file: %s (build %s), no lines in this range; the file has %s lines\n' "${F_PATH:-$CF_PATH}" "${F_BUILD:--}" "${F_TOTAL:-0}"
   else
@@ -244,10 +257,12 @@ cmd_code_file() {
   fi
   [ -z "$others" ] || printf '%s\n' "$others"
   if [ "$complete" = yes ]; then
-    printf 'complete: yes\n'
+    printf 'complete: yes%s\n' "$note"
   else
     printf 'complete: no (%s)\n' "$reason"
   fi
   [ -z "$next" ] || printf 'next: %s\n' "$next"
+  # The data time of the answer, when the service sends one (TASK-1508; the file answer of today has none).
+  _code_fresh "$fresh"
   return "$rc"
 }
