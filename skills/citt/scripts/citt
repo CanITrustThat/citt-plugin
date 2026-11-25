@@ -9,7 +9,7 @@ set -uo pipefail
 
 CITT_LIB="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
 
-COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search atlas-url atlas-cohort code-search scripts script-push script-activate script-deactivate script-build script-egress script-status script-logs script-pull script-run campaign"
+COMMANDS="auth whoami logout submit projects status apps app findings scrutinize verdict feedback prompt export-results export-sources owners usage captures search capture-sync capture-options capture-start capture-watch capture-stop help-requests help-answer mailbox inbox native tasks task atlas-app atlas-sdk atlas-cluster atlas-search atlas-url atlas-cohort code-search code-file scripts script-push script-activate script-deactivate script-build script-egress script-status script-logs script-pull script-run campaign"
 
 top_help() {
   cat <<'EOF'
@@ -53,7 +53,8 @@ Commands:
   atlas-search     search the atlas app corpus
   atlas-url        search the URLs/strings indexed in every app build (--csv)
   atlas-cohort     select a cohort by SDK/fact and export its full raw records (count, preview, export)
-  code-search      search the decompiled app corpus by literal or regex (--count for an estimate first)
+  code-search      search the decompiled code of the indexed apps (--apps for the app list, --count for the count)
+  code-file        print a file of an indexed app, or a range of its lines (PACKAGE and PATH of a code-search row)
   scripts          the script versions of a project with their image state and the active one
   script-push      check, pack and upload a script folder as the next version of a script
   script-activate  run a script version on each session of the capture runs of a project (--pending)
@@ -67,7 +68,7 @@ Commands:
   campaign         campaigns of capture runs that CITT books and reviews until a deadline (draft, check, create, watch, report, pull)
 
 Run citt <command> --help for its options. Every command takes --json.
-The atlas commands need an atlas-enabled account. The script commands need scripts enabled for the account.
+The atlas commands need an atlas-enabled account; code-search and code-file need the code_search entitlement. The script commands need scripts enabled for the account.
 EOF
 }
 
@@ -208,6 +209,12 @@ main() {
       # shellcheck source=lib/cmd-atlas-code.sh
       . "$CITT_LIB/cmd-atlas-code.sh"
       ;;
+    code-file)
+      # shellcheck source=lib/cmd-atlas-code.sh
+      . "$CITT_LIB/cmd-atlas-code.sh"
+      # shellcheck source=lib/cmd-code-file.sh
+      . "$CITT_LIB/cmd-code-file.sh"
+      ;;
     scripts | script-*)
       # shellcheck source=lib/tus.sh
       . "$CITT_LIB/tus.sh"
@@ -242,6 +249,7 @@ main() {
     atlas-url) cmd_atlas_url "$@" | clean ;;
     atlas-cohort) cmd_atlas_cohort "$@" | clean ;;
     code-search) cmd_code_search "$@" | clean ;;
+    code-file) cmd_code_file "$@" | clean ;;
     script-push) cmd_script_push "$@" | clean ;;
     script-activate) cmd_script_activate "$@" | clean ;;
     script-deactivate) cmd_script_deactivate "$@" | clean ;;

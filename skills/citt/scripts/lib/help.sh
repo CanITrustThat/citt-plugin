@@ -762,34 +762,96 @@ EOF
 help_code_search() {
   cat <<'EOF'
 citt code-search QUERY [--regex | --literal] [--case-sensitive] [--corpus C]... [--package PKG]...
-                 [--build-id ID]... [--count] [--limit N] [--cursor C] [--all] [--out FILE.csv]
-                 [--time-limit-ms MS] [--json]
+                 [--build-id ID]... [--path GLOB]... [--context N] [--apps] [--count] [--limit N]
+                 [--cursor C] [--all] [--out FILE.csv] [--max-rows N] [--max-empty-pages N]
+                 [--time-limit-ms MS] [--json] [-- QUERY]
 
-Search the decompiled app corpus for a string or a pattern across every indexed build. The query is a
-literal substring by default, or a regular expression with --regex; --case-sensitive makes the match
-case-sensitive (insensitive by default). Each hit is one line of one build, with the package, corpus,
-path:line and the matched snippet.
+Search the decompiled code of every indexed app build for a string or a pattern. The query is a literal
+substring by default, or a regular expression with --regex; --case-sensitive makes the match
+case-sensitive (insensitive by default). A row is one line of one build: package, corpus, path:line and
+the matched line.
   --corpus C     restrict to a corpus (repeatable): java resource manifest string asset native js hermes dart
-  --package PKG  restrict to exact package names (repeatable); the cheap way to narrow a broad query
+  --package PKG  restrict to exact package names (repeatable); the way to read one app
   --build-id ID  restrict to builds by 64-hex id (repeatable)
-  --count        how many first: an upper-bound estimate of candidate files, no rows fetched
+  --path GLOB    restrict to files whose path matches GLOB (repeatable, at most 16; a file is kept when
+                 one matches): * is any run of characters except /, ** any run, ? one character except /;
+                 a GLOB with no / is compared with the file name, one with a / with the whole path
+  --context N    also print N lines before and after each matching line (0 to 10), in grep style:
+                 PACKAGE  PATH:LINE: TEXT for the match, PACKAGE  PATH-LINE- TEXT for a context line,
+                 -- between two matches; with --out the CSV gets context_before and context_after
+  --apps         one row per app: PACKAGE, MATCHES, SAMPLE PATH:LINE, SNIPPET (which apps contain QUERY)
+  --count        the verified number of matching lines and apps, no rows; its scan cost line is the
+                 number of candidate files read, never a result count
   --limit N      rows per page, 1 to 200 (a larger N is capped at 200)
-  --cursor C     fetch the page at cursor C (a page prints a next: line carrying the next cursor)
-  --all          follow every page to the end, up to a 50-page cap, then a narrow-the-query line
-  --out FILE.csv write every fetched row to FILE.csv (header package,corpus,path,line,text); implies --all
-  --time-limit-ms MS  the per-search time budget on the engine
-A count is an upper bound from the trigram prefilter; the true match count is lower. A result cut short
-by the time budget is stated as a floor, never as zero. A no-match, an unavailable service, a timed-out
-estimate, a stale cursor and an unwritable --out file each print the reason and a next action. In the
-CSV, a snippet that begins with =, +, @ or - is prefixed with a single quote (a spreadsheet
-formula-injection guard), so such a cell reads with a leading '. --all stops at a 50-page cap, named in
-the output; with --json the last envelope's page.next_cursor is the resume point (re-run with --cursor).
-Every page with more results prints the --cursor line of the next page, the first page too. A search
-with no match says whether every candidate file was scanned or the search stopped at the time limit
-(then: narrow with --package or --corpus, or raise --time-limit-ms, up to 30000). Too many searches in
-a short time are refused with the wait in seconds and a next action (exit 6); --all and --out wait
-that time and continue with the same page, up to 3 waits per page.
---json prints the backend body. Needs an atlas-enabled account.
+  --cursor C     fetch the page at cursor C
+  --all          follow every page to the end, or to --max-rows; a progress line per page on stderr
+  --out FILE.csv write every fetched row to FILE.csv (header package,corpus,path,line,text; with --apps
+                 package,matches,builds,corpus,path,line,text,builds_exact, where builds_exact false
+                 marks a builds number that is a lower bound); implies --all
+  --max-rows N   stop --all or --out after the page with which the rows reach N (default 10000;
+                 0 is no bound: the walk ends with the last page)
+  --max-empty-pages N  stop --all or --out after N pages in a row with no row (default 50; 0 is no
+                 bound); the next: command continues at that page
+  --time-limit-ms MS  the time limit of the search: 1000 or more, up to 120000; the service may apply a lower limit
+  --             ends the options: a QUERY that starts with - goes after it
+Every answer ends with labelled lines:
+  matches: N (exact)   or   matches: at least N        apps: the same two forms
+  shown: N rows        (or the written line of --out)
+  complete: yes        or   complete: no (<reason>)
+  next: <the full command to run next>        hint: <a sentence, for example how to narrow>
+A line that starts with next: is a command: run it as printed. A line that starts with hint: is
+advice in words. complete: yes means every candidate file was scanned; a count is exact only then. complete: no names
+the reason: more rows follow on the next page, the time limit, the row cap of one search, a part of
+the index that did not answer, a stop at --max-rows, or a refused page. A page with more rows prints
+the command of the next page (--cursor included) and exits 0; --all and --out follow the pages to
+complete: yes. A page can have no row and a next: command: the search read files with no match, or
+the list of --apps is not ready (its rows are listed by the call that ends the scan, and the calls
+before it print the numbers found so far as at least N). --all and --out follow such pages; they stop
+after 3 requests in a row with no row, the same cursor and the same numbers (exit 12, next: continues
+at that page), after --max-empty-pages pages in a row with no row, or at --max-rows (both exit 0).
+An incomplete answer that no cursor continues exits 12: its next: line, when it has one, is the same
+search again or the search with the longest time limit of the service, and its hint: line says how to
+narrow (--package, --corpus, a more specific query). A search with no row prints its
+cause above the footer, never a bare zero. Rows fetched before a refused page are printed or written,
+and the next: command continues at that page (for --out, into FILE.next.csv).
+When the results change while --all or --out reads the pages (another search of the same query ran),
+the walk starts again from the first page once; after a second change the rows of the current walk
+are printed or written with complete: no and exit 12. A single --cursor page of changed results
+prints the command without --cursor (exit 7).
+Too many searches in a short time, or the most searches at once in progress, are refused with the
+wait in seconds and a next action (exit 6); --all and --out wait that time and continue with the same
+page, up to 3 waits per page. In the CSV, a
+cell that begins with =, +, @ or - is prefixed with a single quote (a spreadsheet formula guard). An
+existing --out file keeps its content until the first page is fetched.
+--json prints the service body (complete, counts, window, the cursor of the next page); with --all, the
+body of the last page with the rows of every page. Needs the code_search entitlement on the account.
+A server without context lines or the path filter prints that and the command without the flag
+(without both when both were given; exit 8). citt code-file PACKAGE PATH prints a whole file of a row.
+EOF
+}
+
+help_code_file() {
+  cat <<'EOF'
+citt code-file PACKAGE PATH [--lines A-B] [--build-id ID] [--corpus C] [--json] [--out FILE]
+
+Print a file of an indexed app build with its line numbers. PACKAGE and PATH are those of a
+citt code-search row. Without --build-id the latest build of the package that has the file is read,
+and the other builds with the file are listed.
+  --lines A-B    print the lines A to B only (1 or more, A not above B)
+  --build-id ID  read the file of this build (64-hex id, as in the footer or in code-search --json)
+  --corpus C     the corpus of the file: java resource manifest string asset native js hermes dart
+  --out FILE     write the lines to FILE without line numbers; an answer cut at the size limit of one
+                 request is continued until the range ends
+  --             ends the options: a PATH that starts with - goes after it
+The output ends with labelled lines:
+  file: PATH (build ID), lines A-B of T
+  complete: yes        or   complete: no (<reason>)
+  next: <the command of the range that follows>
+complete: no means the answer was cut at the size limit of one request; run the next: command for
+the lines that follow (exit 0). A cut with no following range exits 12. An unknown file prints the
+reason and the search that lists the paths of the app (exit 4). A server without the file read prints
+that and a next action (exit 8). --json prints the service body. Needs the code_search entitlement on
+the account.
 EOF
 }
 
