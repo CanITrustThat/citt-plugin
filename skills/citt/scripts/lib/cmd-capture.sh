@@ -2348,6 +2348,7 @@ cmd_captures() {
                  elif .wifi == true and .cell == true then "mocked Wi-Fi and cell tower"
                  elif .wifi == true then "mocked Wi-Fi" elif .cell == true then "mocked cell tower" else empty end),
               (if .grant_permissions == true then "app permissions granted" else empty end),
+              (if (.install_referrer | type) == "object" and .install_referrer.referrer then "install referrer \(.install_referrer.referrer)" else empty end),
               (if .exit_redirected == true
              then "captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
              else empty end)] | join("; ")) as $more

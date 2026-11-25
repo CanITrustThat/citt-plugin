@@ -111,6 +111,48 @@ _cr_package() {
   printf '%s' "$p"
 }
 
+# NP-2052: the Google Play link forms that go to the service's link parser (`POST /capture-install-link/parse`) as typed: a
+# `market://` or `intent://` link, and an http(s) Play link that contains `referrer` in lower case (the once-more-encoded
+# `referrer%3D` too). The plugin reads nothing else from the link: the one parser is the service's. Fix round 1 (Q8): the
+# match is case-sensitive, as the service's and Android's: the Play Store reads the parameter `referrer`, so a link with
+# `Referrer=` has no install referrer and is the link of its package id.
+_cr_parse_link() {
+  case "$1" in
+    market://* | intent://*) return 0 ;;
+    http://*play.google.com* | https://*play.google.com*) _cr_ref_link "$1" ;;
+    *) return 1 ;;
+  esac
+}
+
+# _cr_ref_link APP: status 0 when APP contains `referrer` in lower case.
+_cr_ref_link() {
+  case "$1" in *referrer*) return 0 ;; *) return 1 ;; esac
+}
+
+CR_LINK_FORMS='https://play.google.com/store/apps/details?id=PACKAGE&referrer=REFERRER, market://details?id=PACKAGE&referrer=REFERRER or intent://play.google.com/d?id=PACKAGE&referrer=REFERRER#Intent;...;end;'
+
+# _cr_link_resolve LINK: POSTs LINK as typed to the link parser; sets CR_LINK_PKG (the package id) and CR_LINK_REF (the decoded
+# referrer, empty for a link without one). A link the service refuses (422) exits 7 with the service's sentence.
+_cr_link_resolve() {
+  local body msg
+  body="$(tmpfile link.json)"
+  jq -nc --arg l "$1" '{link: $l}' >"$body"
+  http POST "$CITT_V1/capture-install-link/parse" "$body"
+  case "$CODE:$(body_field '.error')" in
+    422:install_*)
+      msg="$(plain_message "$(body_field '.message')")"
+      fail_out 7 "${msg:-the service could not read this Google Play link; give the link as $CR_LINK_FORMS, in quotes, or give the package id to start a run without a referrer}"
+      ;;
+    404:* | 405:*)
+      fail_out 7 "this service does not take a Google Play link with a referrer; give the package id to start a run without a referrer"
+      ;;
+  esac
+  ok || fail_http
+  CR_LINK_PKG="$(jq -r '.package_id // empty' "$RESP" 2>/dev/null)"
+  CR_LINK_REF="$(jq -r '.referrer // empty' "$RESP" 2>/dev/null)"
+  [ -n "$CR_LINK_PKG" ] || die 1 "unexpected response from the server"
+}
+
 # _cr_project_flag VALUE: --project takes a name or, when numeric, a project id.
 _cr_project_fix() {
   if [ -n "$OPT_PROJECT" ] && [ -z "$OPT_PROJECT_ID" ] && is_uint "$OPT_PROJECT"; then
@@ -243,11 +285,17 @@ cmd_capture_options() {
     shift
   done
   [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link"
-  pkg="$(_cr_package "$app")" || exit $?
+  if ! _cr_parse_link "$app"; then
+    pkg="$(_cr_package "$app")" || exit $?
+  fi
   _cr_platform "$platform"
   _cr_project_fix
   [ -z "$dur" ] || dur_s="$(_cr_secs --duration "$dur")" || exit $?
   need_auth
+  if _cr_parse_link "$app"; then
+    _cr_link_resolve "$app" # NP-2052: the service reads the package id from the link
+    pkg="$CR_LINK_PKG"
+  fi
   _cr_app "$pkg" "$platform"
   _cr_options
   if [ "$CITT_JSON" = 1 ]; then
@@ -306,6 +354,8 @@ cmd_capture_options() {
        | "Location (--location LAT,LNG, default none): decimal degrees, latitude \($l.lat_min) to \($l.lat_max), longitude \($l.lng_min) to \($l.lng_max), at most \($l.max_decimals) decimals, such as \($l.example.lat),\($l.example.lng)" else empty end),
     (if .grant_permissions == true then "App permissions (--grant-permissions): available; before the app starts in each session, Phone, Notifications and Physical activity (with --mock-wifi also Nearby devices) are granted when the app declares them, and its battery use is set to Unrestricted"
      elif .grant_permissions == false then "App permissions (--grant-permissions): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
+    (if .install_referrer == true then "Install referrer (APP as a Google Play link with a referrer parameter): available; each session uninstalls the app, installs it from its Play Store listing with that referrer and starts it; the scanned build is not installed"
+     elif .install_referrer == false then "Install referrer (APP as a Google Play link with a referrer parameter): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
     "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
@@ -605,8 +655,8 @@ cmd_capture_start() {
   local proxy_file="" platform=""
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
-  local mock_wifi="" mock_wifi_private="" mock_cell="" radio_mode="" grant=""
-  CR_PT="" CR_PT_N=0 CR_WEB=""
+  local mock_wifi="" mock_wifi_private="" mock_cell="" radio_mode="" grant="" link="" install_link=""
+  CR_PT="" CR_PT_N=0 CR_WEB="" CR_LINK_PKG="" CR_LINK_REF=""
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
@@ -678,7 +728,19 @@ cmd_capture_start() {
     pkg=com.android.chrome
   else
     [ -n "$app" ] || usage_error "give the app: a package id or a Google Play link, or --web-url URL"
-    pkg="$(_cr_package "$app")" || exit $?
+    if _cr_parse_link "$app"; then
+      # NP-2052: a Play link with a referrer (or a market:// or intent:// link) is read by the service, after the checks below
+      link="$app"
+      pkg=""
+      if _cr_ref_link "$app"; then
+        [ "$platform" != ios ] \
+          || usage_error "a Play link with a referrer installs the app from the Play Store on an Android lab phone; leave --platform ios out, or give the bundle id without a link"
+        [ -z "$no_play_fallback" ] \
+          || usage_error "a Play link with a referrer installs the app from the Play Store in every session, so --no-play-fallback does not apply; leave --no-play-fallback out, or give the package id to run the scanned build"
+      fi
+    else
+      pkg="$(_cr_package "$app")" || exit $?
+    fi
   fi
   _cr_platform "$platform"
   _cr_project_fix
@@ -797,6 +859,12 @@ cmd_capture_start() {
     resolve_project
     CR_PAPP=""
   else
+    if [ -n "$link" ]; then
+      _cr_link_resolve "$link"
+      pkg="$CR_LINK_PKG"
+      # a link without a referrer starts the run of its package id: no install_link in the body, the hash of a package id
+      [ -z "$CR_LINK_REF" ] || install_link="$link"
+    fi
     _cr_app "$pkg" "$platform"
   fi
 
@@ -814,6 +882,8 @@ cmd_capture_start() {
   [ -z "$loc_always" ] || hin="$hin|location_permission=all_the_time"
   [ -z "$radio_mode" ] || hin="$hin|device_radio=$radio_mode"
   [ -z "$grant" ] || hin="$hin|grant_permissions=true"
+  # fix round 1 (A8): the referrer is hashed first, as the prompts are: it may contain `|`, the separator of this input
+  [ -z "$install_link" ] || hin="$hin|install_referrer=$(_cs_str_sha "$CR_LINK_REF")"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -856,7 +926,7 @@ cmd_capture_start() {
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
     --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mwp "$mock_wifi_private" --arg mc "$mock_cell" --arg gp "$grant" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
-    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" \
+    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" --arg il "$install_link" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
@@ -875,7 +945,8 @@ cmd_capture_start() {
      + (if $su == "" then {} else {allow_signup: true} end)
      + (if $npf == "" then {} else {play_fallback: false} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)
-     + (if $web == "" then {} else {web_url: $web} end)' >"$body"
+     + (if $web == "" then {} else {web_url: $web} end)
+     + (if $il == "" then {} else {install_link: $il} end)' >"$body"
   HTTP_RETRY=yes
   if [ -n "$CR_WEB" ]; then
     http POST "$CITT_V1/projects/$PROJECT_ID/web-sessions" "$body"
@@ -904,6 +975,12 @@ cmd_capture_start() {
       local grant_msg
       grant_msg="$(plain_message "$(body_field '.message')")"
       fail_out 7 "${grant_msg:-the service refused --grant-permissions for this run; it runs on Android lab phones, for the run of an app}"
+      ;;
+    422:install_link_* | 422:install_referrer_*)
+      # NP-2052: another app than the link's, an iOS app, a web-funnel session, a run without the Play Store fallback
+      local ref_msg
+      ref_msg="$(plain_message "$(body_field '.message')")"
+      fail_out 7 "${ref_msg:-the service refused the Play link with a referrer for this run; such a run installs the app from the Play Store on an Android lab phone, for the app the link names; give the package id to start a run without a referrer}"
       ;;
   esac
   # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
@@ -963,6 +1040,7 @@ _cr_started() {
       + (if .device_location and .location_permission == "all_the_time" then ", location permission all the time" else "" end)
       + (.device_radio | radio_mode("; "))
       + (if .grant_permissions == true then "; app permissions granted before launch" else "" end)
+      + (if .install_referrer.referrer then "; install referrer \(.install_referrer.referrer)" else "" end)
       + (if .play_fallback == false then "; no Play Store fallback" else "" end),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
@@ -1023,7 +1101,11 @@ _cr_watch() {
              elif .exposure.ok == false then "; location not set: \(.exposure.reason // "the phone'"'"'s real location is readable by apps")"
              else "; location \(.lat),\(.lng) " + (if .verified == true then "verified on the phone" else "not verified" end) end)
         + (($s | .persona.radio) // null | radio_session)
-        + (($s | .persona.permissions) // null | permissions_session)' "$RESP" 2>/dev/null)" \
+        + (($s | .persona.permissions) // null | permissions_session)
+        + (($s | .persona.install_referrer) // null | if type != "object" or (.referrer | type) != "string" then ""
+             else "; installed from Play with referrer \(.referrer)"
+               + (if .version_name != null then ", version \(.version_name)" + (if .version_code != null then " (\(.version_code))" else "" end)
+                  elif .version_code != null then ", version code \(.version_code)" else "" end) end)' "$RESP" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -1064,7 +1146,8 @@ _cr_watch() {
           + (if $r.device_location then ", location \($r.device_location.lat),\($r.device_location.lng)" else "" end)
           + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)
           + ($r.device_radio | radio_mode(", "))
-          + (if $r.grant_permissions == true then ", app permissions granted before launch" else "" end))' "$RESP"
+          + (if $r.grant_permissions == true then ", app permissions granted before launch" else "" end)
+          + (if $r.install_referrer.referrer then ", install referrer \($r.install_referrer.referrer)" else "" end))' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then

@@ -407,6 +407,18 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                by --tracking, and ends at a payment form, an ID upload or a selfie screen; it needs a goal (--goal or a
                --prompts-file with a goal), which the navigator answers the pages from; every request of the phone is in
                session.har; https with a DNS host, no user name or password, port 443 only; the start line names the funnel
+  APP as a Google Play link with a referrer parameter, in quotes: 'https://play.google.com/store/apps/details?id=PACKAGE&referrer=REFERRER',
+               'market://details?id=PACKAGE&referrer=REFERRER' or 'intent://play.google.com/d?id=PACKAGE&referrer=REFERRER#Intent;...;end;'
+               (the click link of an ad), each also with the part after the scheme percent-encoded once more; the service reads
+               the package id and the referrer from the link. Each session of such a run uninstalls the app, installs it
+               from its Play Store listing with that referrer, so the app gets the referrer from the Play Install Referrer
+               service, and starts it. The scanned build is not installed: the version is the one the Play Store serves
+               that day, in run.json sessions[].persona.install_referrer and on each capture-watch session line; requests
+               that contain the referrer or the value of its gclid, gbraid or utm_campaign key are flagged
+               (install_referrer_sent). Android apps only; not with --web-url or --no-play-fallback; an app the Play
+               Store does not list or does not install on the phone has no such run. A link without a referrer starts
+               the run of its package id. The parameter name is referrer in lower case, as the Play Store reads it:
+               a link with Referrer= or REFERRER= has no install referrer
   --duration   run length, 1m to 7d
   --state      US exit state code, such as CA (see: citt capture-options); the run is captured in it or fails naming it
   --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it
