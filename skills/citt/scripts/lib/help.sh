@@ -793,7 +793,7 @@ build: package, corpus, path:line and the matched line.
   --append       with --out: add the rows to the end of the file, under its header line (a missing or
                  empty file gets the header line first; a file with another header is refused);
                  without --append, --out replaces an existing file, also when the search has no row
-  --max-rows N   stop --all or --out after the page with which the rows reach N (default 10000;
+  --max-rows N   stop --all or --out after the page with which the rows reach N (default 10000 for line rows; no bound with --apps;
                  0 is no bound: the walk ends with the last page)
   --max-empty-pages N  stop --all or --out after N pages in a row with no row (default 50; 0 is no
                  bound); the next: command continues at that page

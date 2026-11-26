@@ -1064,6 +1064,9 @@ cmd_code_search() {
     [ "$all" = 1 ] || [ -n "$out" ] || usage_error "--max-rows needs --all or --out"
     is_uint "$max_rows" && [ "${#max_rows}" -le 9 ] || usage_error "--max-rows needs a number: 1 or more, or 0 for no bound"
     max_rows="$((10#$max_rows))"
+  elif [ "$apps" = 1 ]; then
+    # TASK-1509: an app list is followed to its end; the service bounds a list at its own limit and says so.
+    max_rows=0
   else
     max_rows=10000
   fi

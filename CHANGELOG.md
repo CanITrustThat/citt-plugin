@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.56.0
+
+- `citt code-search QUERY --apps --all` and `--apps --out FILE.csv` follow the app list to its end by default (TASK-1509). Before, the walk stopped at the default `--max-rows` bound with `stopped at --max-rows` even when the service had a list of 41,088 apps. The service bounds a list at its own limit (200,000 apps by default) and says so in the `complete:` line and the `hint:` line; `--max-rows N` still stops an `--apps` walk after the page with which the rows reach N, and `--max-rows 0` is no bound as before. Walks of line rows keep the default `--max-rows` bound. The docs state that the `apps:` number of `--count` is a lower bound when the search is read in more than one part (`apps: at least N` beside `complete: yes`) and that `--apps` gives the exact number of apps.
+
 ## 2.55.0
 
 - `citt code-search` and `citt code-file`: fixes from the acceptance run of 2026-11-25 (TASK-1508, epic TASK-1500).
