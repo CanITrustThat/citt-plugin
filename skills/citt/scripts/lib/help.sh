@@ -241,6 +241,9 @@ States: queued, starting, running, stopping, done, done_with_gaps, stopped, fail
 Stuck is the number of the run's sessions that were held on one screen, with the kind of screen (2 age question,
 1 consent wall), a dash for none and empty while a session of the run has no record yet; --json has the two
 fields stuck_sessions and stuck_on on every run. The run state is not changed by a stuck session.
+A failed run whose app was not installed from the Play Store can have a screenshot of the phone at the
+failed install step: one line under the table names the file and the command that downloads it
+(citt capture-sync --run ID), and --json has run_files on each failed run.
   --mine   only the runs you booked
   --sort finished   the run that ended last first, then the runs that have not ended (newest id first); adds an Ended column in
                     your local time, a dash for a run not ended; --cursor takes the value the previous page printed
@@ -345,6 +348,9 @@ Downloads the capture sessions completed since the last sync into DIR/<run key>/
 with the run's README.md, run.json and checksums.sha256. Files come from presigned storage URLs,
 or through the API when those are unavailable. Each file is checked against its sha256;
 an interrupted file resumes on the next sync. Runs without a model or tokens.
+The screenshot of the phone at a failed Play Store install step is a file of the run outside its
+sessions, DIR/<run key>/run-files/<name>.png: downloaded for the failed runs that changed since the
+last sync and for a run named with --run that DIR does not have yet, also for a run with no session.
 A layout 2 session is stored as a few archives (core.tar.gz, large-bodies.tar, frames.tar,
 video.mp4, raw.tar.gz) and manifest.json; each archive is one download, unpacked into the
 session folder at the paths of a layout 1 session (network/session.har, data/frames/...).
@@ -550,6 +556,8 @@ citt help-requests --watch [--timeout SECONDS] [--json]
 
 Lists the help requests of the capture runs you launched, newest first, with their state (open,
 answered, missed, expired), deadline and, for open ones, the Live page link.
+After the table, one line per open request whose typed answer the phone did not type: the reason in
+words, the next step and the command that answers again.
   --state      comma list of open, answered, missed, expired
   --limit      1 to 200 (default 50)
   --watch      poll every 15 s; print each new open request once with its link and exit 16;
@@ -565,8 +573,22 @@ citt help-answer REQUEST --type "TEXT" [--json]
 Sends a typed answer to an open bring-me-in help request (REQUEST is the Id from citt help-requests
 or capture-watch): the session's orchestrator receives "Researcher instruction: TEXT" and acts on
 it, for example "use the monthly plan", "skip this step" or "continue". 1 to 1000 characters.
-With --type the phone types TEXT into the input field on screen (an email address, a name, a
-code); no model receives it and the output prints only its length.
+With --type the phone types TEXT into the input field on screen (an email address, a phone number,
+a name, a code); no model receives it and the output prints only its length.
+The text is typed exactly as you give it, phone numbers and email addresses included; what you type is your responsibility.
+When the phone does not type the text, the request stays open and takes another answer, and
+citt help-requests prints the reason. The reasons (answer_refusal in --json) and their sentences:
+  no_field                     The phone found no input field on screen, so nothing was typed.
+  dump_failed                  The phone could not read the screen, so nothing was typed.
+  focus_denied                 The phone was not showing the app under test (another app or a system window was in front, or the focus could not be read), so nothing was typed.
+  send_failed                  The phone could not send the text to the field, so nothing was typed.
+  not_in_field                 The text was sent, and the field did not show it afterwards.
+  screen_changed               The screen changed while the text was being typed, so the text may have been typed before the change.
+  underage_value_refused       The text is an age or birth date under the lowest age a session enters (18, or 25 for a dating app), so it was not typed.
+  credential_mismatch_refused  This run signs up with its own address, and the text is another address, so it was not typed.
+  phone_number_refused         A phone number was not typed by this phone's software version. Phone numbers are typed as given once the phone has the current version.
+  card_number_refused          The text is a payment card number, or the field asks for one, so it was not typed.
+  other                        The phone typed nothing.
 A request the Visual LLM opened on a fixed trigger is answered by take-over on the Live page.
 Exit 5 when the request is closed, answered already or takes no typed answer; 4 when it is not
 among your requests.

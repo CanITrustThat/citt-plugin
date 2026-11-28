@@ -8,12 +8,42 @@
 HR_STATES=" open answered missed expired "
 
 # HR_JQ: jq program printing one open request as one line (needs $L and $links from _hr_links).
+# TASK-1616: `refusal_text` is the sentence and the next step of an `answer_refusal` value: the reasons of the research API
+# (TYPE_REFUSALS in services/research/crates/api/src/capture_help_refusals.rs) and `other`, with the words of the help request
+# page (apps/web/src/app/help-answer.tsx) and of `citt help-answer --help`; a value without words gets the words of `other`.
 HR_JQ="$JQ_LT"'
+def refusal_words: {
+  no_field: "The phone found no input field on screen, so nothing was typed.",
+  dump_failed: "The phone could not read the screen, so nothing was typed.",
+  focus_denied: "The phone was not showing the app under test (another app or a system window was in front, or the focus could not be read), so nothing was typed.",
+  send_failed: "The phone could not send the text to the field, so nothing was typed.",
+  not_in_field: "The text was sent, and the field did not show it afterwards.",
+  screen_changed: "The screen changed while the text was being typed, so the text may have been typed before the change.",
+  underage_value_refused: "The text is an age or birth date under the lowest age a session enters (18, or 25 for a dating app), so it was not typed.",
+  credential_mismatch_refused: "This run signs up with its own address, and the text is another address, so it was not typed.",
+  phone_number_refused: "A phone number was not typed by this phone\u0027s software version. Phone numbers are typed as given once the phone has the current version.",
+  card_number_refused: "The text is a payment card number, or the field asks for one, so it was not typed.",
+  other: "The phone typed nothing."
+};
+def refusal_next: {
+  not_in_field: "Send it again, or type it on the Live page.",
+  screen_changed: "Check the screen on the Live page, and send the text again if it is missing.",
+  underage_value_refused: "Send an adult age or birth date.",
+  credential_mismatch_refused: "Send the text for another field, or type on the Live page.",
+  phone_number_refused: "Send the text again, or type it on the Live page.",
+  card_number_refused: "Send the text for another field."
+};
+def refusal_text: tostring as $r | (refusal_words[$r] // refusal_words.other) + " "
+  + (refusal_next[$r] // "Open the field on the Live page, then send the text again, or type it there yourself.");
+# fix round 3: after `screen_changed` the text may be in the field, so the line says the typing was not confirmed
+def refusal_lead: if tostring == "screen_changed" then "did not confirm your text." else "did not type your text." end;
+def refused_line: "Help request \(.id): the phone \(.answer_refusal | refusal_lead) \(.answer_refusal | refusal_text)"
+  + " Answer again: citt help-answer \(.id) --type \"<text for the phone>\"";
 def live: $links[.id | tostring] // "no live link";
 def line: "Help request \(.id): run \(.run_id), session \(.seq), \(.app.package_id) on \(.phone.name // "phone \(.phone.device_id)"): "
   + .trigger_sentence + (if .screen_line then " Screen: \(.screen_line)." else "" end)
   + " Waits until \(.deadline_at | lt). Live page: \(live)"
-  + (if .answer_refusal then " The phone typed nothing (\(.answer_refusal)): open the field on the Live page and send the text again." else "" end)
+  + (if .answer_refusal then " The phone \(.answer_refusal | refusal_lead) \(.answer_refusal | refusal_text)" else "" end)
   + (if .answerable == true then " Answer by text: citt help-answer \(.id) \"<your instruction>\" (or --type \"<text for the phone>\")" else "" end);'
 
 # _hr_links FILE: a JSON object mapping each request id in FILE to its Live page URL (app_url of `live_path`); a request
@@ -80,6 +110,9 @@ cmd_help_requests() {
     [["Id", "Opened", "State", "Run", "Session", "App", "Phone", "Reason", "Waits until", "Live page"]]
     + [.requests[] | [.id, (.opened_at | lt), .state, .run_id, .seq, .app.package_id, (.phone.name // "-"), .trigger,
         (.deadline_at | lt), (if .state == "open" then live else "-" end)]]' "$RESP" | table
+  # TASK-1616: one line per open request whose typed answer the phone did not type, with the reason in words
+  jq -r --argjson L "$(local_times "$RESP")" --argjson links "$(_hr_links "$RESP")" "$HR_JQ"'
+    .requests[] | select(.state == "open" and .answer_refusal != null) | refused_line' "$RESP"
 }
 
 # _hr_watch TIMEOUT: polls the open requests every 15 s; prints each one not printed before and exits 16, or exits 12 at

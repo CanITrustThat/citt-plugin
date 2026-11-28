@@ -1560,6 +1560,12 @@ _cs_checksums() {
       [ -f "$f" ] || continue
       jq -r '.folder as $d | .files[] | "\(.sha256)  \($d)/\(.path)"' "$f" 2>/dev/null
     done
+    # TASK-1615: the run files (the screenshot of a failed install step), as the zip lists them
+    for f in "$rd"/run-files/*; do
+      [ -f "$f" ] || continue
+      case "$f" in *.tmp) continue ;; esac
+      printf '%s  run-files/%s\n' "$(sha256_of "$f")" "$(basename "$f")"
+    done
   } | sort -k2 >"$out"
   mv -f "$out" "$rd/checksums.sha256"
 }
@@ -1697,6 +1703,103 @@ _cs_scripts() {
   done
 }
 
+# --- run files (TASK-1615) -----------------------------------------------------------
+# A run file is a file of a run outside its sessions: the screenshot of the phone at a Play Store install step that ended
+# without the app (kind install_evidence). A run that failed at its first install has no session, so the session feed never
+# names it. The lists come from one POST /capture-runs/files-summary per 500 runs (database only), each file from
+# GET /capture-runs/ID/run-files/NAME with the bearer token, into <run key>/run-files/NAME.
+
+# _cs_rf_name NAME: true for a name of one path segment made of lower-case letters, digits, ".", "_" and "-" that ends in .png.
+_cs_rf_name() {
+  case "$1" in '' | .* | -* | */* | *\\* | *[!a-z0-9._-]*) return 1 ;; esac
+  case "$1" in *.png) return 0 ;; esac
+  return 1
+}
+
+# _cs_rf_summary IDS_FILE OUT: the run files of the run ids in IDS_FILE (one per line) as lines "id<TAB>run key<TAB>name<TAB>
+# size<TAB>sha256" in OUT. Returns 1, with OUT empty, when the service gave no list (an older service, a refusal, no answer):
+# nothing of the sync or of the list depends on it.
+_cs_rf_summary() {
+  local ids="$1" out="$2" part body keep="$RESP" rc=0
+  : >"$out"
+  [ -s "$ids" ] || return 0
+  RESP="$_CITT_TMP/rf.resp"
+  while IFS= read -r part; do
+    body="$(tmpfile rf_body.json)"
+    jq -nc --argjson ids "$part" '{run_ids: $ids}' >"$body"
+    http POST "$CITT_V1/capture-runs/files-summary" "$body"
+    case "$CODE" in
+      2??)
+        jq -r '.runs[]? | select(.access == "ok" and (.run_files | type) == "array") | . as $r | .run_files[]
+          | select(.kind == "install_evidence" and (.name | type) == "string" and (.sha256 | type) == "string" and (.bytes | type) == "number")
+          | [($r.run_id | tostring), $r.run_key, .name, (.bytes | tostring), .sha256] | @tsv' "$RESP" >>"$out" 2>/dev/null || rc=1
+        jq -e 'any(.runs[]?; has("run_files"))' "$RESP" >/dev/null 2>&1 || rc=1
+        ;;
+      *) rc=1 ;;
+    esac
+  done < <(sort -n -u "$ids" | jq -R -s -c 'split("\n") | map(select(test("^[0-9]+$")) | tonumber) | [range(0; length; 500) as $i | .[$i:$i + 500]] | .[]')
+  RESP="$keep"
+  return "$rc"
+}
+
+# _cs_rf_get ID RUN_KEY: the run files of run ID listed in rf.tsv, each downloaded unless the stored file has the listed
+# sha256. A file whose bytes differ from the listed sha256 is not kept (exit 11); a request that fails leaves the run in
+# runs_pending, so the next sync asks again.
+_cs_rf_get() {
+  local id="$1" rk="$2" rid key name size sha dest got failed=0
+  [ -s "$_CITT_TMP/rf.tsv" ] || return 0
+  _cs_segment "$rk" || return 0
+  while IFS=$'\t' read -r rid key name size sha; do
+    [ "$rid" = "$id" ] || continue
+    _cs_rf_name "$name" || continue
+    dest="$CS_DIR/$rk/run-files/$name"
+    if [ -f "$dest" ] && [ "$(sha256_of "$dest")" = "$sha" ]; then continue; fi
+    mkdir -p "$CS_DIR/$rk/run-files" || {
+      _cs_abort 1 "cannot create $CS_DIR/$rk/run-files"
+      return
+    }
+    HTTP_OUT="$dest.tmp"
+    http GET "$CITT_V1/capture-runs/$id/run-files/$name"
+    HTTP_OUT=""
+    case "$CODE" in
+      2??)
+        got="$(sha256_of "$dest.tmp")"
+        if [ "$got" = "$sha" ]; then
+          mv -f "$dest.tmp" "$dest"
+          [ "${CITT_JSON:-0}" = 1 ] || printf 'Run file: %s/run-files/%s, %s\n' "$rk" "$name" "$(_cs_bytes "$size")"
+        else
+          rm -f "$dest.tmp"
+          err "$CITT_CMD: run $rk: run-files/$name: the downloaded bytes differ from the listed sha256; the file was not kept"
+          CS_INTEG=$((CS_INTEG + 1))
+          failed=1
+        fi
+        ;;
+      401)
+        rm -f "$dest.tmp"
+        : >"$RESP"
+        fail_out 3 "not signed in or the token expired; run: citt auth"
+        ;;
+      000)
+        rm -f "$dest.tmp"
+        _cs_run_netfail "$id" "$rk" "run-files/$name"
+        return
+        ;;
+      *)
+        rm -f "$dest.tmp"
+        err "$CITT_CMD: run $rk: run-files/$name failed: the server could not answer; the next sync fetches it again"
+        CS_SERVER_ERR=$((CS_SERVER_ERR + 1))
+        failed=1
+        ;;
+    esac
+  done <"$_CITT_TMP/rf.tsv"
+  [ -d "$CS_DIR/$rk/run-files" ] && _cs_checksums "$CS_DIR/$rk"
+  if [ "$failed" = 1 ]; then
+    _cs_st '.runs_pending[$i] = ((.runs_pending[$i] // {run_key: $k, since: $at}) + {last_error: "a run file was not fetched", at: $at})' \
+      --arg i "$id" --arg k "$rk" --arg at "$(_cs_now_iso)"
+    _cs_save
+  fi
+}
+
 # _cs_runs RESET: refreshes the run-level files of every run touched in this sync, of every run in runs_pending (a run
 # whose files a sync has not fetched in full, NP-1340), and of every local run whose run_etag moved in
 # GET /capture-runs?changed_after=.
@@ -1734,7 +1837,7 @@ _cs_runs() {
         break
         ;;
     esac
-    jq -c '.runs[] | {experiment_id, run_key, run_etag, changed_at}' "$RESP" >>"$all" 2>/dev/null
+    jq -c '.runs[] | {experiment_id, run_key, run_etag, changed_at, state}' "$RESP" >>"$all" 2>/dev/null
     cursor="$(body_field '.next_cursor')"
     [ -n "$cursor" ] || break
   done
@@ -1766,9 +1869,44 @@ _cs_runs() {
     | unique_by(.id)[] | select(($only | length) == 0 or (.id as $i | $only | index($i)))
     | select($sonly == 0 or (.id as $i | $sonly_runs | index($i)))
     | [.id, .key, .etag] | @tsv' "$all" >"$want" 2>/dev/null
+  # TASK-1615: the run files of the failed runs of the list and of the runs of --run; a run with one is a target, so its
+  # folder has run.json beside run-files/ (a run that failed at its first install has no session and is in no other list)
+  local rfids
+  rfids="$(tmpfile rf_ids)"
+  jq -r -s --slurpfile st "$CS_ST" --arg rids "$CS_RIDS" --arg srids "$CS_SRIDS" --argjson sonly "$([ -n "$CS_SESSIONS" ] && printf 1 || printf 0)" '
+    ($rids | split("\n") | map(select(. != ""))) as $only
+    | ($srids | split("\n") | map(select(. != ""))) as $sonly_runs
+    # a run of --run that no sync has stored yet is asked too (a run that failed before the last sync is in no run list),
+    # and so is a pending run (a run file request that failed)
+    | ([.[] | select(.state == "failed") | .experiment_id | tostring] + [$only[] | select($st[0].runs[.] == null)]
+       + [($st[0].runs_pending // {}) | keys[]]) | unique[]
+    | select(($only | length) == 0 or (. as $i | $only | index($i)))
+    | select($sonly == 0 or (. as $i | $sonly_runs | index($i)))' "$all" >"$rfids" 2>/dev/null
+  _cs_rf_summary "$rfids" "$_CITT_TMP/rf.tsv" || true
+  if [ -s "$_CITT_TMP/rf.tsv" ]; then
+    # a run is added to the targets while a listed file is absent from its folder or has another sha256
+    local rfneed rname rsha
+    rfneed="$(tmpfile rf_need)"
+    while IFS=$'\t' read -r id rk rname _ rsha; do
+      _cs_rf_name "$rname" || continue
+      _cs_segment "$rk" || continue
+      if [ ! -f "$CS_DIR/$rk/run-files/$rname" ] || [ "$(sha256_of "$CS_DIR/$rk/run-files/$rname")" != "$rsha" ]; then
+        printf '%s\t%s\n' "$id" "$rk" >>"$rfneed"
+      fi
+    done <"$_CITT_TMP/rf.tsv"
+    cp "$want" "$rfneed.have"
+    jq -r -R -s --rawfile want "$rfneed.have" --slurpfile listed "$all" '
+      ($want | split("\n") | map(select(. != "") | split("\t")[0])) as $have
+      | ($listed | map({key: (.experiment_id | tostring), value: (.run_etag // "")}) | from_entries) as $etag
+      | [split("\n")[] | select(. != "") | split("\t") | {id: .[0], key: .[1]}] | unique_by(.id)[]
+      | select(.id as $i | $have | index($i) | not) | [.id, .key, ($etag[.id] // "")] | @tsv' "$rfneed" >"$rfneed.add" 2>/dev/null
+    cat "$rfneed.add" >>"$want"
+  fi
   while IFS=$'\t' read -r id rk etag; do
     [ -n "$id" ] || continue
     _cs_run_files "$id" "$rk" "$etag"
+    [ "$CS_ABORT" = 0 ] || return
+    _cs_rf_get "$id" "$rk"
     [ "$CS_ABORT" = 0 ] || return
   done <"$want"
   # A verify leaves the cursor as it was, and so does a run list that got no answer.
@@ -2279,6 +2417,24 @@ _cs_watch() {
 
 # --- citt captures -------------------------------------------------------------------
 
+# _cap_run_files: TASK-1615: run_files on each failed run of the list in $RESP (the screenshot of the phone at a failed
+# install step), from one POST /capture-runs/files-summary for the failed runs of the page. The list stays as the service
+# sent it when no run failed, when the service has no run files, and when the request fails.
+_cap_run_files() {
+  local ids list
+  ids="$(tmpfile cap_rf_ids)"
+  list="$(tmpfile cap_runs.json)"
+  jq -r '.runs[]? | select(.state == "failed") | .experiment_id' "$RESP" >"$ids" 2>/dev/null || return 0
+  [ -s "$ids" ] || return 0
+  cp "$RESP" "$list" || return 0
+  if _cs_rf_summary "$ids" "$_CITT_TMP/cap_rf.tsv"; then
+    jq -c --slurpfile s "$_CITT_TMP/rf.resp" '($s[0].runs | map(select((.run_files | type) == "array") | {key: (.run_id | tostring), value: .run_files}) | from_entries) as $m
+      | .runs |= map(if .state == "failed" then . + {run_files: ($m[.experiment_id | tostring] // [])} else . end)' "$list" >"$list.new" 2>/dev/null \
+      && mv -f "$list.new" "$list"
+  fi
+  cp "$list" "$RESP"
+}
+
 cmd_captures() {
   local state="" limit=50 cursor="" mine="" sort=""
   CITT_CMD="citt captures"
@@ -2326,6 +2482,7 @@ cmd_captures() {
   E_PROJECT_ID="$(printf '%s' "$CS_PROJECTS" | tr '\n' ' ' | sed 's/ *$//')"
   _cs_resolve_projects
   call GET "$CITT_V1/capture-runs$(query state "$state" mine "$mine" limit "$limit" cursor "$cursor" sort "$sort")$(_cs_pid_query)"
+  _cap_run_files
   if [ "$CITT_JSON" = 1 ]; then
     cat "$RESP"
     printf '\n'
@@ -2375,6 +2532,9 @@ cmd_captures() {
          else "-" end)]
         + ended
         + [(.booked_by.name // (if .booked_by.user_id then "user \(.booked_by.user_id)" else "-" end))]]' "$RESP" | table
+  # TASK-1615: the screenshot of the phone at the failed install step of a failed run, with the command that downloads it
+  jq -r '.runs[] | . as $r | (.run_files // [])[] | select(.kind == "install_evidence" and (.name | type) == "string" and (.name | test("^[a-z0-9][a-z0-9._-]*[.]png$")))
+    | "Run \($r.experiment_id): screenshot of the phone at the failed install step: \($r.run_key)/run-files/\(.name); get it: citt capture-sync --run \($r.experiment_id)"' "$RESP" 2>/dev/null
   local next
   next="$(body_field '.next_cursor')"
   [ -z "$next" ] || printf '\nMore runs: citt captures%s%s%s%s --cursor %s\n' "${state:+ --state $(shq "$state")}" "${sort:+ --sort $sort}" "${mine:+ --mine}" "$( [ "$limit" = 50 ] || printf ' --limit %s' "$limit")" "$(shq "$next")"
