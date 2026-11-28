@@ -35,7 +35,11 @@ CS_JQ_TS='def ts: if . == null or . == "" then 0 else
   (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601)
   + ((capture("\\.(?<f>[0-9]+)") | ("0." + .f) | tonumber) // 0) end;
 def then_say($sep; $b): if $b == "" then . elif endswith(".") then . + " " + ($b[:1] | ascii_upcase) + $b[1:]
-  + (if ($b | endswith(".")) then "" else "." end) else . + $sep + $b end;'
+  + (if ($b | endswith(".")) then "" else "." end) else . + $sep + $b end;
+# NP-2073: a value of a run'"'"'s stuck_on (a blocking kind of screen_progress, unchanged or off_app) in the words of the Stuck column
+def stuck_kind: tostring as $k | {"permission_dialog": "permission dialog", "connection_error": "connection error", "consent_wall": "consent wall",
+  "terms_privacy": "terms or privacy screen", "sign_in": "sign-in screen", "age_gate": "age question", "other_dialog": "dialog",
+  "unchanged": "unchanged screen", "off_app": "another app or the home screen"}[$k] // ($k | gsub("_"; " "));'
 
 # --- small helpers -----------------------------------------------------------------
 
@@ -2339,7 +2343,12 @@ cmd_captures() {
   fi
   jq -c --argjson L "$(local_times "$RESP")" --arg sort "$sort" "$JQ_LT"' '"$CS_JQ_TS"'
     def ended: if $sort == "finished" then [.finished_at | lt] else [] end;
-    [["Run", "Key", "State", "App", "Phone", "Sessions", "Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
+    # NP-2073: the sessions held on one screen, with the kinds; a dash for 0, empty for null. A page of a service without the
+    # fields (no row has stuck_sessions) has the table of before, with no Stuck column
+    def stuck: if (.stuck_sessions | type) != "number" then "" elif .stuck_sessions == 0 then "-"
+      else "\(.stuck_sessions)" + ((.stuck_on // []) | if type == "array" and length > 0 then " " + (map(stuck_kind) | join(", ")) else "" end) end;
+    (any(.runs[]; has("stuck_sessions"))) as $has_stuck |
+    [["Run", "Key", "State", "App", "Phone", "Sessions"] + (if $has_stuck then ["Stuck"] else [] end) + ["Flags", "ETA"] + (if $sort == "finished" then ["Ended"] else [] end) + ["Booked by"]]
     + [.runs[] | [.experiment_id, .run_key,
         # NP-1493 fix round 2: what follows a reason sentence (a full stop at its end) is its own sentence
         (([(if .device_locale then "device language \(.device_locale)" else empty end),
@@ -2349,6 +2358,7 @@ cmd_captures() {
                  elif .wifi == true then "mocked Wi-Fi" elif .cell == true then "mocked cell tower" else empty end),
               (if .grant_permissions == true then "app permissions granted" else empty end),
               (if (.install_referrer | type) == "object" and .install_referrer.referrer then "install referrer \(.install_referrer.referrer)" else empty end),
+              (if (.set_prefs | type) == "object" then "app preferences set" else empty end),
               (if .exit_redirected == true
              then "captured in \((.exit_states_captured // []) | join(", ")) (booked \(.exit_state_booked // "?"): \(.exit_redirect_why // ((.exit_redirect_reason // "reason not recorded") | sub("^booked [A-Z]{2}, captured in [A-Z]{2}: "; "") | sub("; this session runs in [A-Z]{2}$"; "")))\(if (.exit_states_tried // []) | length > 0 then "; states tried: " + (.exit_states_tried | join(", ")) else "" end))"
              else empty end)] | join("; ")) as $more
@@ -2358,6 +2368,7 @@ cmd_captures() {
         (.device_name // "-"),
         (if .planned_sessions then "\(.finished_sessions // 0)/\(.planned_sessions)" else "\(.finished_sessions // .sessions // 0)" end)
           + (if (.failed_sessions // 0) > 0 then ", \(.failed_sessions) failed" else "" end),
+        (if $has_stuck then stuck else empty end),
         (.flags // 0),
         (if .eta_at then (.eta_at | ts | floor | strftime("%Y-%m-%d %H:%M UTC"))
          elif .overdue_s then "overdue \((.overdue_s / 3600) | floor) h \(((.overdue_s % 3600) / 60) | floor) min"

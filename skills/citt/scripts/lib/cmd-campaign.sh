@@ -4,10 +4,17 @@
 # listed and shown (GET /campaigns, GET /campaigns/{id}), paused, resumed, stopped and edited (POST .../pause|resume|stop,
 # PATCH /campaigns/{id}), its apps held and restored (POST .../apps/{app}/hold|restore), a run's review queued again
 # (POST .../reviews/{run}/retry), and its report read, waited for, watched and pulled with the runs (GET .../report, the
-# customer view, then citt capture-sync of the runs).
+# customer view, then citt capture-sync of the runs). TASK-1601: the arms of a campaign (the --arm flags of draft and edit, the
+# Arms lines, the app × arm table of report) are in lib/cmd-campaign-arms.sh, which the script loads with this file.
 # shellcheck shell=bash disable=SC2016
 
 # CM_JQ: jq definitions for the printed lines. `one`: model or customer text on one line; `q`: that text in double quotes.
+# TASK-1592: `place_words` is the place of a queued campaign from the `queue` block (place P of Q and the number of campaigns that
+# run at once), or the place alone from a service without the block; `planning_lines`, `attention_lines` and `phone_time_line`
+# print the `planning` and `phone_time` blocks of the show document and nothing for a document without them. `fx(d)`: a number
+# with d decimals. The reason of a plan call that booked nothing is the one of its last `none` step, else of its last step, as
+# in the service's report. TASK-1601: `arm_names` and `arm_name` are the arms of a wave and the arm of a run, empty for a
+# campaign without arms.
 CM_JQ='
 def one: tostring | gsub("[\r\n\t]+"; " ");
 def q: "\"" + one + "\"";
@@ -19,18 +26,62 @@ def by: ((if (.decided_by | type) == "object" then .decided_by.words else .decid
 def why: if (.reason // "") != "" then ": " + (.reason | q) else "" end;
 def st: if .status == "refused" and .refusal_code then "refused: \(.refusal_code)" else .status end;
 def runs($n): if $n == 1 then "1 run" else "\($n) runs" end;
-def wave_line($with_pkg): "Wave \(.wave // "-")" + (if $with_pkg then " of \(.package_id)" else "" end) + ": \(runs(.booked // .slots // 0))"
+def arm_names: (if (.arms | type) == "array" then .arms else [] end) | map(one)
+  | if length == 0 then "" elif length == 1 then ", arm \(.[0])" else ", arms " + join(", ") end;
+def arm_name: if (.arm // "") != "" then ", arm \(.arm | one)" else "" end;
+def wave_line($with_pkg): "Wave \(.wave // "-")" + (if $with_pkg then " of \(.package_id)" else "" end) + arm_names + ": \(runs(.booked // .slots // 0))"
   + (if (.phones // []) | length > 0 then " on " + (.phones | join(", ")) else "" end)
   + (if .status != "done" then " (\(st))" else "" end) + (by | if . != "" then "," + . else . end) + why;
 def step_text: "\(.type) (\(st))" + why;
-def run_line: "Run \(.experiment_id), wave \(.wave // "-"), \(.phone // "no phone"), \(.status), \(.length_s // 0 | dur), \(.ads // 0) ads, \(.flags // 0) flags"
+def run_line: "Run \(.experiment_id), wave \(.wave // "-")" + arm_name + ", \(.phone // "no phone"), \(.status), \(.length_s // 0 | dur), \(.ads // 0) ads, \(.flags // 0) flags"
   + (if .verdict.summary then "; verdict: " + (.verdict.summary | q) else "" end)
   + ([.steps[]? | "; " + step_text] | join(""))
   + (if (.pending // []) | length > 0 then "; pending: " + (.pending | join(", ")) else "" end)
   + (if .review_queued then "; review queued" else "" end);
-def state_line: "Campaign \(.id) \"\(.name | one)\" (project \(.project_name | one)): \(.state)"
-  + (if .state == "queued" and .place_in_queue then ", place \(.place_in_queue) in the queue" else "" end)
-  + (if (.state_reason // "") != "" then " (\(.state_reason | one))" else "" end);'
+def cnt($n; $one; $many): if $n == 1 then "1 \($one)" else "\($n) \($many)" end;
+def fx($d): (pow(10; $d) | round) as $p | ((. // 0) * $p | round) as $n
+  | "\($n / $p | floor)." + ($n % $p | tostring | ("0" * ($d - length)) + .);
+def place_words: (if (.queue | type) == "object" then .queue else {} end) as $q | ($q.place // .place_in_queue) as $p
+  | if .state != "queued" or ($p | not) then ""
+    elif $q.max_parallel then ", place \($p) of \([$q.queued // $p, $p] | max) in the queue ("
+      + (if $q.max_parallel == 1 then "1 campaign runs" else "\($q.max_parallel) campaigns run" end) + " at once)"
+    else ", place \($p) in the queue" end;
+def state_line: "Campaign \(.id) \"\(.name | one)\" (project \(.project_name | one)): \(.state)" + place_words
+  + (if (.state_reason // "") != "" then " (\(.state_reason | one))" else "" end);
+def last_call: (.last_plan_call // null) as $l
+  | if ($l | type) != "object" then "no plan call yet."
+    else "last plan call \($l.at_local // "at an unknown time") "
+      + (if $l.status == "valid" then
+           (($l.booked_runs // 0) as $b | ($l.pulled_apps // 0) as $pl
+            | (if $b > 0 then "booked " + cnt($b; "run"; "runs") else "booked nothing" end)
+              + (if $pl > 0 then ", pulled " + cnt($pl; "app"; "apps") else "" end)
+              + (([$l.steps[]? | select(.type == "none")] | last // ($l.steps // [] | last) | .reason? // "") as $r
+                 | if $b == 0 and ($r | one | gsub("^ +| +$"; "")) != ""
+                   then ": " + ($r | one | if length > 300 then .[0:300] + "…" else . end | "\"" + . + "\"") else "." end))
+         elif $l.status == "queued" then "waits for the model."
+         elif $l.status == "running" then "the model is answering."
+         else "ended with no valid answer; the plan is asked again." end) end;
+def attention_lines: if (.planning | type) == "object" and (.planning.attention.words? // "") != ""
+  then "Attention: " + (.planning.attention.words | one) else empty end;
+def planning_lines: .state as $st | if (.planning | type) != "object" then empty else .planning
+  | "Planning: " + last_call,
+    (if .plan_calls != null then "Plan calls: \(.plan_calls), \(.plan_calls_without_booking // 0) without a booking"
+      + (if .last_booking_local then ", \(.plan_calls_since_last_booking // 0) since the last booking at \(.last_booking_local)" else "" end)
+      + "." else empty end),
+    (if (.waiting | type) == "object" then .waiting
+      | "Waiting: " + cnt(.ready_open // 0; "ready app"; "ready apps") + " with no run, \(.pending_slots // 0) booked ahead, \(.source_pending // 0) not pulled yet."
+        + (if (.next_pull_words // "") != "" then " " + (.next_pull_words | one) else "" end) else empty end),
+    (if ($st | IN("running", "waiting_phones")) then
+       (if .next_plan_call == "queued" or .next_plan_call == "running" then "Next plan call: \(.next_plan_call)"
+        elif (.next_plan_words // "") != "" then (.next_plan_words | one) else empty end) else empty end) end;
+def phone_time_line: if (.phone_time | type) == "object" and .phone_time.measured_from and (.phone_time.total | type) == "object"
+  then .phone_time | .total as $t
+  | "Phone time while running: \($t.run_h | fx(2)) h in campaign runs, \($t.idle_h | fx(2)) h idle"
+    + (if $t.idle_share != null then " (\($t.idle_share * 100 | fx(1)) %)" else "" end)
+    + ", \($t.other_work_h | fx(2)) h on other work, \($t.unusable_h | fx(2)) h not usable"
+    + (if .last_hour.idle_share? != null then "; last hour: \(.last_hour.idle_share * 100 | fx(1)) % idle" else "" end)
+    + ". Measured from \(.measured_from_local // .measured_from)."
+  else empty end;'
 
 # The required fields of a draft, in the order they are listed: flag, then its plain-words description.
 CM_REQUIRED='--name|the campaign'"'"'s name, unique in the project (1 to 80 characters)
@@ -226,6 +277,10 @@ _cm_refused() {
   jq -r '.refusals[]? | "  \(.field): \(.reason)"
       + (if .evidence != null then "\n    Evidence: \(.evidence | tojson)" else "" end)
       + (if (.next_action // "") != "" then "\n    Next: \(.next_action)" else "" end)' "$RESP" 2>/dev/null | clean >&2
+  # TASK-1601 AC-7: a service from before arms answers the key arms as a field it does not have
+  if jq -e '[.refusals[]? | select(.field == "arms" and .code == "unknown_field")] | length > 0' "$RESP" >/dev/null 2>&1; then
+    err "hint: this service does not take arms yet"
+  fi
   if [ "$CITT_JSON" = 1 ]; then
     jq -c --arg m "$1" --argjson s "${CODE#0}" '. + {message: $m, http_status: $s}' "$RESP"
   fi
@@ -274,6 +329,14 @@ _cm_print_doc() {
   jq -r "$CM_JQ"' (.campaign // .) | state_line, (if .next_action then "Next: \(.next_action)" else empty end)' "$RESP"
 }
 
+# _cm_print_arms: TASK-1601 AC-3: the Arms line of a created campaign, from the estimate of the answer when it has one, else
+# the number and the names of the arms of the stored spec; nothing for a campaign without arms and with --json.
+_cm_print_arms() {
+  [ "$CITT_JSON" != 1 ] || return 0
+  jq -r "$CM_JQ$CM_ARMS_JQ"' if (.estimate.arms | type) == "object" then arms_check
+    else ((.campaign // .).spec.arms // []) | if type == "array" and length > 0 then "Arms: \(length) (\(map(.name | one) | join(", ")))" else empty end end' "$RESP" | clean
+}
+
 # _cm_report_get ID: GET /campaigns/{id}/report in the customer view into RESP.
 _cm_report_get() {
   _cm_call GET "$CITT_V1/campaigns/$1/report?view=customer"
@@ -289,15 +352,20 @@ _cm_no_staff() {
 
 _cm_draft() {
   local name="" project="" project_id="" goal="" apps="" apps_file="" platform="" page="" phones="" duration="" split="" state=""
-  local country="" age="" tracking="" deadline="" until=0 zone="" out="" rerun="" template='{}' look='[]' t k v
+  local country="" age="" tracking="" deadline="" until=0 zone="" out="" rerun="" template='{}' look='[]' t k v arms_file=""
+  CM_ARMS='[]'
+  CM_SP='[]'
   while [ $# -gt 0 ]; do
     ! _cm_common_flag "$1" || { shift; continue; }
     case "$1" in
       --name | --project | --project-id | --goal | --apps | --apps-file | --platform | --page-size | --phones | --duration | \
         --split | --state | --exit-state | --country | --age | --tracking | --deadline | --zone | --out | --rerun-states | \
-        --template | --look-for)
+        --template | --look-for | --arm | --arms-file | --set-pref)
         need_value "$1" $#
         case "$1" in
+          --arm) _cm_arm_add "$2" ;;
+          --arms-file) arms_file="$2" ;;
+          --set-pref) _cm_set_pref "$2" ;;
           --name) name="$2" ;;
           --project) project="$2" ;;
           --project-id) project_id="$2" ;;
@@ -317,7 +385,15 @@ _cm_draft() {
           --zone) zone="$2" ;;
           --out) out="$2" ;;
           --rerun-states) rerun="$2" ;;
-          --template) template="$(_cm_template_add "$template" "$2" 0)" || exit 2 ;;
+          --template)
+            # TASK-1601 AC-2: one referrer for every app is an arm, and the service refuses these template keys (use_arms)
+            case "${2%%=*}" in
+              install_referrer | referrer | install_link)
+                usage_error "a campaign sets install referrers per arm: use --arm NAME=REFERRER instead of --template ${2%%=*}=...; one arm gives every app the same referrer, and --arm NAME adds an arm without one to compare with"
+                ;;
+            esac
+            template="$(_cm_template_add "$template" "$2" 0)" || exit 2
+            ;;
           --look-for)
             case "$2" in
               *:?*) ;;
@@ -378,12 +454,28 @@ _cm_draft() {
       *) usage_error "--split takes one of $(_cm_splits_words), got: $split_raw" ;;
     esac
   fi
-  local list='[]'
+  # TASK-1601: the arms of the flags, then the arms of --arms-file; TASK-1597 AC8: --set-pref is template.set_prefs
+  [ -z "$arms_file" ] || _cm_arms_file "$arms_file"
+  [ "$platform" != ios ] || _cm_arms_ios
+  local sp_n
+  sp_n="$(jq 'length' <<<"$CM_SP")"
+  if [ "$sp_n" -gt 0 ]; then
+    [ "$sp_n" -le 20 ] || usage_error "--set-pref is given $sp_n times; a run takes at most 20 entries"
+    [ "$platform" != ios ] \
+      || usage_error "--set-pref writes SharedPreferences files on Android lab phones only: an iOS app has no SharedPreferences file; leave --platform ios out"
+    ! jq -e 'has("set_prefs")' <<<"$template" >/dev/null \
+      || usage_error "give set_prefs once: --set-pref FILE.xml:KEY=TYPE:VALUE or --template set_prefs=LIST"
+    template="$(jq -c --argjson l "$CM_SP" '. + {set_prefs: $l}' <<<"$template")"
+  fi
+  # TASK-1602 AC-11: a referrer can contain a comma, the separator of --apps, so a link is a line of --apps-file
+  case "$apps" in
+    *://*) usage_error "--apps takes package ids, comma-separated, and this value has a link; put links in a file, one per line, and give it with --apps-file" ;;
+  esac
+  local list='[]' file_list
   [ -z "$apps" ] || list="$(_cm_list_json "$apps")"
   if [ -n "$apps_file" ]; then
-    [ -r "$apps_file" ] || usage_error "cannot read $apps_file"
-    list="$(jq -nc --argjson l "$list" --rawfile f "$apps_file" \
-      '$l + ($f | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "" and (startswith("#") | not))))')"
+    file_list="$(_cm_apps_file "$apps_file" "$platform")" || exit 2
+    list="$(jq -nc --argjson l "$list" --argjson f "$file_list" '$l + $f')"
   fi
   [ -n "$zone" ] || zone="$(_cm_zone)"
   # NP-2040 QA 4: a flag and --template that set the same template field; the template would replace the flag's value
@@ -402,7 +494,7 @@ _cm_draft() {
   spec="$(jq -nc --arg name "$name" --arg project "$project" --arg goal "$goal" --argjson look "$look" --argjson list "$list" \
     --arg platform "$platform" --arg page "$page" --argjson phones "$(_cm_list_json "$phones" 1)" --arg dur "$duration" \
     --arg split "$split" --arg state "$state" --arg country "$country" --arg age "$age" --arg tracking "$tracking" \
-    --argjson tpl "$template" \
+    --argjson tpl "$template" --argjson arms "$CM_ARMS" \
     --argjson rerun "$(_cm_list_json "$rerun" | jq -c 'map(ascii_upcase)')" --arg deadline "$deadline" --argjson until "$until" \
     --arg zone "$zone" '
     {}
@@ -410,7 +502,7 @@ _cm_draft() {
     + (if $project != "" then {project: (if $project | test("^[0-9]+$") then ($project | tonumber) else $project end)} else {} end)
     + (if $goal != "" then {goal: $goal} else {} end)
     + (if ($look | length) > 0 then {look_for: $look} else {} end)
-    + (if ($list | length) > 0 then {apps: ({list: (if $platform == "" then $list else $list | map({package_id: ., platform: $platform}) end)}
+    + (if ($list | length) > 0 then {apps: ({list: (if $platform == "" then $list else $list | map(if contains("://") then . else {package_id: ., platform: $platform} end) end)}
         + (if $page != "" then {page_size: ($page | tonumber)} else {} end))} else {} end)
     + (if ($phones | length) > 0 then {phones: $phones} else {} end)
     + ((({} + (if $dur != "" then {duration_s: ($dur | tonumber)} else {} end)
@@ -422,6 +514,7 @@ _cm_draft() {
         | with_entries(if (.key == "exit_country" or .key == "exit_state") and (.value | type) == "string"
             then .value |= ascii_upcase else . end)) as $t
         | if ($t | length) > 0 then {template: $t} else {} end)
+    + (if ($arms | length) > 0 then {arms: $arms} else {} end)
     + (if ($rerun | length) > 0 then {rerun_states: $rerun} else {} end)
     + (if $deadline != "" then {deadline: $deadline} else {} end)
     + (if $until == 1 then {run_until_stopped: true} else {} end)
@@ -477,7 +570,12 @@ _cm_draft() {
     jq -c --arg out "$out" '{file: $out, spec: .}' <<<"$spec"
     return 0
   fi
-  jq -r --arg out "$out" "$CM_JQ"' "Wrote \($out): campaign \(.name | q) in project \(.project | tostring | q), \(.apps.list | length) apps, \(.phones | length) phones, runs of \(.template.duration_s | dur), "
+  jq -r --arg out "$out" "$CM_JQ"' (.apps.list | length) as $apps | "Wrote \($out): campaign \(.name | q) in project \(.project | tostring | q), \($apps) apps"
+    + (([.apps.list[] | select(type == "string" and contains("://"))] | length) as $own | if $own > 0 then " (\($own) with their own install referrer)" else "" end)
+    + ((.arms // []) | length as $n | if $n > 0 then ", " + cnt($n; "arm"; "arms") + " (\(runs($n * $apps)) or more)" else "" end)
+    + ", \(.phones | length) phones, runs of \(.template.duration_s | dur), "
+    + ((.template.set_prefs // null) | if type == "array" and length > 0 then (map(.file) | unique | length) as $f
+        | "app preferences set before launch (\(cnt(length; "key"; "keys")) in \(cnt($f; "file"; "files"))), " else "" end)
     + (if .deadline then "deadline \(.deadline) (\(.zone))" else "until stopped (\(.zone))" end) + "."' <<<"$spec"
   printf 'Next: citt campaign check %s\n' "$(shq "$out")"
 }
@@ -516,10 +614,11 @@ _cm_check() {
         + [.estimate.phones[] | [.name, .status, (if .shared then "shared" else null end), .queued_runs, .running_runs, (.unavailable // "")]]' \
         "$RESP" | table | clean
     fi
-    jq -r "$CM_JQ"'(.estimate // {}) as $e
+    jq -r "$CM_JQ$CM_ARMS_JQ"'(.estimate // {}) as $e
       | (if $e.hours_to_deadline != null then "Hours to the deadline: \($e.hours_to_deadline)" else empty end),
         (if $e.device_hours_available != null then "Device hours available before the deadline: \($e.device_hours_available)"
           + (if $e.device_hours_basis then " (\($e.device_hours_basis | one))" else "" end) else empty end),
+        arms_check,
         (if $e.latest_start then "\($e.latest_start.text): \($e.latest_start.at)" else empty end),
         (if $e.profile then $e.profile as $p
           | def from: if . == "template" then "the template" elif . == "project_last_run" then "the project'"'"'s last run"
@@ -579,11 +678,13 @@ _cm_create() {
   cp "$RESP" "$doc"
   if [ "$wait" = 0 ]; then
     _cm_print_doc
+    _cm_print_arms
     [ "$CITT_JSON" = 1 ] || [ "$created" = true ] || printf 'This campaign was already created from this spec; it is shown as it is.\n'
     return 0
   fi
   if [ "$CITT_JSON" != 1 ]; then
     _cm_print_doc
+    _cm_print_arms
     [ "$created" = true ] || printf 'This campaign was already created from this spec; it is shown as it is.\n'
   fi
   _cm_wait_first "$id" "$timeout" "citt campaign create $(shq "$file") --start-now --wait-first"
@@ -714,18 +815,22 @@ _cm_show() {
           runs: [.report.runs[]? | select(.package_id == $app)]}} else . end' "$doc"
     return 0
   fi
-  jq -r --slurpfile r "$rep" "$CM_JQ"' . as $d | $r[0].report as $rep
+  jq -r --slurpfile r "$rep" "$CM_JQ$CM_ARMS_JQ"' . as $d | $r[0].report as $rep
     | state_line,
+      attention_lines,
       "Deadline: " + (if .deadline_local then "\(.deadline_local) (\(.zone))" else "none, it runs until stopped" end),
       "Phones: " + ([.phones[] | .name // "phone \(.device_id)"] | join(", ") | if . == "" then "none" else . end),
       ([$rep.runs[]? | select(.status | IN("queued", "claimed", "running", "stopping")) | .phone] | unique) as $busy
-      | "Idle phones: " + ([.phones[] | (.name // "phone \(.device_id)") | select(. as $n | $busy | index($n) | not)] | join(", ")
+      | (if has("phone_time") and .phone_time != null then "Idle phones now: " else "Idle phones: " end) + ([.phones[] | (.name // "phone \(.device_id)") | select(. as $n | $busy | index($n) | not)] | join(", ")
           | if . == "" then "none" else . end),
       "Apps: " + ([.apps.counts | to_entries[] | "\(.value) \(.key)"] | join(", ") | if . == "" then "none" else . end),
+      (((.spec.arms // null) | if type == "array" and length > 0 then . else ($rep.header.arms // null) end) | arms_list),
+      planning_lines,
       (if ($rep.measured.runs_by_state // {}) | length > 0 then "Runs: " + ([$rep.measured.runs_by_state | to_entries[] | "\(.value) \(.key)"] | join(", ")) else empty end),
       ($rep.measured // {} | if .device_hours_booked != null then "Device hours: \(.device_hours_booked) booked"
         + (if .device_hours_booked_now != null then ", \(.device_hours_booked_now) booked now (pending and running)" else "" end)
         + ", \(.device_hours_used // 0) used" else empty end),
+      phone_time_line,
       (if .next_action then "Next: \(.next_action)" else empty end)' "$doc" | clean
   [ -n "$app" ] || return 0
   printf '\n'
@@ -793,12 +898,22 @@ _cm_stop() {
 
 _cm_edit() {
   local id="" deadline="" zone="" until=0 phones="" have_phones=0 rerun="" have_rerun=0 goal="" have_goal=0 template='{}' tpl=0
+  local remove='[]' arms='[]' have_arms=0 both
+  CM_ARMS='[]'
   while [ $# -gt 0 ]; do
     ! _cm_common_flag "$1" || { shift; continue; }
     case "$1" in
-      --deadline | --zone | --phones | --rerun-states | --goal | --template)
+      --deadline | --zone | --phones | --rerun-states | --goal | --template | --arm | --remove-arm)
         need_value "$1" $#
         case "$1" in
+          --arm)
+            _cm_arm_add "$2"
+            have_arms=1
+            ;;
+          --remove-arm)
+            remove="$(jq -c --arg n "$2" '. + [$n]' <<<"$remove")"
+            have_arms=1
+            ;;
           --deadline) deadline="$2" ;;
           --zone) zone="$2" ;;
           --phones) phones="$2" have_phones=1 ;;
@@ -826,19 +941,26 @@ _cm_edit() {
   if [ -n "$deadline" ] && ! printf '%s' "$deadline" | grep -Eq "$CM_DEADLINE_RE"; then
     usage_error "--deadline needs a time with its UTC offset, such as 2026-11-20T10:00-06:00; got: $deadline"
   fi
-  if [ -z "$deadline" ] && [ "$until" = 0 ] && [ "$have_phones" = 0 ] && [ "$have_rerun" = 0 ] && [ "$have_goal" = 0 ] && [ "$tpl" = 0 ]; then
-    usage_error "give at least one of --deadline, --run-until-stopped, --phones, --rerun-states, --template FIELD=VALUE and --goal"
+  if [ -z "$deadline" ] && [ "$until" = 0 ] && [ "$have_phones" = 0 ] && [ "$have_rerun" = 0 ] && [ "$have_goal" = 0 ] && [ "$tpl" = 0 ] && [ "$have_arms" = 0 ]; then
+    usage_error "give at least one of --deadline, --run-until-stopped, --phones, --rerun-states, --template FIELD=VALUE, --arm NAME[=REFERRER], --remove-arm NAME and --goal"
+  fi
+  both="$(jq -r --argjson a "$CM_ARMS" '[.[] | select(ascii_downcase as $n | $a | map(.name | ascii_downcase) | index($n))][0] // empty' <<<"$remove")"
+  [ -z "$both" ] || usage_error "the arm $both is given to --arm and to --remove-arm; give it to one of them"
+  need_auth
+  # TASK-1601 AC-4: the PATCH takes the whole arm list, so the stored one is read first
+  if [ "$have_arms" = 1 ]; then
+    _cm_arms_edit "$id" "$remove"
+    arms="$CM_ARMS_NEW"
   fi
   local body
   body="$(jq -nc --arg d "$deadline" --arg z "$zone" --argjson u "$until" --argjson hp "$have_phones" \
     --argjson phones "$(_cm_list_json "$phones" 1)" --argjson hr "$have_rerun" \
     --argjson rerun "$(_cm_list_json "$rerun" | jq -c 'map(ascii_upcase)')" --argjson hg "$have_goal" --arg goal "$goal" \
-    --argjson tpl "$tpl" --argjson t "$template" '{}
+    --argjson tpl "$tpl" --argjson t "$template" --argjson ha "$have_arms" --argjson arms "$arms" '{}
     + (if $d != "" then {deadline: $d} else {} end) + (if $z != "" then {zone: $z} else {} end)
     + (if $u == 1 then {run_until_stopped: true} else {} end) + (if $hp == 1 then {phones: $phones} else {} end)
     + (if $hr == 1 then {rerun_states: $rerun} else {} end) + (if $hg == 1 then {goal: $goal} else {} end)
-    + (if $tpl == 1 then {template: $t} else {} end)')"
-  need_auth
+    + (if $tpl == 1 then {template: $t} else {} end) + (if $ha == 1 then {arms: $arms} else {} end)')"
   _cm_call PATCH "$CITT_V1/campaigns/$id" "$(_cm_body "$body")"
   if [ "$CITT_JSON" = 1 ]; then
     jq -c . "$RESP"
@@ -961,17 +1083,24 @@ _cm_report() {
     _cm_no_staff "$RESP"
   else
     jq -r '.markdown // ""' "$RESP"
+    # TASK-1601 AC-5: the app × arm matrix as a table, one row per cell
+    if jq -e '.report.arm_matrix | type == "object"' "$RESP" >/dev/null 2>&1; then
+      printf '\nApp × arm matrix:\n'
+      jq -c "$CM_ARMS_JQ"'.report.arm_matrix | arm_table' "$RESP" | table | clean
+    fi
   fi
 }
 
 # --- pull ----------------------------------------------------------------------------------------------------------------
 
-# CM_DECISIONS: jq program, the report's actions with a reason as one JSON object per line, deduped by action_id.
+# CM_DECISIONS: jq program, the report's actions with a reason as one JSON object per line, deduped by action_id. TASK-1601: a
+# wave has `arms` and a run step `arm` when the campaign has arms; without arms the objects have the keys of before.
 CM_DECISIONS='[(.report.waves[]? | {action_id, kind: "wave", type: "book_runs", campaign_app_id, package_id, wave, status,
-      booked, phones, overrides, reason, decided_by: .decided_by.words, call_id: .decided_by.call_id}),
+      booked, phones, overrides, reason, decided_by: .decided_by.words, call_id: .decided_by.call_id}
+      + (if (.arms | type) == "array" and (.arms | length) > 0 then {arms} else {} end)),
     (.report.runs[]? as $r | $r.steps[]? | {action_id, kind: "run_step", type, experiment_id: $r.experiment_id,
       campaign_app_id, package_id: $r.package_id, wave: $r.wave, status, refusal_code, reason, origin,
-      decided_by: .decided_by.words, call_id}),
+      decided_by: .decided_by.words, call_id} + (if ($r.arm // "") != "" then {arm: $r.arm} else {} end)),
     (.report.apps[]? as $a | select($a.decision) | $a.decision | {action_id, kind: "app", type, campaign_app_id: $a.campaign_app_id,
       package_id: $a.package_id, status, refusal_code, reason, origin, decided_by: .decided_by.words, call_id})]
   | map(select(.action_id != null)) | unique_by(.action_id) | .[]'
@@ -1088,7 +1217,7 @@ _cm_watch() {
         jq -r '"\(.id): \(.state)" + (if (.state_reason // "") != "" then " (\(.state_reason | gsub("[\r\n\t]+"; " ")))" else "" end)' "$doc" | clean
       fi
       jq -r "$CM_JQ"' .[] | if .kind == "wave" then wave_line(true)
-        elif .kind == "run_step" then "Run \(.experiment_id) (\(.package_id)): \(.type) (\(st))" + by + why
+        elif .kind == "run_step" then "Run \(.experiment_id) (\(.package_id)" + arm_name + "): \(.type) (\(st))" + by + why
         else "\(.package_id): \(.type) (\(st))" + by + why end' <<<"$new" | clean
     fi
     (umask 077 && t="$(mktemp "$seen_file.XXXXXX")" && jq -nc --arg s "$st" --argjson seen "$seen" --argjson n "$new" \

@@ -71,7 +71,28 @@ def permissions_session: if type != "object" then "" else
      then ", \($ng | length) not granted (" + ([$ng[] | "\(.permission): \({"special_access": "special access"}[.reason] // .reason)"] | join(", ")) + ")"
      else "" end)
   + (if (.battery | type) != "object" then "" elif .battery.unrestricted == true then ", battery Unrestricted"
-     else ", battery not Unrestricted" end) end;'
+     else ", battery not Unrestricted" end) end;
+# TASK-1596: the app preferences of a run (--set-pref): the list of the start answer or the counts {entries, files} of a run row
+def prefs_run($sep): (if type == "array" and length > 0 then {entries: length, files: (map(.file) | unique | length)}
+    elif type == "object" and (.entries | type) == "number" then {entries, files: (.files // 0)} else null end) as $c
+  | if $c == null then "" else "\($sep)app preferences set before launch (\(n($c.entries; "key"; "keys")) in \(n($c.files; "file"; "files")))" end;
+# a preference value on the line of its session: control characters as spaces, cut at 60 characters
+def pref_text: if . == null then "not set" elif . == "" then "(empty)" else (oneline | if length > 60 then .[:60] + "..." else . end) end;
+# persona.set_prefs of a session: the keys and files written, the read-back, and the keys whose value at the end differs
+def prefs_session: if type != "object" or (.files | type) != "array" then "" else
+  [.files[] | select(type == "object" and (.file | type) == "string")] as $fs
+  | [$fs[] | .file as $f | (.entries // [] | if type == "array" then .[] else empty end) | select(type == "object") | . + {file: $f}] as $es
+  | ($es | length) as $n
+  | "; app preferences: \(n($n; "key"; "keys")) set in "
+    + ([$fs[] | (.file | oneline) + (if .existed == false then " (file created)" else "" end)] | join(", "))
+    + (if .verified == true then ", read back verified" else ", not verified" end)
+    + (if .after_session_read == true then
+         [$es[] | select(.after_session != .value)] as $ch
+         | "; kept \($n - ($ch | length)) of \($n) at the end of the session"
+           + (if ($ch | length) == 0 then "" else " ("
+               + ([$ch[] | (if ($fs | length) > 1 then "\(.file | oneline) " else "" end)
+                    + "\(.key | oneline): written \(.value | pref_text), at the end \(.after_session | pref_text)"] | join("; ")) + ")" end)
+       elif .after_session_read == false then "; the values at the end of the session were not read" else "" end) end;'
 
 # --- arguments -------------------------------------------------------------------------
 
@@ -336,6 +357,8 @@ cmd_capture_options() {
   printf '\n'
   jq -r --arg dur "$dur" --arg ds "${dur_s:-0}" --arg note "$CITT_TRACKING_NOTE" "$CR_JQ"'
     "Exit states (servers): " + ([.states[] | "\(.code) \(.servers // "-")"] | join(", ") | if . == "" then "none reported" else . end),
+    # NP-2078: where ipinfo.io places the servers of a state, in the sentence of the service (states[].region_note)
+    (.states[] | select((.region_note | type) == "string" and .region_note != "") | "Exit state \(.code): \(.region_note | oneline)"),
     (if ((.countries // []) | length) > 0 then
        (.regions // ([.countries[].region] | unique)) as $regions
        | ($regions[] as $g | [.countries[] | select(.region == $g)
@@ -356,6 +379,8 @@ cmd_capture_options() {
      elif .grant_permissions == false then "App permissions (--grant-permissions): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
     (if .install_referrer == true then "Install referrer (APP as a Google Play link with a referrer parameter): available; each session uninstalls the app, installs it from its Play Store listing with that referrer and starts it; the scanned build is not installed"
      elif .install_referrer == false then "Install referrer (APP as a Google Play link with a referrer parameter): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
+    (if .set_prefs == true then "App preferences (--set-pref): available; before the app starts in each session, the values you name are written into the app'"'"'s SharedPreferences files (--set-pref FILE.xml:KEY=TYPE:VALUE, repeatable, at most 20 keys in 5 files; TYPE is bool, int, long, float or string)"
+     elif .set_prefs == false then "App preferences (--set-pref): not available for this app; it runs on Android lab phones, for an app'"'"'s run" else empty end),
     "Proxy exit: " + (if .proxy_exit == true then "available" else "not available" end),
     "Session lengths (--split): " + (.split_options_s | map(short) | join(", ")) + "; default \(.default_split_s | short)",
     "Duration (--duration): \(.min_duration_s | short) to \(.max_duration_s | short)",
@@ -656,7 +681,7 @@ cmd_capture_start() {
   local nav="" help_wait="" nav_mode="" wait_s="" fallback="" pt_json="[]" reset_gaid="" language="" location="" loc_json="" loc_always=""
   local goal="" conclusion="" prompts_file="" bmi_json="[]" prompts_json="{}" allow_signup="" no_play_fallback="" web_url=""
   local mock_wifi="" mock_wifi_private="" mock_cell="" radio_mode="" grant="" link="" install_link=""
-  CR_PT="" CR_PT_N=0 CR_WEB="" CR_LINK_PKG="" CR_LINK_REF=""
+  CR_PT="" CR_PT_N=0 CR_WEB="" CR_LINK_PKG="" CR_LINK_REF="" CR_SP="[]" CR_SP_N=0
   CR_PX_ENTRIES="" CR_PX_NAME="" CR_PX_SHA="" CR_PX_N=0
   CITT_CMD="citt capture-start"
   CR_OPTS=""
@@ -669,9 +694,10 @@ cmd_capture_start() {
     fi
     case "$1" in
       --duration | --split | --state | --country | --phone | --age | --tracking | --timeout | --navigator | --help-wait | --passthrough \
-        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --location | --proxy-file | --platform | --web-url)
+        | --goal | --bring-me-in | --conclusion | --prompts-file | --language | --location | --proxy-file | --platform | --web-url | --set-pref)
         need_value "$1" $#
         case "$1" in
+          --set-pref) _cr_set_pref "$2" ;;
           --web-url) web_url="$2" ;;
           --platform) platform="$2" ;;
           --language) language="$2" ;;
@@ -833,6 +859,15 @@ cmd_capture_start() {
     [ -z "$web_url" ] \
       || usage_error "--grant-permissions applies to an app's run; a web-funnel session opens the phone's browser, whose permissions stay as they are"
   fi
+  # TASK-1596: --set-pref writes SharedPreferences values before the app starts, on Android lab phones, for an app's run; the
+  # service checks the file name, the key, the type and the value of each entry
+  if [ "$CR_SP_N" -gt 0 ]; then
+    [ "$CR_SP_N" -le 20 ] || usage_error "--set-pref is given $CR_SP_N times; a run takes at most 20 entries"
+    [ "$platform" != ios ] \
+      || usage_error "--set-pref writes SharedPreferences files on Android lab phones only: an iOS app has no SharedPreferences file; leave --platform ios out"
+    [ -z "$web_url" ] \
+      || usage_error "--set-pref applies to an app's run; a web-funnel session opens the phone's browser and installs no app"
+  fi
   [ -z "$age" ] || is_uint "$age" || usage_error "--age takes a whole number of years, got: $age"
   case "$tracking" in '' | allow | refuse) ;; *) usage_error "--tracking takes allow or refuse, got: $tracking" ;; esac
   is_uint "$timeout" || usage_error "--timeout needs a number of seconds"
@@ -884,6 +919,8 @@ cmd_capture_start() {
   [ -z "$grant" ] || hin="$hin|grant_permissions=true"
   # fix round 1 (A8): the referrer is hashed first, as the prompts are: it may contain `|`, the separator of this input
   [ -z "$install_link" ] || hin="$hin|install_referrer=$(_cs_str_sha "$CR_LINK_REF")"
+  # TASK-1596: the compact JSON list is hashed first, as the referrer is: a value may contain `|`
+  [ "$CR_SP_N" = 0 ] || hin="$hin|set_prefs=$(_cs_str_sha "$CR_SP")"
   [ -z "$CR_PT" ] || hin="$hin|passthrough=$(printf '%s' "$CR_PT" | tr '\n' ',')"
   [ "$prompts_json" = "{}" ] || hin="$hin|prompts=$(_cs_str_sha "$prompts_json")"
   [ -z "$allow_signup" ] || hin="$hin|allow_signup=1"
@@ -926,7 +963,7 @@ cmd_capture_start() {
   body="$(tmpfile start.json)"
   jq -nc --argjson d "$CR_DEV" --arg st "$state" --arg cc "$country" --argjson dur "$dur_s" --argjson sp "$split_s" --arg k "$key" --arg age "$age" --arg tr "$tracking" \
     --arg nav "$nav_mode" --arg ws "$wait_s" --arg fb "$fallback" --argjson pt "$pt_json" --arg rg "$reset_gaid" --arg dl "$language" --arg loc "$loc_json" --arg la "$loc_always" --arg mw "$mock_wifi" --arg mwp "$mock_wifi_private" --arg mc "$mock_cell" --arg gp "$grant" --argjson pr "$prompts_json" --arg su "$allow_signup" --arg npf "$no_play_fallback" \
-    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" --arg il "$install_link" \
+    --slurpfile px "${CR_PX_ENTRIES:-/dev/null}" --arg pxn "${CR_PX_NAME:-}" --arg web "$web_url" --arg il "$install_link" --argjson prefs "$CR_SP" \
     '{device_id: $d} + (if ($px | length) > 0 then {} elif $cc == "" then {exit_state: $st} else {exit_country: $cc} end)
      + {duration_s: $dur, split_s: $sp, idempotency_key: $k}
      + (if $age == "" then {} else {persona_age: ($age | tonumber)} end)
@@ -946,7 +983,8 @@ cmd_capture_start() {
      + (if $npf == "" then {} else {play_fallback: false} end)
      + (if ($px | length) > 0 then {proxy_file_name: $pxn, proxy_entries: $px[0]} else {} end)
      + (if $web == "" then {} else {web_url: $web} end)
-     + (if $il == "" then {} else {install_link: $il} end)' >"$body"
+     + (if $il == "" then {} else {install_link: $il} end)
+     + (if ($prefs | length) == 0 then {} else {set_prefs: $prefs} end)' >"$body"
   HTTP_RETRY=yes
   if [ -n "$CR_WEB" ]; then
     http POST "$CITT_V1/projects/$PROJECT_ID/web-sessions" "$body"
@@ -982,7 +1020,18 @@ cmd_capture_start() {
       ref_msg="$(plain_message "$(body_field '.message')")"
       fail_out 7 "${ref_msg:-the service refused the Play link with a referrer for this run; such a run installs the app from the Play Store on an Android lab phone, for the app the link names; give the package id to start a run without a referrer}"
       ;;
+    422:set_prefs_*)
+      # TASK-1596: an iOS app, a web-funnel session, or an entry whose file name, key, type or value the service refuses
+      local prefs_msg
+      prefs_msg="$(plain_message "$(body_field '.message')")"
+      fail_out 7 "${prefs_msg:-the service refused --set-pref for this run; it runs on Android lab phones, for the run of an app, with entries FILE.xml:KEY=TYPE:VALUE}"
+      ;;
   esac
+  # TASK-1596 fix round 1: a service from before the option answers the unknown body field set_prefs with a 422 whose body is
+  # the sentence of the JSON reader, not a refusal with a code
+  if [ "$CODE" = 422 ] && [ "$CR_SP_N" != 0 ] && grep -qiE 'unknown field .?set_prefs' "$RESP" 2>/dev/null; then
+    fail_out 7 "this service does not take --set-pref yet; start the run without --set-pref, or check again later: citt capture-options $pkg$(project_arg) prints the line \"App preferences (--set-pref):\" once the service takes it"
+  fi
   # NP-873 AC3: a service without a proxy key refuses a proxy run; the refusal is final, so the key is not kept.
   if [ "$CODE" = 503 ] && [ "$(body_field '.error')" = proxy_exit_unavailable ]; then
     rm -f "$pend"
@@ -1013,6 +1062,27 @@ cmd_capture_start() {
   _cr_started "$launch" "$rid"
 }
 
+# _cr_set_pref SPEC: TASK-1596: one --set-pref FILE:KEY=TYPE:VALUE, split at fixed places and added to the JSON list CR_SP. FILE
+# ends at the first ":", KEY at the first "=" after it, TYPE at the next ":", and VALUE is the rest, unchanged (it may be empty
+# and may contain ":", "=", spaces, quotes and line breaks). The service checks the four parts.
+_cr_set_pref() {
+  local spec="$1" file rest key type value
+  local bad="--set-pref takes FILE.xml:KEY=TYPE:VALUE, such as com.example.app.xml:paid_user=bool:true; TYPE is bool, int, long, float or string; got: $1"
+  case "$spec" in *:*) ;; *) usage_error "$bad" ;; esac
+  file="${spec%%:*}"
+  rest="${spec#*:}"
+  case "$file" in *=*) usage_error "$bad" ;; esac
+  case "$rest" in *=*) ;; *) usage_error "$bad" ;; esac
+  key="${rest%%=*}"
+  rest="${rest#*=}"
+  case "$rest" in *:*) ;; *) usage_error "$bad" ;; esac
+  type="${rest%%:*}"
+  value="${rest#*:}"
+  CR_SP="$(jq -c --arg f "$file" --arg k "$key" --arg t "$type" --arg v "$value" '. + [{file: $f, key: $k, type: $t, value: $v}]' <<<"$CR_SP")" \
+    || die 1 "--set-pref: the entry could not be read: $1"
+  CR_SP_N=$((CR_SP_N + 1))
+}
+
 # _cr_started LAUNCH_FILE RUN_ID: the four lines after a start (the end from GET /capture-runs/ID).
 _cr_started() {
   local eta=""
@@ -1041,7 +1111,8 @@ _cr_started() {
       + (.device_radio | radio_mode("; "))
       + (if .grant_permissions == true then "; app permissions granted before launch" else "" end)
       + (if .install_referrer.referrer then "; install referrer \(.install_referrer.referrer)" else "" end)
-      + (if .play_fallback == false then "; no Play Store fallback" else "" end),
+      + (if .play_fallback == false then "; no Play Store fallback" else "" end)
+      + (.set_prefs | prefs_run("; ")),
     (if .exit_warning then "Warning: \(.exit_warning)" else empty end),
     "Estimated end: \($eta)",
     "Next: citt capture-watch \(.experiment_id) to follow it; citt capture-stop \(.experiment_id) to stop it; citt capture-sync --run \(.run_key) to download its sessions"' "$1"
@@ -1092,6 +1163,14 @@ _cr_watch() {
                     else ($px.bytes / 100000000 | floor + (if ($px.bytes / 100000000) - floor >= 0.5 then 1 else 0 end)) as $t
                       | "\($t / 10 | floor).\($t % 10) GB through your proxy" end) end)
          else empty end),
+        # NP-2078: a session of a booked state whose server ipinfo.io places in another region (downgrade region_mismatch)
+        (($s // {}) | if (.exit_state | type) != "string" or ($g.exit.proxy | type) == "object" then empty else
+           ([(.exit_segments // []) | if type == "array" then .[] else empty end
+              | select(type == "object" and ((.downgrade_reason // "") | tostring | startswith("region_mismatch"))
+                  and (.ipinfo_region | type) == "string" and .ipinfo_region != "") | .ipinfo_region | oneline]
+            | reduce .[] as $x ([]; if index($x) != null then . else . + [$x] end)) as $regions
+           | if ($regions | length) == 0 then empty
+             else "\($g.seq)\t  exit: \(.exit_state | oneline) booked, ipinfo region \($regions | join(", "))" end end),
         "\($g.seq)\tSession \($g.seq) of \($p // "?"): "
         + (if $g.status == "ingested" then "ingested, " + n($f; "flag"; "flags") else "failed" + (if $g.reason then ": \($g.reason)" else "" end) end)
         + (($s | .persona) // {} | if .locale then "; Phone locale \(.locale)"
@@ -1105,7 +1184,8 @@ _cr_watch() {
         + (($s | .persona.install_referrer) // null | if type != "object" or (.referrer | type) != "string" then ""
              else "; installed from Play with referrer \(.referrer)"
                + (if .version_name != null then ", version \(.version_name)" + (if .version_code != null then " (\(.version_code))" else "" end)
-                  elif .version_code != null then ", version code \(.version_code)" else "" end) end)' "$RESP" 2>/dev/null)" \
+                  elif .version_code != null then ", version code \(.version_code)" else "" end) end)
+        + (($s | .persona.set_prefs) // null | prefs_session)' "$RESP" 2>/dev/null)" \
       || die 1 "unexpected response from the server"
     if [ -n "$lines" ]; then
       while IFS=$'\t' read -r q line; do
@@ -1147,7 +1227,8 @@ _cr_watch() {
           + (if $r.device_location and $r.location_permission == "all_the_time" then ", location permission all the time" else "" end)
           + ($r.device_radio | radio_mode(", "))
           + (if $r.grant_permissions == true then ", app permissions granted before launch" else "" end)
-          + (if $r.install_referrer.referrer then ", install referrer \($r.install_referrer.referrer)" else "" end))' "$RESP"
+          + (if $r.install_referrer.referrer then ", install referrer \($r.install_referrer.referrer)" else "" end)
+          + ($r.set_prefs | prefs_run(", ")))' "$RESP"
     fi
     last="$now_state"
     if [ "${now_state%%|*}" = needs_human ]; then
@@ -1204,6 +1285,7 @@ _cr_watch() {
     return 12
   fi
   rm -f "$sfile" "$hfile"
+  [ "$CITT_JSON" = 1 ] || _cr_stuck_line
   if [ "$CITT_JSON" != 1 ] && [ "$(jq '([(.progress // [])[] | select(.status == "ingested")] | length) + ((.sessions // []) | length)' "$RESP")" -gt 0 ]; then
     printf 'Next: citt capture-sync --run %s\n' "$key"
   fi
@@ -1233,6 +1315,26 @@ _cr_watch() {
   esac
   [ "${CR_ZERO_ON_END:-}" != 1 ] || code=0
   return "$code"
+}
+
+# _cr_stuck_line: NP-2073: one sentence at the end of a run with sessions held on one screen (run.stuck_sessions above 0), from
+# the screen_progress record of each stuck session (stuck_on in words, the screen line), else from the kinds in run.stuck_on.
+_cr_stuck_line() {
+  jq -r "$CR_JQ"' .run as $r
+    | if ($r.stuck_sessions | type) != "number" or $r.stuck_sessions < 1 then empty else
+        ((.sessions // []) | length) as $have
+        | (if $have >= $r.stuck_sessions then $have else ([$r.finished_sessions // 0, $r.stuck_sessions] | max) end) as $of
+        | ([(.sessions // [])[] | .screen_progress | select(type == "object" and .stuck == true and (.stuck_on | type) == "string")
+             | (.stuck_on | oneline) + (if (.screen | type) == "string" and .screen != ""
+                 then " (“\(.screen | oneline | if length > 160 then .[:160] + "..." else . end)”)" else "" end)]
+           | reduce .[] as $x ([]; if index($x) != null then . else . + [$x] end)) as $seen
+        | (if ($seen | length) > 0 then $seen
+           else [($r.stuck_on // [] | if type == "array" then .[] else empty end) | stuck_kind
+                  | if startswith("another") then . elif test("^[aeiou]") then "an " + . else "a " + . end] end) as $on
+        | "\($r.stuck_sessions) of \(n($of; "session"; "sessions")) \(if $r.stuck_sessions == 1 then "was" else "were" end) held on one screen"
+          + (if ($on | length) > 0 then ": " + ($on | join("; ")) else "" end)
+          + ". The app'"'"'s traffic past that screen is not in \(if $r.stuck_sessions == 1 then "this session" else "these sessions" end)."
+          + " Session files: analysis/session.json, screen_progress." end' "$RESP" 2>/dev/null || true
 }
 
 cmd_capture_watch() {

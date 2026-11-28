@@ -224,6 +224,8 @@ main() {
     campaign)
       # shellcheck source=lib/cmd-campaign.sh
       . "$CITT_LIB/cmd-campaign.sh"
+      # shellcheck source=lib/cmd-campaign-arms.sh
+      . "$CITT_LIB/cmd-campaign-arms.sh"
       ;;
   esac
   # stdout passes through clean (app text can hold terminal control characters); auth prints the

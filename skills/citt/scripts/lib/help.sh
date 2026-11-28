@@ -236,8 +236,11 @@ help_captures() {
 citt captures [--state S[,S...] | --state active] [--project NAME|ID]... [--mine] [--sort finished] [--limit N] [--cursor C] [--json]
 
 The network capture runs of your projects, newest first: state, app, phone, sessions done of
-planned, flags, the estimated end and who booked the run. States: queued, starting, running,
-stopping, done, done_with_gaps, stopped, failed, imported; active is the first four.
+planned, the sessions held on one screen (Stuck), flags, the estimated end and who booked the run.
+States: queued, starting, running, stopping, done, done_with_gaps, stopped, failed, imported; active is the first four.
+Stuck is the number of the run's sessions that were held on one screen, with the kind of screen (2 age question,
+1 consent wall), a dash for none and empty while a session of the run has no record yet; --json has the two
+fields stuck_sessions and stuck_on on every run. The run state is not changed by a stuck session.
   --mine   only the runs you booked
   --sort finished   the run that ended last first, then the runs that have not ended (newest id first); adds an Ended column in
                     your local time, a dash for a run not ended; --cursor takes the value the previous page printed
@@ -384,7 +387,9 @@ citt capture-options APP --project NAME|ID [--platform android|ios] [--duration 
 What a capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project) can use:
 whether the package is allowed, the lab devices of its platform with their device id, status and active runs, the stated
 limits of its captures (iOS: Apple's own hosts are not decrypted; a device in proxy mode misses connections that ignore the proxy),
-the exit states and the exit countries (per NordVPN region) with their server counts, whether
+the exit states and the exit countries (per NordVPN region) with their server counts, one line per exit state
+whose servers ipinfo.io places in another state (Exit state OR: NordVPN's OR servers are placed in California by
+ipinfo.io ...), whether the app's run takes --set-pref (App preferences (--set-pref): available), whether
 the service takes --proxy-file (Proxy exit: available), the session lengths, the duration range, the default profile, whether the lab launcher is online, and the measured size per captured hour.
   --duration   also print the estimated download size of a run this long (90m, 3h, 2d)
   --platform   android or ios: the app of that platform when the project holds the id for both (default: the Android app)
@@ -397,6 +402,7 @@ citt capture-start APP | --web-url URL --project NAME|ID --duration D (--state X
                    [--age N] [--tracking allow|refuse] [--navigator independent|stuck|unsure [--help-wait MINUTES]]
                    [--state-fallback] [--passthrough HOST[,HOST...]] [--reset-gaid] [--language TAG] [--location LAT,LNG] [--location-always] [--mock-wifi] [--mock-wifi-private] [--mock-cell] [--grant-permissions] [--no-play-fallback] [--wait [--timeout SECONDS]] [--json]
                    [--goal TEXT] [--bring-me-in TEXT]... [--conclusion TEXT] | [--prompts-file FILE] [--allow-signup]
+                   [--set-pref FILE.xml:KEY=TYPE:VALUE]...
 
 Starts a network capture run of APP (an Android package id, an iOS bundle id or a Google Play link in the project)
 on a lab device of its platform, or of a web funnel (--web-url) on an Android lab phone, and prints the run id, run key, phone, state, planned sessions, estimated end and
@@ -420,7 +426,7 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                the run of its package id. The parameter name is referrer in lower case, as the Play Store reads it:
                a link with Referrer= or REFERRER= has no install referrer
   --duration   run length, 1m to 7d
-  --state      US exit state code, such as CA (see: citt capture-options); the run is captured in it or fails naming it
+  --state      US exit state code, such as CA (see: citt capture-options); the run is captured on a NordVPN server of that state or fails naming it; where ipinfo.io places the server in another state, the session records that region
   --state-fallback  with --state: allow another state when the booked one connects nothing; the run then shows it
   --passthrough  hosts (DNS names or IPv4 addresses, at most 20) the proxy passes through unread: they are not decrypted and their
                  traffic content is not captured; no wildcard, port, scheme or path; repeatable
@@ -463,6 +469,23 @@ the commands to follow, stop and download it. Durations take <n>m, <n>h or <n>d.
                permission is not granted and is listed with its group (location follows --location and --location-always);
                each session's result is in run.json sessions[].persona.permissions and its capture-watch line; Android phones
                only (default: no permission is granted before the app starts)
+  --set-pref FILE.xml:KEY=TYPE:VALUE
+               before the app starts in each session, VALUE is written under KEY into the app's SharedPreferences file
+               FILE.xml, in the app's shared_prefs folder on the rooted lab phone (the file is created when the app has
+               not written it yet; its other entries are kept); TYPE is bool (true|false), int, long, float or string;
+               repeat the option for more keys, at most 20 in 5 files; {package} in FILE is the app's package id
+               (getSharedPreferences("name", ...) is name.xml, the default file is {package}_preferences.xml). You name
+               the file and the key the app reads: find them in its code with citt code-search and citt code-file.
+               FILE ends at the first ":", KEY at the first "=" after it, TYPE at the next ":", and VALUE is the rest
+               as typed (it may be empty for a string and may contain ":", "=", spaces and quotes; put the option's
+               value in quotes in the shell). A key that contains = and a file name that contains : cannot be given.
+               Each session's result is in run.json sessions[].persona.set_prefs: verified (the values read back after
+               the write), existed (the file was there before), previous, after_session (the value at the end of the
+               session: an app that writes the key itself changes it), files_after (the app's preference files at the
+               end), and on its capture-watch line. Plain SharedPreferences XML only: an EncryptedSharedPreferences
+               file and a Jetpack DataStore file are refused with the reason; string sets and iOS are not available.
+               The app is not read by the option: a file or key the app never reads gives verified true and an
+               unchanged app. Android phones only (default: nothing is written)
   --proxy-file your own proxies as the exit, one per line: http://user:pass@host:port, socks5://user:pass@host:port or
                host:port:user:pass (http); - reads stdin; # comments and blank lines skipped; at most 100 entries; a literal
                {session} in the user is replaced with a new id each session. Each session tries the entries first to last and
@@ -506,6 +529,12 @@ pending, up to 72 hours after the run ends). Exits 0 on done, 13 on done_with_ga
 (default 540) it exits 12 with re-run: citt capture-watch RUN; a re-run prints only sessions
 not printed before. When the run needs a human it prints the reason, the screen, the deadline
 and the Live page link and exits 16; a re-run does not stop again for the same request.
+A session of a run booked with --state whose NordVPN server ipinfo.io places in another state is
+preceded by the line   exit: OR booked, ipinfo region California. A session of a run with --set-pref ends its
+line with the keys and files written, read back verified or not verified, and the keys kept at the end of the
+session. A run with sessions held on one screen ends with one sentence, such as: 2 of 2 sessions were held on one
+screen: an age question (the screen line). The app's traffic past that screen is not in these sessions; the
+run state and the exit code stay as they are.
 For a run started with --proxy-file, each ended session is preceded by one line per skipped
 entry (  #2 skipped: 407 proxy auth (line 4)) and the exit line (  exit: proxy_ca.txt #1,
 203.0.113.7, Denver, Colorado, US, AS7922 ... (ipinfo.io), registry US; 1.4 GB through your proxy).
@@ -1022,6 +1051,8 @@ help_campaign() {
 citt campaign draft --name NAME (--project P | --project-id N) (--apps A,B | --apps-file FILE) --phones LIST
                     --goal TEXT --duration S --split S (--exit-state ST | --country CC) [--age N]
                     [--tracking allow|refuse] [--template FIELD=VALUE]... [--look-for KIND:VALUE]...
+                    [--arm NAME[=REFERRER]]... [--arms-file FILE]
+                    [--set-pref FILE.xml:KEY=TYPE:VALUE]...
                     [--rerun-states CSV] [--page-size N] [--platform android|ios]
                     (--deadline TIME | --run-until-stopped) [--zone IANA] --out FILE
 citt campaign check FILE
@@ -1032,6 +1063,7 @@ citt campaign pause|resume ID
 citt campaign stop ID [--now]
 citt campaign edit ID [--deadline TIME [--zone IANA] | --run-until-stopped] [--phones LIST]
                       [--rerun-states CSV] [--template FIELD=VALUE]... [--goal TEXT]
+                      [--arm NAME[=REFERRER]]... [--remove-arm NAME]...
 citt campaign app restore|hold ID PACKAGE
 citt campaign review-run ID RUN
 citt campaign report ID [--wait] [--timeout S]
@@ -1049,21 +1081,46 @@ campaign report. Your computer can be off meanwhile.
               and --tracking set the profile of the runs (default: the project's last run);
               --template sets any other run option (navigator=independent, help_wait_s=600);
               --deadline is a time with its UTC offset; --zone defaults to this computer's zone
+  arms        one campaign compares several setups of the same apps: CITT books every arm of every
+              app, and the report has one row per app and arm. --arm NAME adds an arm without a
+              referrer (the control arm: its runs install the stored build); --arm NAME=REFERRER
+              adds an arm whose runs install the app from the Play Store with that install
+              referrer, the decoded value of a Play link's referrer parameter (everything after
+              the first = is the referrer, as typed); --arms-file FILE has one arm per line in the
+              same forms, with a note after a tab. A campaign takes at most 20 arms; a name has 1
+              to 40 letters, digits, underscore, dot and hyphen. A referrer arm runs Android apps
+              only and installs the version the Play Store serves that day. One referrer per app:
+              list the apps as Play links in --apps-file (one per line) and add --arm NAME=@app,
+              the arm whose runs use each app's own referrer. --template install_referrer=...
+              exits 2: use --arm. Example, 4 apps and 5 arms, 20 runs or more:
+                --arm R0_stored_build --arm 'R1_play_organic=utm_source=google-play&utm_medium=organic'
+                --arm 'R2_google_ads=utm_source=google&utm_medium=cpc' ...
+              --set-pref FILE.xml:KEY=TYPE:VALUE (the form of citt capture-start, repeatable)
+              writes app preferences before the app starts in every run of the campaign
   check       the spec as CITT reads it: refusals with reason, evidence and next action (exit 7),
               the phones with their status, the latest start of a run, the device hours and
-              the profile (age, tracking) the runs take
+              the profile (age, tracking) the runs take; with arms the line Arms: N (names);
+              runs: R or more; device hours needed: H of A available
   create      creates the campaign (exit 3 not enabled for the account, 5 name taken, 7 refused);
               --start-now starts it (or queues it behind your running campaigns); --wait-first
               then waits for the first plan and the first run review and prints the report so far
-  show        state, next action, phones (idle ones too) and app counts; --app adds one app's
-              state, waves and runs with each decision and its reason
-  stop        exit 14; runs in flight end as they do, --now stops them too
+  show        state, next action, phones (idle ones now), app counts, what the last plan call
+              booked (or why it booked nothing), what waits and the phone time while running;
+              --app adds one app's state, waves and runs with each decision and its reason;
+              the arms of the spec with their referrers, the arms of each wave, the arm of each run
+  pause       a paused campaign keeps its slot; resume starts it again at once
+  resume      starts a draft or a paused campaign, or a campaign that ended as finished with apps
+              left; prints running, or queued with its place in the queue
+  stop        exit 14; frees the campaign's slot; runs in flight end as they do, --now stops
+              them too
   edit        writes a new spec version; template edits apply to later bookings; FIELD= removes
-              a template field
+              a template field; --arm adds an arm and --remove-arm NAME takes one out (the setup
+              of an arm name stays the same for the whole campaign)
   app         restore a dropped, refused or held app, or hold one (no new runs of it)
   review-run  reviews an ended run again
   report      the campaign report in Markdown, live while the campaign runs; --wait waits until
-              it is final (exit 12 after --timeout, default 540 s, with the re-run line)
+              it is final (exit 12 after --timeout, default 540 s, with the re-run line); with
+              arms, then the table PACKAGE ARM RUNS ENDED ADS HITS VERDICT, one row per app and arm
   pull        writes campaign.json, decisions.jsonl and report.md into DIR (default
               ./citt-campaigns/ID), then syncs the runs into DIR/runs with citt capture-sync
               (--hits-only: the runs of apps with a hit); exit codes as capture-sync
